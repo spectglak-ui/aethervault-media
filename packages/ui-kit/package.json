@@ -1,0 +1,17 @@
+{
+  "name": "@aethervault/ui-kit",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "lucide-react": "^0.400.0",
+    "framer-motion": "^11.0.0",
+    "@aethervault/shared-types": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": "^18",
+    "react-dom": "^18"
+  }
+}

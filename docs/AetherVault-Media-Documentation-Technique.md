@@ -1,0 +1,626 @@
+# AetherVault Media — Documentation technique de fondation
+
+> Note de cadrage : ce document fusionne le brief détaillé fourni (projet **AetherVault Media**) avec les consignes générales de conception transmises en tête de conversation (qui évoquaient un projet similaire nommé « Nexus Media Center »). Les deux décrivent la même famille de produit (centre multimédia personnel, inspiré de Jellyfin/Plex, bibliothèques personnalisables, section privée, personnalisation avancée). J'ai retenu **AetherVault Media** comme nom de projet, conformément au document le plus détaillé et le plus récent, et j'ai intégré l'ensemble des exigences des deux textes. Aucune ligne de code n'a été écrite à ce stade, conformément à la consigne : ce document est une base de réflexion et de décision, pas une implémentation.
+>
+> **Mise à jour** : cette version intègre les compléments demandés — installateur Windows, identité visuelle, surveillance des bibliothèques, gestion des disques externes, sauvegarde/restauration, page d'accueil dynamique, profils utilisateurs.
+
+---
+
+## 1. Vision du produit
+
+AetherVault Media est un **centre multimédia personnel, local-first**, installé directement sur l'appareil de l'utilisateur. Il combine :
+
+- la robustesse d'un lecteur vidéo professionnel (à la VLC/MPC-HC) ;
+- l'expérience visuelle d'une médiathèque moderne (à la Jellyfin/Plex) ;
+- un système de bibliothèques entièrement personnalisables ;
+- une section privée cloisonnée (vidéos + galerie photo) ;
+- une **personnalisation visuelle poussée, au cœur du produit et non un simple habillage** : bannières de catégories, affiches et bannières de chaque film/série/anime/documentaire, personnalisation des bibliothèques privées, et à terme de l'interface générale (détaillé au §6) — l'objectif n'est pas seulement un lecteur vidéo, mais une médiathèque locale hautement personnalisable ;
+- une architecture pensée pour vivre et évoluer plusieurs années (plugins, IA, futures extensions réseau) ;
+- une **expérience de logiciel de bureau complète** : installation propre, identité visuelle cohérente, mises à jour maîtrisées, désinstallation propre.
+
+Contrainte fondamentale : **la v1 n'est pas un serveur**. Pas de couche client/serveur, pas d'obligation de compte en ligne, fonctionnement 100 % hors-ligne pour toutes les fonctions cœur. Le réseau (partage distant, sync cloud, accès multi-appareils façon Plex) est explicitement repoussé à une phase d'extension future et ne doit pas polluer l'architecture initiale — mais celle-ci doit être pensée pour ne pas l'empêcher.
+
+---
+
+## 2. Principes directeurs
+
+1. **Local-first** : les fichiers restent sous le contrôle total de l'utilisateur ; aucun envoi automatique vers un service externe.
+2. **Modularité stricte** : UI / logique métier / services / accès aux données / lecture média sont des couches séparées, communiquant par des interfaces définies, jamais par des dépendances croisées directes.
+3. **Extensibilité dès le premier jour** : même si aucun plugin n'existe en v1, les points d'extension (metadata providers, plugins UI, futurs modules IA) doivent exister dans l'architecture.
+4. **Stabilité avant fonctionnalités** : chaque étape de la roadmap doit produire une base testée avant d'ajouter la suivante.
+5. **Confidentialité par design** : la bibliothèque privée est un sous-système isolé, pas une simple case à cocher sur une bibliothèque normale.
+6. **L'Accueil est une porte d'entrée organisée, jamais un flux de recommandations** : les grandes catégories (Films, Séries, Anime, Documentaires, Privé) restent en permanence visibles et constituent le cœur de la navigation — contrairement à Netflix/Plex/Jellyfin/Emby, dont l'accueil met en avant des rangées de contenu au détriment de la structure. Les futures sections dynamiques (Étape 7 : Continuer la lecture, Derniers ajouts, Favoris, Recommandés) viendront en complément des catégories, jamais à leur place. Voir §6.7.
+7. **Rigueur "logiciel de bureau"** : installation, identité visuelle, mise à jour et désinstallation sont pensées dès la fondation, pas ajoutées après coup.
+
+---
+
+## 3. Choix techniques
+
+### 3.1 Langage & framework applicatif
+
+| Option | Points forts | Points faibles |
+|---|---|---|
+| **Electron (TypeScript/React) + Node.js** | Écosystème énorme, prototypage rapide, très proche de ce qu'utilisent Jellyfin Web / beaucoup de media centers, recrutement facile | Consommation mémoire élevée, empaquetage lourd, accès natif (GPU, fichiers bas niveau) moins direct |
+| **Tauri (Rust backend + WebView + React/TS frontend)** | Binaires légers, meilleure performance et sécurité mémoire (Rust), webview système (pas de Chromium embarqué complet), excellent pour un accès fichiers/DB performant, **bundler officiel intégré (NSIS/MSI, .deb/.rpm, .dmg)** | Écosystème plus jeune, bindings vidéo natifs à intégrer soi-même, communauté plus restreinte pour le support |
+| **.NET (C#) + Avalonia UI + LibVLCSharp** | Très mature, LibVLCSharp donne un accès direct et solide à libVLC (formats, sous-titres, pistes audio), bon support Windows historique, installateurs MSI natifs via WiX | Avalonia moins « moderne » visuellement par défaut, écosystème Linux/macOS un peu moins poli, packaging cross-platform plus manuel |
+| **Qt/QML (C++ ou Python) + libmpv embarqué** | Performance native maximale, intégration vidéo très profonde, utilisé par de vrais media centers (Kodi s'en inspire) | Courbe d'apprentissage plus raide, UI moderne « type streaming » plus longue à obtenir, licence Qt à surveiller selon distribution |
+| **Flutter Desktop + media_kit** | Un seul code UI pour desktop (et mobile plus tard), lecture vidéo via libmpv déjà packagée (media_kit) | Encore jeune sur desktop, plugins natifs desktop moins matures, écosystème plugin/extension à construire soi-même |
+
+**Choix retenu : Tauri (Rust) pour le backend applicatif + TypeScript/React pour l'interface.**
+
+Justification :
+- Rust apporte la fiabilité et la performance nécessaires pour le scan de bibliothèques volumineuses, la gestion de fichiers lourds et la sécurité de la bibliothèque privée (gestion mémoire sûre, moins de surface d'attaque).
+- Le frontend web (React) permet de construire rapidement une interface « à la Jellyfin/Plex », personnalisable via CSS/thèmes, sans sacrifier les performances puisque le rendu vidéo et l'accès disque restent côté Rust.
+- Les binaires Tauri sont nettement plus légers qu'Electron, ce qui compte pour une application « installée pour un usage quotidien ».
+- Rust dispose de bindings solides vers **libmpv**, ce qui couvre le besoin de lecteur vidéo avancé.
+- Point décisif pour ce complément de brief : **Tauri fournit un bundler officiel** capable de générer directement des installateurs Windows (NSIS ou MSI/WiX), ce qui répond nativement au besoin d'installateur professionnel sans outillage tiers complexe.
+
+Alternative de repli si vitesse de développement initiale prioritaire sur la performance : Electron + React (packagé avec electron-builder, qui sait aussi générer des installateurs NSIS/MSI). Cette option reste compatible avec l'architecture proposée plus bas (elle ne change que la couche « shell applicatif », pas la séparation des responsabilités).
+
+### 3.2 Moteur de lecture vidéo
+
+| Option | Points forts | Points faibles |
+|---|---|---|
+| **libmpv (mpv)** | Très large support de formats/codecs via FFmpeg, accélération matérielle multiplateforme (VAAPI, DXVA2/D3D11VA, VideoToolbox), gestion fine des pistes audio/sous-titres, scriptable, léger, activement maintenu | Documentation technique parfois aride, intégration UI (overlay, contrôles) à construire soi-même |
+| **libVLC** | Très mature, extrêmement tolérant aux fichiers « imparfaits », bindings solides en C#/Qt/Python | Plus lourd, moins flexible pour un pilotage bas niveau fin que libmpv |
+| **Moteurs natifs par OS (Media Foundation / AVFoundation)** | Performance native maximale sur chaque OS | Pas cross-platform, un moteur différent par OS = complexité de maintenance et de licences codecs multipliée |
+
+**Choix retenu : libmpv comme moteur de lecture central**, avec libVLC gardé en option de secours pour les fichiers atypiques si des limitations apparaissent en usage réel. Cela couvre nativement : MP4, MKV, AVI, MOV, WEBM, pistes multi-audio, sous-titres (internes/externes), 4K+, accélération GPU, changement de vitesse, capture d'image.
+
+**Technique d'intégration (précisée à l'Étape 3b)** : le lecteur devant rester visuellement intégré à AetherVault Media (jamais un logiciel externe), la question qui se posait était : comment afficher le rendu de libmpv à l'intérieur d'une fenêtre Tauri (WebView système), sachant que la WebView est un compositeur séparé que le backend ne contrôle pas directement ? Comparaison avant décision :
+
+| Application de référence | Architecture | Applicable à AetherVault ? |
+|---|---|---|
+| IINA (macOS natif) | libmpv rendu directement dans une surface OpenGL/Metal détenue par l'UI native (Cocoa) | Non — pas d'UI web à faire cohabiter |
+| mpv.net (WinForms/WPF) | Idem, contexte OpenGL directement dans un contrôle natif | Non — même raison |
+| Screenbox (WinUI) | LibVLC dans un contrôle XAML natif | Non — même raison |
+| **Jellyfin Media Player** (fork de Plex Media Player) | UI web (Qt WebEngine) **+ mpv intégré nativement dans la même fenêtre**, position synchronisée avec le DOM | **Oui — architecture la plus proche de la nôtre** |
+
+**Choix retenu à l'Étape 3b (depuis révisé — voir plus bas) : intégration native (façon Jellyfin/Plex Media Player)**, plutôt qu'un rendu logiciel copié pixel par pixel vers un `<canvas>` — solution que mpv déconseille lui-même pour du temps réel (« extremely simple but slow »). Concrètement pour Windows (v1) : une fenêtre enfant Win32 était parentée à la fenêtre Tauri, positionnée exactement sous l'emplacement réservé dans le DOM, et libmpv y dessinait via son *render API* OpenGL (recommandée par le projet mpv lui-même, plutôt que le mode d'incrustation `wid` brut).
+
+**Ce choix a été abandonné en production, à l'Étape 3c.** Une fenêtre enfant Win32 et la WebView2 (Chromium) sont deux surfaces de composition indépendantes, que Windows doit superposer sans qu'aucune des deux ne « connaisse » vraiment l'autre — un problème documenté sous le nom d'*airspace* dans tout l'écosystème WebView2/Electron/CEF : toute UI basée sur un moteur de navigateur qui héberge une fenêtre native tierce y est exposée. En usage réel, cette cohabitation s'est traduite par un écran noir à l'emplacement vidéo et par une superposition incorrecte entre l'image rendue par mpv et les éléments HTML censés apparaître par-dessus (contrôles, overlays) — diagnostiqué dans le rapport de transmission « écran noir » et la campagne d'instrumentation qui a suivi (les logs `[AV-DIAG]` conservés dans `services/playback_engine/` en sont la trace directe : compteur de threads de rendu actifs, hash comparés à chaque étape du pipeline, capture BMP de diagnostic).
+
+**Architecture actuelle (depuis l'Étape 3c, affinée à l'Étape 3d) : rendu logiciel, transmis en binaire brut à un `<canvas>` WebGL.** Il n'existe plus aucune fenêtre native côté lecteur : mpv utilise son *render API* en mode logiciel (`MPV_RENDER_API_TYPE_SW`, voir `render.h`), qui écrit directement l'image décodée dans un buffer mémoire (format `"rgb0"` — RGB sur 4 octets/pixel, 4ᵉ octet garbage), transmis au frontend via un `tauri::ipc::Channel` **binaire brut** (`InvokeResponseBody::Raw`, sans sérialisation JSON — trop coûteuse pour un flux d'images continu). Plus aucune fenêtre native ne pouvant entrer en conflit d'*airspace* avec la WebView2, le problème est éliminé par construction plutôt que contourné : `windows.rs`/`unsupported.rs` (l'ancienne architecture par OS) ont purement et simplement disparu. Contrepartie assumée : mpv documente lui-même le rendu logiciel comme nettement plus coûteux en CPU que le rendu GPU (« This method of rendering is very slow ») — en partie compensé par un thread de rendu réveillé uniquement quand mpv signale une image réellement prête (`mpv_render_context_set_update_callback` + `Condvar`), plutôt qu'une boucle inconditionnelle à fréquence fixe (~60 Hz) comme le faisait l'ancien pipeline OpenGL.
+
+Côté frontend, ce buffer a d'abord été affiché via un `<canvas>` **2D** (`putImageData`). Après quelques secondes de lecture — jamais dès la première image — l'image se corrompait par endroits. Un audit binaire complet du pipeline (hash FNV-1a comparés à chaque étape, calculés à l'identique des deux côtés de l'IPC) a localisé la divergence précisément à la lecture `getImageData()` suivant un `putImageData()`, jamais avant : cette signature (correct au début, incohérent après un certain nombre d'appels de dessin, au moment précis de la relecture) correspond au comportement documenté des moteurs Chromium/Blink — dont WebView2 : un contexte canvas 2D démarre en rendu logiciel puis est automatiquement promu vers un rendu accéléré GPU après un nombre suffisant d'opérations de dessin, promotion qui peut rendre `getImageData`/`putImageData` incohérents le temps que le buffer se resynchronise avec le GPU. Plutôt que de contourner ce comportement implicite et non garanti (l'attribut `willReadFrequently` reste une simple suggestion faite au navigateur, jamais une garantie), l'**Étape 3d** bascule le `<canvas>` en contexte **WebGL** : chaque image est uploadée comme texture GPU (`texImage2D`) puis dessinée sur un quad plein cadre — un chemin entièrement déterministe, sans notion de promotion implicite, l'approche standard pour afficher un flux d'images brutes en continu (comparable à ce que ffplay/mpv.net font en interne).
+
+Voir §4.2 (Playback Engine Bridge), `apps/desktop/src-tauri/src/services/playback_engine/mod.rs` et `sw_render.rs` (backend), ainsi que `apps/desktop/src/player/PlayerSurface.tsx` (frontend) pour l'implémentation actuelle. Voir aussi la roadmap détaillée, Étapes 3b/3c/3d (§8), pour la chronologie complète de cette évolution.
+
+**Note de licence** : libmpv est chargée dynamiquement (jamais liée statiquement) au démarrage. C'est important : lier statiquement libmpv imposerait la licence GPLv2 à l'ensemble d'AetherVault, sauf à utiliser un build de libmpv explicitement compilé en configuration LGPL. Le chargement dynamique conserve la possibilité de distribuer AetherVault sous une licence propre, à condition que le binaire `libmpv-2.dll` embarqué par l'installateur (Étape 9) soit bien un build LGPL — point à vérifier explicitement au moment de l'empaquetage.
+
+### 3.3 Base de données locale
+
+| Option | Points forts | Points faibles |
+|---|---|---|
+| **SQLite** | Zéro configuration, fiable, standard de facto pour les apps locales, excellent support Rust (sqlx/rusqlite) | Pas conçu pour du multi-écriture concurrent lourd (non nécessaire ici) |
+| **Base embarquée type RocksDB/sled (clé-valeur)** | Très rapide pour du cache brut | Moins adapté à des requêtes relationnelles (filtrage par acteur, genre, année, etc.) |
+
+**Choix retenu : SQLite**, avec un chiffrement pour la base liée à la bibliothèque privée. SQLite est également le choix qui facilitera le plus, plus tard, l'ajout d'une couche IA/recherche sémantique (via une base vectorielle complémentaire, ajoutée en parallèle sans remplacer SQLite), ainsi que l'export/import nécessaire à la sauvegarde/restauration (§3.7 bis, module Backup/Restore).
+
+**Décision tranchée à l'Étape 6a, révisée en cours d'étape (le choix restait ouvert jusqu'ici — SQLCipher vs. chiffrement fichier au niveau OS vs. chiffrement applicatif) : architecture A2 — AES-256-GCM applicatif, sur un fichier séparé `vault.db`, sans SQLCipher ni dépendance OpenSSL.** SQLCipher, initialement retenu, a été abandonné après échec de compilation d'OpenSSL sur la machine de développement (détail complet et erratum en §6.4 bis). `aethervault.db` (non chiffrée) et `vault.db` (chiffrée) utilisent toutes deux le même `rusqlite` en feature `bundled` — aucune dépendance supplémentaire au-delà de ce qui compile déjà le reste du projet depuis l'Étape 0.
+
+### 3.4 Gestion des métadonnées
+
+Approche en couche d'abstraction « fournisseurs de métadonnées » (pattern Provider) :
+
+- **Fournisseurs en ligne (optionnels)** : TMDB, TVDB, OMDb — utilisés uniquement si une connexion est disponible et si l'utilisateur l'autorise.
+- **Fournisseur local/hors-ligne** : lecture de fichiers `.nfo`, métadonnées embarquées dans le fichier vidéo, nom de fichier structuré.
+- **Cache local obligatoire** : toute métadonnée récupérée en ligne est mise en cache localement (DB + images sur disque), pour que l'application reste pleinement fonctionnelle hors-ligne après un premier scan.
+
+Ce découpage permet d'ajouter facilement de nouveaux fournisseurs (ou un futur fournisseur « IA ») sans toucher au reste du logiciel.
+
+### 3.5 Système de plugins
+
+Prévu dès la conception, même vide en v1 :
+
+- Interface de plugin définie par contrat (points d'entrée : fournisseur de métadonnées, panneau UI additionnel, action sur un média, tâche de fond).
+- Isolation des plugins (sandbox) pour éviter qu'un plugin tiers ne compromette la stabilité ou la sécurité (en particulier vis-à-vis de la bibliothèque privée, qui doit rester inaccessible aux plugins par défaut).
+- Format envisagé à terme : plugins WASM (portables, sandboxés nativement) plutôt que DLL/so natifs, pour la sécurité et la portabilité multiplateforme.
+
+### 3.6 Compatibilité multiplateforme
+
+Windows, Linux, macOS visés dès la v1 grâce à Tauri + libmpv, tous deux disponibles nativement sur les trois OS. Points de vigilance : gestion des chemins de fichiers (séparateurs, lecteurs amovibles), permissions d'accès disque (macOS sandboxing), disponibilité de l'accélération GPU selon le pilote.
+
+### 3.7 Installateur, mise à jour et distribution
+
+Ce point était absent de la v1 du document ; il est désormais traité comme un axe technique à part entière, et non comme une simple étape finale.
+
+**Génération de l'installateur Windows**
+
+| Option | Points forts | Points faibles |
+|---|---|---|
+| **Tauri Bundler (NSIS)** | Intégré nativement à Tauri, génère un `.exe` léger, personnalisable (options d'installation, raccourcis, langue), gère la désinstallation propre | Moins « standard entreprise » qu'un MSI pour certains environnements gérés (GPO) |
+| **Tauri Bundler (WiX → .msi)** | Format `.msi` standard Windows, meilleure intégration avec "Applications installées" / déploiement en entreprise | Configuration WiX un peu plus verbeuse |
+| **Inno Setup (indépendant)** | Très répandu, contrôle fin de l'installateur | Outil externe à intégrer manuellement au pipeline de build |
+
+**Choix retenu : bundler officiel de Tauri**, avec génération d'un `.msi` (WiX) comme format principal — le plus adapté à un enregistrement propre dans "Applications installées" — et possibilité de produire également un `.exe` NSIS si un contrôle plus fin de l'expérience d'installation est souhaité plus tard.
+
+Fonctionnellement, l'installateur devra couvrir, dès la configuration initiale du projet :
+- installation du logiciel dans le répertoire standard (`Program Files`) ;
+- création d'un raccourci **Bureau** (case à cocher optionnelle pendant l'installation) ;
+- création d'un raccourci **Menu Démarrer** ;
+- inscription dans **"Applications installées"** de Windows (nom, éditeur, version, icône, chemin de désinstallation) ;
+- **désinstallation propre** (suppression des fichiers programme ; conservation ou suppression des données utilisateur selon choix explicite de l'utilisateur, pour ne jamais supprimer une bibliothèque ou un coffre privé sans confirmation) ;
+- **mise à jour** : intégration du plugin officiel **Tauri Updater**, qui vérifie une source de version (fichier de manifeste signé), télécharge et applique la mise à jour, avec vérification de signature pour la sécurité.
+
+**Linux/macOS (futur)** : le même bundler Tauri produit nativement des paquets `.deb`/`.AppImage` (Linux) et `.dmg`/`.app` (macOS) à partir de la même base de code, ce qui confirme a posteriori la pertinence du choix Tauri pour l'ensemble du projet.
+
+### 3.8 Synthèse des choix retenus
+
+| Composant | Choix retenu |
+|---|---|
+| Backend applicatif | Rust (via Tauri) |
+| Interface utilisateur | TypeScript + React, thématisation par variables CSS |
+| Moteur vidéo | libmpv (fallback libVLC) |
+| Base de données | SQLite (`aethervault.db`) + coffre privé chiffré AES-256-GCM séparé (`vault.db`, Étape 6a) |
+| Métadonnées | Architecture « providers » (en ligne + hors-ligne + cache local) |
+| Plugins | Contrat d'interface + sandbox, cible WASM à terme |
+| Surveillance de fichiers | Crate `notify` (Rust), abstraction cross-platform d'inotify/FSEvents/ReadDirectoryChangesW |
+| Installateur Windows | Tauri Bundler → `.msi` (WiX) principal, `.exe` NSIS en option |
+| Mise à jour | Plugin Tauri Updater (vérification de signature) |
+| Plateformes | Windows dès la v1 ; Linux/macOS en extension via le même bundler |
+
+---
+
+## 4. Architecture logicielle
+
+### 4.1 Vue d'ensemble (couches)
+
+```
+┌───────────────────────────────────────────────────────────┐
+│                    Interface Utilisateur                    │
+│  (React) — Accueil (catégories), Films/Séries/Anime/           │
+│  Documentaires, Lecteur, Privé, Profils, Paramètres            │
+└───────────────────────▲───────────────────────────────────────┘
+                         │  (commandes / événements IPC)
+┌───────────────────────┴───────────────────────────────────────┐
+│                  Couche Application / Domaine                  │
+│  Library Manager · Playback Session Manager · Search           │
+│  Favorites/History Manager · Personalization Manager           │
+│  Privacy/Security Manager · Profile Manager · Home Feed         │
+│  Aggregator · Backup/Restore Manager                            │
+└───────────────────────▲───────────────────────────────────────┘
+                         │
+┌───────────────────────┴───────────────────────────────────────┐
+│                        Services                                 │
+│  File Scanner · Filesystem Watcher · Removable Media Manager    │
+│  Metadata Service (Providers) · Thumbnail & Image Service        │
+│  Plugin Host · Playback Engine Bridge                            │
+└───────────────────────▲───────────────────────────────────────┘
+                         │
+┌───────────────────────┴───────────────────────────────────────┐
+│                     Accès aux données                            │
+│  SQLite (repositories) · Cache disque (images) · Coffre chiffré   │
+│  (bibliothèque privée) · Archives d'export (sauvegarde)           │
+└───────────────────────┴───────────────────────────────────────────┘
+                         │
+┌───────────────────────┴───────────────────────────────────────┐
+│              Système de fichiers / Matériel                     │
+│  Disques internes/externes (branchement-débranchement) · GPU     │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+### 4.2 Modules détaillés
+
+- **Interface Utilisateur (UI)** : uniquement de la présentation et de l'interaction. Aucune logique métier. Consomme des données déjà prêtes (via des commandes) et envoie des intentions utilisateur (« lire ce média », « créer cette bibliothèque »).
+- **Library Manager** : gère le cycle de vie des Catégories et des Bibliothèques (création, dossiers associés, règles de classement, apparence), y compris les bibliothèques personnalisées non prédéfinies. Depuis la clarification de l'architecture fonctionnelle (§6), porte aussi le rattachement d'une Bibliothèque à sa Catégorie (§6.1) — une Bibliothèque n'a plus de type texte libre, elle appartient à une Catégorie.
+- **Playback Session Manager** : le diagramme ci-dessus le place dans la couche Application/Domaine (Rust), mais dans les faits, depuis l'Étape 3a et confirmé à l'Étape 3b, l'orchestration d'une session de lecture (média courant, file de lecture, position, réglages) vit **côté frontend** (`PlayerContext.tsx`), synchronisée entre les deux fenêtres Tauri par des événements diffusés globalement — voir §4.2 bis. Rust (`domain/playback.rs`) ne porte que la persistance de la progression (`playback_files` en SQLite) et, via le Playback Engine Bridge, le pilotage bas niveau de libmpv ; il ne connaît ni la file de lecture ni quel média est « courant ». Ce choix, déjà pris et documenté dans le code depuis l'Étape 3a, est ici explicitement consigné dans la documentation pour que les deux restent alignés.
+- **Search Engine** : indexation et requêtes multi-critères (nom, acteur, réalisateur, genre, année, résolution, codec, langue, type). Conçu comme un module isolé pour pouvoir être remplacé/complété plus tard par une recherche IA en langage naturel, sans réécrire les autres modules.
+- **Favorites/History Manager** : suit la progression de lecture, les favoris, l'historique — scopé par profil utilisateur (voir Profile Manager).
+- **Personalization Manager** : gère la personnalisation au sens large (§6.6), fonctionnalité majeure du produit et non un simple habillage — bannières de catégories, affiches et bannières de chaque Titre (film/série/anime/documentaire), apparence des bibliothèques privées, et à terme thèmes et disposition générale de l'interface. Stocké en configuration, jamais codé en dur dans l'UI ; une image personnalisée par l'utilisateur est prioritaire sur celle récupérée automatiquement par le Metadata Service, sans jamais être écrasée par un rafraîchissement ultérieur.
+- **Privacy/Security Manager** : gère le verrouillage (PIN/mot de passe), le masquage de bibliothèques, et l'accès au coffre chiffré. Aucun autre module n'accède directement aux données privées : tout passe par ce gestionnaire, qui vérifie l'autorisation à chaque appel, y compris les droits liés au profil actif. Détaillé en §6.4 (zéro information exposée avant authentification, vérification côté Rust jamais confiée au seul frontend).
+- **Profile Manager** *(nouveau)* : gère la liste des profils locaux (Administrateur, Utilisateur, Invité, Enfant…), le profil actif, et fait respecter les permissions associées (ex. un profil Enfant ne peut pas ouvrir le gestionnaire de bibliothèques privées ni modifier les paramètres globaux). Chaque autre module « métier » (favoris, historique, personnalisation, bibliothèques privées) interroge ce module pour connaître le périmètre de données à charger.
+- **Home Feed Aggregator** *(nouveau)* : construit les sections dynamiques de l'accueil (Continuer la lecture, Derniers ajouts, Favoris, Bibliothèques récemment consultées, futur emplacement Recommandations) en interrogeant les autres modules (Favorites/History, Library Manager, Metadata Service) sans dupliquer leurs données — un simple agrégateur en lecture. **Vient en complément de la grille de tuiles de catégories (§6.7), jamais à sa place** : ces sections s'affichent au-dessus ou en dessous des catégories sur l'Accueil, qui restent en toute circonstance visibles et constituent le cœur permanent de la navigation (§2, principe 6).
+- **Backup/Restore Manager** *(nouveau)* : orchestre l'export/import d'un « paquet de configuration » portable (paramètres, définitions de bibliothèques — pas les fichiers médias eux-mêmes —, historique, favoris, personnalisation). Détaillé en §6 et §7.
+- **File Scanner** : parcourt les dossiers associés à une bibliothèque, détecte les fichiers médias, déclenche l'analyse technique (codec, résolution, durée) et transmet au Metadata Service. Utilisé pour le scan initial/complet.
+- **Filesystem Watcher** *(nouveau)* : surveille en continu (et non par scan périodique complet) les dossiers associés aux bibliothèques. Sur ajout/suppression/déplacement d'un fichier, déclenche une mise à jour incrémentale ciblée (un seul média concerné), sans relancer un scan complet de la bibliothèque.
+- **Removable Media Manager** *(nouveau)* : suit l'état de disponibilité des supports de stockage (disque interne, disque/SSD externe). Détecte le débranchement d'un support, marque les médias concernés comme « temporairement indisponibles » (sans les supprimer de la bibliothèque), et déclenche une résolution automatique des chemins au rebranchement.
+- **Metadata Service** : orchestre les providers (§3.4), résout les conflits, remplit le cache local.
+- **Thumbnail & Image Service** : génération de vignettes vidéo et gestion de la galerie d'images privée (albums, dossiers, grille).
+- **Plugin Host** : charge et isole les extensions futures, expose le contrat d'interface décrit en §3.5.
+- **Playback Engine Bridge** : seule couche qui « parle » directement à libmpv ; si le moteur change un jour, seul ce module est impacté. Implémentation concrète depuis l'Étape 3b (`services/playback_engine/`) : un `mpv_handle` unique pour toute la durée de vie de l'application, un thread d'événements qui traduit position/durée/pause en événement Tauri `player-state`, et une surface de rendu **logicielle** (`MPV_RENDER_API_TYPE_SW`, depuis l'Étape 3c — voir §3.2 pour l'historique complet et les raisons de l'abandon de la fenêtre Win32/OpenGL initiale) transmise en binaire brut à un `<canvas>` WebGL côté frontend, créée/détruite à la demande via `attach_surface`/`detach` — c'est ce mécanisme d'attache qui permet à la fenêtre principale et à la fenêtre détachée de partager le même moteur sans jamais interrompre la lecture (seul l'affichage change de fenêtre). Linux/macOS suivront le même principe avec leurs API natives respectives (§3.6, §9) ; le contrat frontend (`<canvas>` + `Channel` binaire) étant déjà indépendant de l'OS depuis l'Étape 3c, seul le backend Rust aura à évoluer par plateforme. Depuis l'Étape 3e, expose aussi l'interrogation (`list_tracks`) et la sélection (`set_audio_track`/`set_subtitle_track`) des pistes audio/sous-titres du fichier chargé, via les propriétés scalaires indexées de mpv (`track-list/N/*`) plutôt que le format arborescent `MPV_FORMAT_NODE` — voir le commentaire de `PlaybackEngineHandle::list_tracks` pour le détail de ce choix.
+  > **Correctifs (retour utilisateur après livraison — "MKV fonctionne, pas MP4" et lenteur perçue)**. Deux problèmes distincts corrigés ensemble : (1) `hwdec` était réglé sur `no` (décodage entièrement logiciel) depuis l'Étape 3c, laissé ainsi par prudence pendant le diagnostic du bug de rendu de l'époque — ce diagnostic étant clos et le décodage matériel indépendant du backend de rendu, réactivé en `auto-safe` (accélération matérielle avec repli automatique sur le logiciel si la configuration détectée n'est pas jugée fiable par mpv, jamais d'échec de lecture pour cette seule raison). (2) La boucle d'événements traitait **tout** `END_FILE` comme une fin de lecture normale, y compris un véritable échec de chargement/décodage (`mpv_event_end_file.reason == ERROR`) — la structure elle-même n'était pas définie dans le binding FFI (`mpv_ffi.rs`), le code d'erreur mpv sous-jacent n'était donc jamais lu ni transmis au frontend. Un fichier qui échouait à charger (MP4 dans le cas rapporté) apparaissait ainsi comme "terminé" sans aucun message. Corrigé en lisant `reason`/`error` et en renseignant le champ `error` (déjà présent dans `PlayerStateEvent` mais jamais alimenté) — affiché par `PlayerControls` (`avm-player__error`). `ended` reste émis dans les deux cas pour ne pas bloquer l'enchaînement automatique de la Queue (§4.2 bis) sur un fichier en erreur.
+- **Repositories (SQLite)** : un repository par entité (bibliothèques, médias, personnes, historique, favoris, thèmes, profils), aucune requête SQL écrite en dehors de cette couche.
+
+### 4.2 ter — Fenêtre détachée : base d'un futur Picture-in-Picture système *(évolution, correctif retour utilisateur)*
+
+`commands::window::open_player_window` ouvrait jusqu'ici une seconde fenêtre Tauri classique (960×600, position par défaut du système, aucune option de premier plan) — fonctionnellement correcte mais sans rapport avec l'icône « Picture-in-Picture » utilisée pour la déclencher côté UI, ce qui a causé la confusion à l'origine de ce correctif. La fenêtre reste, à ce stade, une fenêtre Tauri secondaire — pas encore un vrai Picture-in-Picture au sens système (API dédiée flottant au-dessus de *toutes* les applications sur certains OS) — mais se comporte désormais comme telle, posée comme fondation réutilisable pour cette évolution future :
+- `always_on_top(true)` : reste au-dessus des autres fenêtres, y compris celles d'autres applications (comportement du système d'exploitation, pas seulement au sein d'AetherVault) ;
+- taille par défaut compacte (420×280 logique, minimum 280×180) plutôt que la grande fenêtre précédente ;
+- positionnement automatique en coin d'écran (bas-droit, calculé à partir de la taille logique de l'écran principal — `Monitor::size()`/`scale_factor()`) ;
+- redimensionnable (`resizable(true)`, explicite bien que déjà la valeur par défaut de Tauri) ;
+- **position et taille mémorisées** d'une fermeture à l'autre (table `player_window_state`, migration 0011, dans `aethervault.db` — une géométrie de fenêtre n'est pas une donnée sensible, aucune raison de la faire vivre dans le coffre privé). Écriture au moment de la fermeture uniquement (croix système ou redock via `close_player_window`, qui déclenchent tous deux le même gestionnaire `CloseRequested`), jamais en continu pendant un redimensionnement/déplacement actif, pour ne pas solliciter la base à chaque pixel. La géométrie mémorisée est revalidée contre la taille d'écran actuelle à chaque ouverture (repli sur le positionnement par défaut si elle ne tient plus — cas d'un moniteur débranché depuis).
+
+### 4.2 bis — File de lecture (Queue) *(nouveau, Étape 3e)*
+
+Introduite pour porter les boutons Piste précédente/suivante, ce concept est volontairement distingué de la future fonctionnalité **Playlist** listée dans les objectifs du projet, pour ne pas avoir à les démêler plus tard :
+
+|  | File de lecture (Queue) | Playlist *(future, hors périmètre Étape 3e)* |
+|---|---|---|
+| Nature | Éphémère, en mémoire, le temps d'une session | Entité persistée, nommée, créée par l'utilisateur |
+| Stockage | Aucun (RAM uniquement) | SQLite (repository dédié, à concevoir) |
+| Origine | Reflet de ce qui était affiché au moment du clic | Composée explicitement par l'utilisateur |
+
+La Queue est **agnostique de sa provenance** : elle ne connaît ni bibliothèque, ni dossier, ni playlist, uniquement une liste ordonnée de médias jouables (`PlayableMedia`) et une position courante dans cette liste. Aujourd'hui, seule `LibraryDetailPage` la peuple (tous les fichiers disponibles d'une bibliothèque, dans leur ordre d'affichage). Une future Playlist persistée, une liste d'épisodes d'une série, des résultats de recherche ou un glisser-déposer multiple pourront la peupler de la même façon, sans modification de `PlayerContext` ni du type `PlaybackQueueState` (`packages/shared-types/src/playback.ts`).
+
+*(Étape 6b-i)* `PrivateVideoLibraryPage` peuple également la Queue, exactement comme `LibraryDetailPage` — un fichier vidéo privé se charge dans le Playback Engine Bridge de façon strictement identique à un fichier public (même chemin disque, §6.4 ter). Seule différence : `PlayableMedia` porte désormais un indicateur `isPrivate` (`false` par défaut), lu uniquement par `PlayerContext` pour savoir vers quelle commande adresser la sauvegarde périodique de la progression (`save_playback_progress` vs. `save_private_playback_progress`, §6.4 bis) — le reste du type, la Queue elle-même et le Playback Engine Bridge restent inchangés.
+
+Implémentation : `PlayerContext.tsx` porte la Queue comme unique source de vérité (`{ items, currentIndex }`), synchronisée entre la fenêtre principale et la fenêtre détachée par l'événement Tauri `player-queue-changed` — `currentMedia` en est dérivé plutôt que stocké séparément, pour qu'il ne puisse jamais exister de désaccord entre « quel média » et « quelle position dans la file » (cet événement remplace l'ancien `player-media-changed` de l'Étape 3a/3b). L'enchaînement automatique vers le média suivant en fin de fichier est géré ici (pas de répétition ni de boucle — ces modes viendront avec une future fonctionnalité Répéter/Lecture aléatoire).
+
+### 4.3 Communication inter-modules
+
+- **UI ↔ Application** : commandes explicites et typées (ex. Tauri commands / IPC), jamais d'accès direct de l'UI à la base de données ou au système de fichiers.
+- **Application ↔ Services** : appels directs via interfaces (traits Rust), permettant de remplacer une implémentation (ex. changer de moteur vidéo, changer de provider de métadonnées) sans toucher au reste.
+- **Services ↔ Données** : exclusivement via les repositories, jamais de SQL dispersé dans les services.
+- **Événements asynchrones** : un bus d'événements interne (ex. « scan terminé », « nouveau média détecté », « média devenu indisponible », « disque rebranché », « lecture terminée ») permet à l'UI de réagir en temps réel sans coupler les modules entre eux.
+- **Scoping par profil** : chaque commande touchant favoris/historique/bibliothèques privées transite par le Profile Manager, qui injecte l'identité du profil actif ; aucun module métier ne doit supposer un utilisateur unique.
+- **Plugins** : communiquent uniquement avec le Plugin Host via le contrat d'interface, jamais directement avec la base de données ou la bibliothèque privée.
+
+---
+
+## 5. Structure de projet proposée
+
+```
+aethervault-media/
+├── apps/
+│   └── desktop/
+│       ├── src-tauri/                 # Backend Rust
+│       │   ├── src/
+│       │   │   ├── domain/            # Library, Media, Playback, Search, Favorites,
+│       │   │   │                      # Privacy, Profile, HomeFeed, BackupRestore
+│       │   │   ├── services/          # scanner, watcher, removable_media, metadata,
+│       │   │   │                      # thumbnails, plugin_host,
+│       │   │   │                      # playback_engine/ (Étape 3b : mpv_ffi,
+│       │   │   │                      # windows/unsupported, orchestration)
+│       │   │   ├── db/                # repositories + migrations SQLite
+│       │   │   ├── security/          # PIN, mot de passe, coffre chiffré, permissions profil
+│       │   │   ├── updater/           # intégration Tauri Updater
+│       │   │   └── main.rs
+│       │   ├── icons/                 # AVM.ico + déclinaisons (icns, png multi-résolutions)
+│       │   ├── installer/             # config WiX (.msi) / NSIS (.exe)
+│       │   └── Cargo.toml
+│       └── src/                       # Frontend React/TypeScript
+│           ├── pages/                 # Accueil (tuiles de catégories, §6.7), Films, Séries,
+│           │                          # Anime, Documentaires, Privé (§6.4),
+│           │                          # Favoris, Historique, Profils, Paramètres
+│           ├── components/            # composants UI réutilisables
+│           ├── features/              # logique d'état par domaine (bibliothèques, lecteur...)
+│           ├── themes/                # thèmes, variables de personnalisation
+│           └── App.tsx
+├── packages/
+│   ├── shared-types/                  # types partagés frontend/backend
+│   ├── ui-kit/                        # design system (boutons, cartes média, grilles)
+│   └── plugin-sdk/                    # contrat d'interface pour futurs plugins
+├── assets/
+│   └── branding/                      # icône source AVM.ico et déclinaisons haute résolution
+├── docs/                              # documentation technique (dont ce fichier)
+├── scripts/                           # build, packaging multiplateforme, génération installateur
+└── README.md
+```
+
+Cette organisation en « monorepo » sépare clairement responsabilités et permet, plus tard, d'ajouter un module serveur/synchronisation dans `apps/` sans toucher au reste.
+
+---
+
+## 6. Modèle conceptuel du contenu, des catégories et de la section privée
+
+*(Section clarifiée en profondeur avant l'Étape 4, à partir de la définition précise de l'architecture fonctionnelle du logiciel. Remplace et complète la version conceptuelle précédente de cette section.)*
+
+### 6.1 Catégories
+
+Les grandes catégories (🎬 Films, 📺 Séries, 🌸 Anime, 🎥 Documentaires, 🔒 Privé) sont une entité de premier ordre, pas un simple regroupement visuel d'un champ texte sur la Bibliothèque :
+
+- **Catégorie** : identifiant stable (`key`, ex. `movies`), nom affiché, icône, **bannière personnalisable (16:9)**, ordre d'affichage, indicateur *système* (les 5 catégories ci-dessus sont fournies par défaut et non supprimables ; la structure reste ouverte à de futures catégories additionnelles, non prévues en v1).
+- Une **Bibliothèque** appartient à exactement une Catégorie. Plusieurs bibliothèques peuvent appartenir à la même catégorie (ex. « Films Marvel » et « Films de vacances » alimentent toutes les deux la liste unique de la catégorie Films) — c'est ce qui permet à la navigation Films → Film de ne jamais demander à l'utilisateur de choisir une bibliothèque au préalable.
+- La catégorie **Privé** est un cas particulier qui ne suit pas ce modèle : voir §6.5.
+
+### 6.2 Bibliothèque et support de stockage
+
+- **Bibliothèque** : nom, **catégorie associée** (§6.1, remplace l'ancien champ `media_type` texte libre), dossiers associés, règles de classement, apparence (bannière, affiche par défaut).
+- **Support de stockage** : identifiant stable du disque/volume (pas seulement la lettre de lecteur, qui peut changer), état courant (connecté/déconnecté), utilisé par le Removable Media Manager pour retrouver les fichiers au rebranchement.
+
+### 6.3 Contenu : Titre, Saison, Épisode
+
+Introduit pour porter la navigation Films/Séries/Anime/Documentaires (Étape 4) — jusqu'ici, un Média était un fichier brut sans regroupement. Un seul modèle, à deux natures, plutôt qu'un modèle différent par catégorie :
+
+- **Titre** : catégorie, **nature** (*film* ou *série*), nom, description, année, **affiche verticale**, **bannière d'arrière-plan** (toutes deux personnalisables par l'utilisateur, §6.6), genres, studios, casting — liés par des relations dédiées plutôt que des champs texte, pour permettre la recherche par acteur/réalisateur déjà prévue au Search Engine (§4.2). La durée n'est portée par le Titre que pour une nature *film* ; pour une nature *série*, elle vit au niveau de chaque épisode.
+- **Saison** : n'existe que pour un Titre de nature *série* — numéro, nom optionnel.
+- **Épisode** : n'existe que pour un Titre de nature *série* — numéro, nom, résumé, durée, vignette.
+- **Films** : toujours de nature *film* — le fichier média est lié directement au Titre.
+- **Séries / Anime** : toujours de nature *série*.
+- **Documentaires** : les deux natures sont possibles pour la même catégorie, au cas par cas — un documentaire unitaire est un Titre de nature *film* (exactement le même modèle qu'un Film, même page), un documentaire à épisodes est un Titre de nature *série* (exactement le même modèle qu'une Série). Aucun troisième modèle n'est nécessaire : la « Saison (si applicable) » demandée pour cette catégorie est directement portée par la nature du Titre, sans cas spécial supplémentaire.
+- **Pistes audio et sous-titres** : ne sont **pas** stockées ici, et — contrairement à ce que cette section envisageait avant l'implémentation de l'Étape 4 — ne sont pas non plus affichées sur la page d'un Titre. `player_list_tracks` (Étape 3e, §4.2) n'interroge que le fichier *déjà chargé* dans mpv ; un Titre en cours de navigation n'a encore rien chargé, et le charger juste pour sonder ses pistes couperait une lecture éventuellement en cours ailleurs. La sélection de pistes reste donc exclusivement dans les contrôles du lecteur, une fois la lecture démarrée (menu Piste audio/Sous-titres, Étape 3e) — voir §8, Étape 4, pour le détail de cet écart.
+- Le **Média** (fichier brut, tel que découvert par le File Scanner depuis l'Étape 2) est désormais rattaché soit à un Titre (nature *film*), soit à un Épisode (nature *série*) — ce rattachement, réalisé par le Metadata Service (Étape 4), reste optionnel : un fichier nouvellement détecté et pas encore associé à une métadonnée reste consultable tel quel, comme c'est déjà le cas aujourd'hui.
+- **Détection de la Saison (erratum Étape 4, corrigé Étape 5)** : la version initiale du Metadata Service n'analysait que le nom de chaque fichier pris isolément (`services/metadata/filename.rs`), jamais le dossier qui le contient. Cela fonctionnait tant que chaque fichier répétait lui-même le titre et le numéro de saison (ex. `Mushoku Tensei S01E01.mkv`), mais pas pour la convention `Titre/Saison NN/fichier` (Jellyfin/Kodi/Plex) quand les fichiers ne portent pas cette information (ex. `Mushoku Tensei/S1/Episode 01.mkv`) : chaque saison, voire chaque fichier, formait alors son propre Titre au lieu de rejoindre le même Titre à plusieurs Saisons. Un second signal, tiré du dossier parent, complète désormais le nom de fichier quand celui-ci ne révèle aucune saison — voir `services/metadata/path_hints.rs`. Le nom de fichier explicite reste prioritaire quand il existe ; le repli sur le dossier ne s'applique jamais à une bibliothèque dont les dossiers de saison sont directement à sa racine (aucun dossier de Titre au-dessus à en déduire) — limitation acceptée plutôt que de deviner un nom de Titre au hasard.
+
+### 6.4 Section privée (Catégorie Privé)
+
+Fonctionnement volontairement distinct des quatre autres catégories, au service du principe de confidentialité par design (§2, principe 5) :
+
+- **Aucune information avant authentification** : ni le nombre de bibliothèques, ni leur nom, ni la moindre miniature ne doit être exposée avant succès de l'authentification — y compris sur la tuile « 🔒 Privé » de l'Accueil, qui n'affiche jamais de compteur contrairement aux quatre autres. Cette vérification est portée par le Privacy/Security Manager (§4.2) et appliquée **côté Rust**, jamais laissée à un simple masquage visuel côté frontend : une commande interrogée alors que le coffre est verrouillé doit renvoyer une erreur, jamais des données que l'interface se contenterait de ne pas afficher.
+- **Authentification** : PIN ou mot de passe (exclusif, choisi dans les Paramètres). L'état déverrouillé est conservé en mémoire côté Rust pour la durée de la session applicative uniquement, jamais persisté sur disque : il est redemandé à chaque lancement de l'application.
+- **Isolation des données** : les bibliothèques privées vivent dans un espace de données entièrement séparé des bibliothèques normales — pas la même table, pas le même repository, et depuis l'Étape 6a, pas le même **fichier** (`vault.db`, chiffré, distinct de `aethervault.db`). Détail complet de l'architecture retenue en §6.4 bis.
+- **Portée** : un seul coffre privé par installation (pas un coffre par profil), mais l'accès à la catégorie elle-même reste conditionné au type de profil actif — un profil Enfant, par exemple, ne peut pas ouvrir le Privacy/Security Manager (§4.2, Profile Manager). Ces deux conditions (coffre déverrouillé **et** profil actif autorisé) sont vérifiées indépendamment et cumulativement à chaque commande : déverrouiller le coffre sous un profil Administrateur ne le rend pas accessible à un profil Enfant actif ensuite dans la même session.
+- **Contenu, une fois déverrouillé** : deux sous-espaces au modèle de données volontairement distinct — 📷 **Images** (albums, dossiers, grille, visionneuse) et 🎞️ **Vidéos** (mêmes capacités qu'une bibliothèque vidéo classique, mais isolée). Contrairement aux quatre autres catégories, l'utilisateur y crée librement autant de bibliothèques personnalisées qu'il le souhaite — aucun modèle Titre/Saison/Épisode (§6.3) ne s'y applique : le contenu privé reste un espace de stockage personnel, pas une médiathèque enrichie de métadonnées.
+  > **Étape 6a, 6b-i et 6b-ii (livrées)** : l'Étape 6a a livré l'authentification, le chiffrement effectif et la gestion des bibliothèques privées en tant que « conteneurs » (créer/renommer/supprimer un espace Images ou Vidéos), sans dossiers ni contenu. L'Étape 6b elle-même s'est révélée regrouper deux sous-systèmes assez indépendants — Vidéos (réutilise en grande partie l'existant : Queue, lecteur, modèle dossier/fichier) et Images (entièrement neuf : vignettes, EXIF, visionneuse) — et a donc été scindée sur le même principe que 3a→3e et 6a/6b : **Étape 6b-i (Vidéos privées)** a ajouté l'association de dossiers, le scan (manuel uniquement, voir §8) et la lecture des vidéos privées ; **Étape 6b-ii (Galerie d'Images)** a ajouté le pipeline de vignettes/EXIF, la couverture d'album et la visionneuse — HEIC/HEIF et Filesystem Watcher privé restent hors périmètre (§8).
+
+### 6.4 bis — Architecture retenue à l'Étape 6a (chiffrement, authentification)
+
+*(Révisé après l'Étape 6a — voir l'erratum ci-dessous : SQLCipher, initialement retenu, a été abandonné avant même une première compilation réussie.)*
+
+> **Erratum : abandon de SQLCipher au profit de l'architecture A2.** Le premier choix documenté ici (SQLCipher, feature `bundled-sqlcipher-vendored-openssl`) s'est heurté à un échec de compilation d'`openssl-sys` (`nmake.exe reported failure with exit code 2`) sur la machine de développement, malgré l'installation des prérequis annoncés (Visual Studio Build Tools, Perl, NASM). Plutôt que de continuer à déboguer une chaîne de compilation OpenSSL sous Windows — connue pour être une source de friction récurrente, y compris en dehors de ce projet —, l'architecture a été révisée vers l'option A2 de l'analyse initiale (chiffrement applicatif AES-256-GCM, sans aucune dépendance OpenSSL). Le texte ci-dessous décrit l'architecture **effectivement livrée**, pas celle initialement prévue.
+
+- **Mécanisme : AES-256-GCM applicatif, sur un fichier séparé `vault.db` — plus de SQLCipher.** `vault.db` n'est plus un fichier SQLite ouvrable directement : c'est un blob chiffré (AES-256-GCM, authentifié) contenant un instantané complet d'une base SQLite tenue **en mémoire** (`Connection::open_in_memory`) pendant toute la durée où le coffre est déverrouillé. Aucune dépendance OpenSSL, aucun compilateur C supplémentaire au-delà de ce qu'exige déjà SQLite lui-même (`rusqlite` feature `bundled`, inchangée depuis l'Étape 0) : `aes-gcm` et `argon2` sont des crates Rust pur, sans code C à compiler.
+- **Passage entre octets chiffrés et connexion en mémoire.** `rusqlite` (feature `backup`) ne permet de transférer le contenu d'une connexion que vers/depuis un **chemin de fichier**, jamais directement vers un tampon en mémoire : un fichier de travail temporaire (`vault.tmp`, dans le répertoire de données de l'application — jamais un dossier temporaire générique partagé par d'autres applications) sert uniquement de support de transfert, écrit puis relu (ou relu puis supprimé) en une fraction de seconde à chaque déverrouillage ou persistance, jamais laissé sur disque au repos. C'est un compromis assumé par rapport à un « jamais un octet en clair sur disque, même temporairement » strict : la fenêtre d'exposition est de l'ordre de la milliseconde, contre la durée complète d'une session déverrouillée pour une approche qui travaillerait directement sur un fichier SQLite en clair. Un fichier résiduel après un arrêt brutal pendant cette fenêtre est nettoyé au lancement suivant (`security::vault::cleanup_stale_temp_file`).
+- **Écriture immédiate, pas seulement à la fermeture.** Point affiné par rapport à la description initiale de l'option A2 (« rechiffrée à la fermeture ») : `vault.db` est ré-écrit sur disque après **chaque opération d'écriture** (création/renommage/suppression d'une bibliothèque privée, changement de secret), pas seulement au verrouillage ou à la fermeture de l'application. Le coût est négligeable pour un catalogue de métadonnées de cette taille, et cela évite qu'un arrêt brutal entre deux opérations fasse perdre une action déjà confirmée à l'utilisateur. Signalé ici comme une amélioration délibérée par rapport à la formulation initiale, plutôt qu'appliqué silencieusement.
+- **Dérivation de la clé : Argon2id utilisé comme KDF, pas comme hash de vérification stocké séparément.** Inchangé par rapport au choix initial (§9) : le PIN/mot de passe n'est jamais conservé, ni en clair ni sous forme de hash à comparer. Il sert uniquement, avec un sel aléatoire stocké dans `aethervault.db` (table `vault_security`, non secrète), à dériver la clé AES 256 bits. Un PIN erroné ne produit pas un hash différent détecté par comparaison : il produit une clé incapable de déchiffrer `vault.db`, détecté ici par l'échec (attendu) de la vérification d'authenticité intégrée à AES-GCM — même principe qu'avec SQLCipher, mécanisme de détection différent.
+- **Intégrité du fichier.** AES-GCM est un chiffrement *authentifié* : toute altération du fichier `vault.db` (corruption disque, modification malveillante) fait échouer le déchiffrement plutôt que de produire silencieusement des données corrompues — propriété que n'offre pas un chiffrement non authentifié, et qui n'était pas mise en avant explicitement avec SQLCipher (qui l'offre aussi, via un mécanisme HMAC par page, mais ce n'était pas documenté comme un avantage distinctif à l'époque).
+- **Portée du chiffrement : le catalogue et les vignettes, pas les fichiers médias bruts.** Inchangé par rapport à la décision utilisateur de l'Étape 6a : `vault.db` (noms, structure, métadonnées) est intégralement chiffré. Les futures vignettes des médias privés (Étape 6b-ii) devront être stockées chiffrées **à l'intérieur** de `vault.db`, par exception à la règle générale du §9 (« images stockées sur disque, jamais en BLOB »). Les fichiers vidéo et image d'origine restent des fichiers ordinaires sur le disque, ni chiffrés ni déplacés par AetherVault Media — limitation connue, à documenter dans l'interface ; un utilisateur souhaitant une confidentialité complète des octets bruts doit placer son dossier de stockage privé sur un volume chiffré par l'OS (BitLocker, FileVault...), en complément.
+- **Irrécupérabilité en cas d'oubli.** Inchangé : aucune porte dérobée par construction — un PIN/mot de passe oublié rend `vault.db` définitivement illisible. Averti explicitement dans l'interface de création du PIN/mot de passe, avant validation.
+- **Aucun prérequis de compilation supplémentaire.** Contrairement à la version SQLCipher de cette section, l'architecture A2 ne dépend que de crates Rust pur (`aes-gcm`, `argon2`) et de la feature `backup` de `rusqlite` (déjà couverte par la compilation "bundled" existante) — aucun compilateur OpenSSL, Perl ou NASM requis au-delà de ce qui compile déjà le reste du projet depuis l'Étape 0.
+- **Stratégie de persistance différenciée** *(précisée à l'Étape 6b-i)* : « écriture immédiate après chaque opération » (point ci-dessus) reste vrai pour les opérations peu fréquentes (créer/renommer/supprimer une bibliothèque privée, changer le secret), mais ne tient pas à l'échelle pour deux cas introduits par le contenu réel du coffre :
+  - **Scan de dossiers** : peut insérer des centaines de lignes d'un coup. `services::private_video_scanner::scan_library` n'écrit que sur la connexion en mémoire ; c'est l'appelant (`domain::private_video::trigger_scan`) qui appelle `VaultState::persist_if_unlocked()` **une seule fois, à la fin du scan complet** — jamais fichier par fichier.
+  - **Progression de lecture d'une vidéo privée** : sauvegardée toutes les 5 secondes pendant la lecture (même fréquence que pour le catalogue public, `PlayerContext.tsx`). Re-chiffrer et ré-écrire tout `vault.db` à cette fréquence serait un gaspillage inutile pour une donnée de confort, pas critique. Les mises à jour de position restent donc **en mémoire uniquement** entre deux points de contrôle : un visionnage marqué terminé (déclenche une écriture, car rare — une fois par vidéo) et le verrouillage du coffre (`lock_vault` appelle désormais `persist_if_unlocked()` avant de jeter la connexion en mémoire, pour ne jamais perdre une progression uniquement en mémoire à ce moment-là). Une perte de quelques secondes de progression en cas d'arrêt brutal en cours de lecture est un compromis assumé, sans commune mesure avec la perte d'une bibliothèque ou d'un catalogue entier.
+- **Progression de lecture des vidéos privées : table dédiée à l'intérieur de `vault.db`, pas la table `playback_progress` de `aethervault.db`.** Une clé étrangère SQLite ne peut pas traverser deux fichiers de base de données séparés (et les attacher l'un à l'autre romprait précisément la frontière de sécurité que le chiffrement est censé garantir) : `private_playback_progress` vit donc dans `vault.db`, avec le même schéma logique (`profile_id`, `media_file_id`, position, durée) mais sans contrainte `REFERENCES profiles(id)` déclarée — l'existence du profil est vérifiée au niveau applicatif (comme le sont déjà les permissions), pas par le moteur SQLite. Limitation acceptée : un profil supprimé (Étape 6a) laisse une ligne orpheline ici, jamais nettoyée automatiquement pour l'instant — sans impact utilisateur observable (la ligne ne peut être lue qu'à travers un coffre déjà déverrouillé, et ne référence plus rien qui se résout côté profils).
+
+### 6.4 ter — Vidéos privées : dossiers, scan et lecture (Étape 6b-i)
+
+- **Modèle de données** : `private_video_folders`/`private_video_files`, à l'intérieur de `vault.db`, sur le même gabarit que `library_folders`/`media_files` (base publique) — mais sans `title_id`/`episode_id` : le contenu privé n'est jamais enrichi par le Metadata Service ni rattaché à un Titre/Saison/Épisode (§6.3), conformément à la doc §6.4 (« espace de stockage personnel, pas une médiathèque enrichie »).
+- **Scan manuel uniquement pour cette première version — décision validée explicitement.** Un Filesystem Watcher en continu (sur le modèle de celui des bibliothèques publiques, §8 Étape 2) soulève une question propre au coffre : il ne peut écrire que pendant que le coffre est déverrouillé, ce qui implique de le démarrer/arrêter dynamiquement à chaque déverrouillage/verrouillage, avec un accès concurrent à la connexion en mémoire du coffre depuis un thread de fond (aujourd'hui pensé uniquement pour un accès depuis les commandes Tauri). Complexité et surface de bug jugées disproportionnées face au gain d'usage sur un espace de stockage personnel, où un contrôle explicite (bouton « Scanner ») est déjà un choix défendable. Pourra être ajouté plus tard si l'usage le justifie réellement — voir le point suivant.
+- **Architecture pensée pour ne pas avoir à réécrire le scanner si un Watcher privé est ajouté plus tard.** `services::private_video_scanner` sépare volontairement trois responsabilités : la détection de type de fichier (`is_video_file`), le traitement d'un **seul** fichier déjà localisé (`upsert_one_file` — insère/met à jour une ligne, ne touche jamais au disque chiffré) et le parcours complet d'un dossier (`scan_library`, qui appelle `upsert_one_file` pour chaque fichier rencontré). Un futur Watcher privé n'aurait besoin que d'appeler `upsert_one_file` (et un futur `remove_one_file`, trivial à ajouter sur le même principe) pour le seul chemin concerné par un événement filesystem — sans dupliquer la détection ni le parcours. Aucune donnée de vignette/métadonnée n'est mise en cache par ce module lui-même : il ne connaît que le système de fichiers et `vault.db`, jamais `AppState` ni le mutex du coffre (c'est `domain::private_video` qui orchestre la vérification d'autorisation, le déverrouillage et l'appel à `persist_if_unlocked()`).
+- **Lecture** : un fichier vidéo privé se joue exactement comme un fichier public — le Playback Engine Bridge (§4.2) charge un chemin disque, sans distinction, puisque les fichiers vidéo bruts ne sont jamais chiffrés ni déplacés (§6.4 bis, portée du chiffrement). Seule la Queue frontend (`PlayableMedia`, §4.2 bis) porte un indicateur `isPrivate`, pour savoir vers quelle commande adresser la sauvegarde périodique de la progression (§6.4 bis, ci-dessus) — le reste du pipeline de lecture ne change pas d'une ligne.
+
+### 6.4 quater — Images privées : galerie, vignettes et EXIF (Étape 6b-ii)
+
+- **Modèle de données** : `private_image_folders`/`private_image_files`, même principe que §6.4 ter — un **album, c'est un dossier**, aucune structure de regroupement distincte. `private_image_files` porte, en plus des colonnes communes avec le modèle vidéo, `width`/`height` (dimensions d'affichage, c'est-à-dire *après* correction d'orientation EXIF), `taken_at`/`camera_model` (EXIF, voir plus bas) et `thumbnail_blob` (la vignette elle-même, chiffrée avec le reste de `vault.db`).
+- **Formats supportés : JPEG/PNG/WebP/GIF/BMP/TIFF, décodés par le crate `image` — HEIC/HEIF explicitement exclu.** Le HEIC (format par défaut des photos iPhone) nécessiterait `libheif`, une bibliothèque C — la même catégorie de risque de compilation que celle qui a coûté l'abandon de SQLCipher (§6.4 bis, erratum). Décision utilisateur : ne pas rouvrir ce risque pour cette version ; pourra être ajouté plus tard si le besoin se confirme, probablement via un crate séparé et optionnel plutôt qu'une dépendance systématique.
+- **Vignettes : JPEG, ~400 px de long côté, qualité ~80, générées **au moment du scan** (pas à la demande), orientation EXIF appliquée avant redimensionnement.** Le crate `image` (≥ 0.25.8) lit et applique nativement l'orientation EXIF (`ImageDecoder::orientation` + `DynamicImage::apply_orientation`) — pas besoin du crate EXIF pour ce point précis. Stockées dans `private_image_files.thumbnail_blob`, jamais sur disque en clair, conformément à l'exception déjà posée en §6.4 bis pour les vignettes du coffre.
+- **Métadonnées EXIF conservées : date de prise de vue et modèle d'appareil uniquement (crate `kamadak-exif`). Les coordonnées GPS ne sont ni lues ni stockées ni affichées — décision utilisateur, cohérence de posture avec une section pensée pour la confidentialité.**
+- **Service des vignettes au frontend : commande Tauri dédiée renvoyant les octets encodés en base64 (crate `base64`), pas de protocole personnalisé.** `convertFileSrc` ne fonctionne que sur de vrais fichiers disque, inutilisable pour un BLOB chiffré tenu en mémoire. La commande renvoie une chaîne base64 que le frontend insère directement comme `data:image/jpeg;base64,...` — plus simple qu'un `Blob`/URL objet (rien à révoquer). Une **image plein format** (visionneuse), elle, reste un vrai fichier sur disque : `assetUrl`/`convertFileSrc` fonctionne pour elle sans aucun mécanisme nouveau, exactement comme pour la lecture d'une vidéo privée (§6.4 ter). Limite connue, acceptée pour cette version : encoder tous les octets d'une vignette en JSON (même via base64) est moins efficace qu'un protocole Tauri dédié servant les octets bruts ; à reconsidérer si la volumétrie d'une bibliothèque personnelle le justifie un jour.
+- **Couverture d'album personnalisable — réutilisation du *principe* de `custom_images`, pas de la table elle-même.** `custom_images` (Étape 4/5) vit dans `aethervault.db`, non chiffrée : y référencer une image de couverture d'un dossier privé romprait la garantie de confidentialité posée à l'Étape 6a, une couverture étant, comme une vignette, un aperçu direct de contenu sensible. `private_image_folders.cover_file_id` (nullable, `REFERENCES private_image_files(id) ON DELETE SET NULL`) joue le même rôle fonctionnel (image par défaut, personnalisable, réinitialisable) mais reste à l'intérieur du coffre, et ne peut référencer qu'un fichier **déjà présent dans ce même dossier** — jamais un fichier externe arbitraire, contrairement aux bannières de catégories/Titres. `ON DELETE SET NULL` fait revenir automatiquement à la couverture par défaut (première photo par ordre alphabétique de nom de fichier) si le fichier choisi disparaît lors d'un rescan, sans logique applicative dédiée.
+- **Scan synchrone, comme les vidéos (§6.4 ter) — avec un coût différent à noter.** Contrairement au scan vidéo (simple lecture de métadonnées fichier), décoder + redimensionner + encoder chaque image a un coût CPU réel ; le mutex du coffre reste retenu pour toute la durée du scan, comme pour les vidéos. Accepté pour un usage personnel mono-utilisateur — voir §6.4 ter pour la discussion complète de ce compromis.
+  > **Correctif de performance (retour utilisateur après livraison — scan perçu comme lent).** Le traitement de chaque photo (décodage, orientation, redimensionnement, encodage JPEG, lecture EXIF) est strictement indépendant d'un fichier à l'autre et purement CPU-bound : `services::private_image_scanner::scan_library` le parallélise désormais sur plusieurs cœurs (crate `rayon`), en gardant l'écriture SQLite séquentielle (une seule connexion, `rusqlite::Connection` n'étant pas `Sync`). Le filtre de redimensionnement passe également de `Lanczos3` (le plus coûteux) à `Triangle` (bilinéaire) — différence de qualité imperceptible à 400 px. **Correctif de robustesse associé** : un fichier dont le traitement échoue (permissions, suppression entre le parcours et la lecture) n'interrompt plus l'ensemble du scan via la propagation d'erreur `?` — il est désormais compté (`PrivateImageScanSummary.failed`, affiché dans l'interface) et ignoré, les autres fichiers continuant d'être traités. Le même correctif de robustesse a été appliqué à `services::private_video_scanner` (§6.4 ter) par cohérence, bien que la parallélisation n'y apporte pas de gain significatif (traitement déjà limité à une lecture de métadonnées fichier, pas de décodage).
+- **Architecture prête pour un futur Watcher privé, même principe que §6.4 ter.** `services::private_image_scanner` sépare détection (`is_image_file`), traitement pur d'un seul fichier sans écriture (`process_image` — décodage, orientation, vignette, EXIF) et écriture en base d'un seul fichier (`upsert_one_file`, qui appelle `process_image` puis persiste la ligne), du parcours complet (`scan_library`). Un futur watcher n'aurait besoin que d'appeler `upsert_one_file` pour le chemin concerné par un événement filesystem.
+- **Visionneuse plein écran pensée comme fondation extensible, pas comme fonctionnalité figée.** `features/privateImage/ImageViewer.tsx` sépare volontairement l'état de navigation (`useImageViewer` — position courante, liste, ouverture/fermeture) de l'affichage et des raccourcis clavier (`useViewerKeyboardShortcuts`, hook séparé). Diaporama, zoom, rotation, favoris, informations EXIF détaillées et raccourcis supplémentaires ne sont **pas implémentés** dans cette version — décision explicite de ne pas construire par anticipation des fonctionnalités non demandées — mais la forme de l'état et la séparation des responsabilités sont pensées pour les accueillir plus tard sans restructuration (ex. un futur champ `zoom` prendrait naturellement place dans le même état, sans changer la forme des actions existantes `open`/`close`/`next`/`prev`).
+
+### 6.5 Profil utilisateur, Historique, Favoris
+
+- **Profil utilisateur** : nom, type (Administrateur / Utilisateur / Invité / Enfant / personnalisé), et trois permissions explicites — `can_access_private` (accès à la catégorie Privé, §6.4), `can_manage_global_settings` (modification des paramètres globaux), `can_manage_profiles` (création/modification/suppression d'autres profils). Le type détermine des permissions **par défaut** à la création (table de correspondance codée côté Rust, pas en base), ensuite modifiables individuellement par un profil disposant de `can_manage_profiles` — ce qui couvre le cas « personnalisé » sans moteur de permissions générique séparé.
+- **Profil actif : autorité côté Rust.** Le profil actif est un état serveur (`AppState`), jamais un identifiant transmis librement par le frontend à chaque appel — évite qu'un appel buggé ou détourné puisse usurper un autre profil. Bascule via une commande dédiée (`switch_active_profile`), qui ne demande aucune authentification propre (seul le coffre privé, §6.4, est protégé par PIN/mot de passe — pas les profils entre eux). Par sécurité et simplicité, le profil actif n'est pas mémorisé d'un lancement à l'autre : chaque démarrage réactive automatiquement le premier profil disposant de `can_manage_profiles` (symétrique au reverrouillage systématique du coffre à chaque lancement, §6.4).
+- **Suppression d'un profil** : réservée à un profil disposant de `can_manage_profiles`. Impossible de supprimer le profil actif, ni le dernier profil disposant de `can_manage_profiles` (l'application doit toujours conserver au moins un profil administrateur). L'historique de lecture propre au profil supprimé est supprimé avec lui (voir ci-dessous).
+- **Historique / Favoris** : liés à un média **et** à un profil — deux profils différents ont des favoris et un historique indépendants sur la même bibliothèque. *(Correctif Étape 6a : la table `playback_progress`, posée dès l'Étape 3 avant l'existence réelle du multi-profil, ne portait pas de `profile_id` — un seul profil ayant jamais existé en pratique jusqu'ici, l'absence de portée par profil était sans effet observable. Elle est désormais scopée par profil, avec bascule réelle entre profils rendant ce scoping nécessaire.)* Le module Favoris n'est, lui, pas encore livré (prévu à une étape ultérieure) — seule la progression de lecture existante a été mise en cohérence ici.
+
+### 6.6 Personnalisation
+
+Fonctionnalité majeure du produit (§1), pas une simple option secondaire : AetherVault Media se veut une médiathèque locale hautement personnalisable, pas seulement un lecteur vidéo. Peuvent être personnalisés par l'utilisateur, depuis l'Étape 5 :
+
+- la **bannière de chaque catégorie** (16:9, §6.1) — y compris, depuis l'Étape 6b-i, la catégorie **Privé** elle-même : le mécanisme (`custom_images`, `set_category_banner`) est générique par identifiant de catégorie depuis l'Étape 5 et fonctionnait déjà pour Privé au niveau des données, mais restait inatteignable en pratique — `CategoryPage`, seul écran à exposer `PersonalizableImage` pour une bannière de catégorie, n'est jamais rendue pour Privé (`categoryRoute` l'aiguille vers `/private`, jamais vers `/category/:key`). Le contrôle est désormais exposé directement sur `PrivatePage`, sans dépendre du déverrouillage du coffre ni d'aucune permission propre : la bannière de la tuile est déjà visible de tous sur l'Accueil, exactement comme celle des quatre autres catégories, donc soumise aux mêmes règles (aucune, à ce stade) — traiter Privé différemment ici aurait introduit une incohérence plutôt qu'en résoudre une ;
+- l'**affiche** et la **bannière d'arrière-plan** de chaque Titre — film, série, anime ou documentaire (§6.3), en plus (ou en remplacement) de celles récupérées automatiquement par le Metadata Service ;
+
+Prévu pour plus tard, sur la même architecture (voir ci-dessous) :
+
+- les **bibliothèques privées** (§6.4) : nom, icône, apparence propres ;
+- à terme, l'**apparence générale de l'interface** (couleurs, disposition) — thème, configuration stockée séparément des données média pour pouvoir être exportée/réinitialisée sans risque, et elle-même scopée par profil quand pertinent (ex. thème préféré de chaque profil).
+
+**Architecture retenue : une table de personnalisation générique (`custom_images`), pas une colonne par entité et par usage.** Une première version (Étape 4) posait `custom_poster_path`/`custom_banner_path` directement sur `categories`/`titles` — fonctionnelle, mais qui aurait demandé une migration de schéma à chaque nouvelle personnalisation future (bannière de bibliothèque privée, avatar de profil...). L'Étape 5 l'a remplacée par une table unique, indexée par `(type d'entité, identifiant, usage)` : ajouter la personnalisation d'une nouvelle entité ne touche plus qu'à du code applicatif (deux fonctions d'un paragraphe chacune dans `custom_image_repository`), jamais au schéma. Le composant frontend correspondant (`PersonalizableImage`) suit le même principe : il ne connaît aucune entité, seulement "un chemin à afficher" et deux fonctions ("choisir", "réinitialiser") fournies par l'appelant — l'ajouter à un nouvel écran ne demande donc aucune nouvelle logique d'interaction, seulement le branchement à la bonne commande.
+
+Toute image personnalisée par l'utilisateur (bannière, affiche) est traitée exactement comme une image récupérée par le Metadata Service — mise en cache localement, jamais redemandée à un fournisseur en ligne — mais prioritaire sur elle : c'est un remplacement explicite de l'utilisateur, jamais écrasé par un rafraîchissement automatique ultérieur des métadonnées. Quand l'entité personnalisée elle-même disparaît (ex. un Titre devenu orphelin après suppression d'une bibliothèque, §8 Étape 5), sa personnalisation est purgée avec elle — ligne en base et fichier sur le disque — plutôt que laissée en suspens.
+
+### 6.7 Navigation
+
+```
+Accueil (tuiles de catégories, en permanence visibles — §2, principe 6)
+│
+├── 🎬 Films            → Film (page dédiée : affiche, bannière, description,
+│                          genres, casting, durée, année, studios,
+│                          bouton Lecture — pistes audio/sous-titres
+│                          sélectionnables une fois la lecture démarrée)
+│
+├── 📺 Séries           → Série → Saison → Épisode
+├── 🌸 Anime            → Anime → Saison → Épisode          (même modèle que Séries)
+├── 🎥 Documentaires    → Documentaire → Film documentaire, OU Saison → Épisode
+│
+└── 🔒 Privé            → authentification (PIN/mot de passe)
+                           → 📷 Images  → bibliothèques personnalisées, en nombre libre
+                           → 🎞️ Vidéos  → bibliothèques personnalisées, en nombre libre
+```
+
+Les catégories restent le cœur permanent de cette navigation (§2, principe 6). Les sections dynamiques prévues à l'Étape 7 (Continuer la lecture, Derniers ajouts, Favoris, Recommandés) viendront s'ajouter au-dessus ou en dessous de cette grille sur l'Accueil, jamais à sa place — voir §8, Étape 7.
+
+### 6.8 Paquet de sauvegarde
+
+**Paquet de sauvegarde** : archive versionnée regroupant paramètres, catégories et définitions de bibliothèques (noms, dossiers, apparence — pas les fichiers médias), historique, favoris et personnalisation, destinée à être réimportée sur un autre poste ou après réinstallation. N'inclut jamais le contenu de la section privée (§6.4) sans action explicite et distincte de l'utilisateur.
+
+---
+
+## 7. Identité visuelle (icône)
+
+L'icône fournie (`AVM.ico`) a été reçue et vérifiée : il s'agit d'un `.ico` Windows valide contenant une image 256×256 en RGBA.
+
+Points techniques à prévoir avant intégration :
+
+- **Multi-résolutions** : Windows utilise différentes tailles selon le contexte (16×16 et 32×32 pour l'Explorateur et les listes, 48×48 pour le Menu Démarrer, 256×256 pour les grandes vignettes). Un `.ico` ne contenant qu'une résolution 256×256 fonctionnera mais s'affichera moins nettement en petite taille. Il est recommandé, avant packaging final, de générer un `.ico` multi-résolutions (16/32/48/256) à partir de l'illustration source, pour un rendu net à toutes les échelles.
+- **Déclinaisons par usage** :
+  - **Exécutable (.exe)** : icône embarquée directement dans le binaire via la configuration Tauri (`icon` dans `tauri.conf.json`), à partir du `.ico` multi-résolutions.
+  - **Installateur** : le bundler Tauri (WiX/NSIS) réutilise la même icône pour l'assistant d'installation.
+  - **Raccourci Bureau / Menu Démarrer** : générés automatiquement par l'installateur, héritent de l'icône de l'exécutable — aucune configuration séparée nécessaire si l'icône est correctement définie en amont.
+  - **Barre des tâches** : héritée du binaire en cours d'exécution (même icône), Windows la redimensionne automatiquement à partir de la meilleure résolution disponible dans le `.ico`.
+- **Formats additionnels à prévoir pour les futures versions Linux/macOS** : `.icns` (macOS) et un jeu de `.png` à tailles fixes (Linux, freedesktop.org icon spec), généré à partir de la même source graphique pour garder une identité visuelle strictement identique entre plateformes.
+- **Emplacement dans le projet** : source unique dans `assets/branding/`, déclinaisons générées automatiquement par un script de build (`scripts/`) plutôt que maintenues à la main, pour éviter toute divergence entre les icônes utilisées à différents endroits.
+
+---
+
+## 8. Roadmap de développement
+
+### Étape 0 — Socle applicatif
+- **Objectif** : application qui démarre, fenêtre native, communication UI ↔ backend fonctionnelle, et fondations de données pensées dès le départ pour le multi-profil.
+- **Fonctionnalités** : shell Tauri + React opérationnel, base SQLite initialisée (schéma incluant déjà la notion de profil, même avec un seul profil « Administrateur » par défaut au démarrage), système de logs, premier pipeline de build packagé avec l'icône officielle.
+- **Modules concernés** : shell applicatif, accès aux données (init), Profile Manager (version minimale).
+- **Difficultés possibles** : mise en place correcte de la séparation des couches dès le départ pour éviter la dette technique ; intégrer le concept de profil dans le schéma de données sans complexifier inutilement cette étape.
+
+### Étape 1 — Interface utilisateur de base
+- **Objectif** : navigation complète mais sans données réelles (mock).
+- **Fonctionnalités** : Accueil (tuiles de catégories — §6.7), Films, Séries, Anime, Documentaires, Privé, Favoris, Historique, Profils (sélecteur simple), Paramètres.
+- **Modules concernés** : UI (pages + navigation), design system minimal.
+- **Difficultés possibles** : concevoir une navigation qui supporte déjà des catégories personnalisées (pas seulement les catégories par défaut codées en dur) et un sélecteur de profil simple sans complexité inutile à ce stade.
+
+### Étape 2 — Gestion des bibliothèques
+- **Objectif** : créer, configurer et faire persister de vraies bibliothèques (y compris personnalisées), avec suivi automatique du contenu réel du disque.
+- **Fonctionnalités** : création de bibliothèque, association de dossiers, règles de classement, apparence de base, **surveillance en temps réel des dossiers (Filesystem Watcher)**, **détection de disque externe débranché/rebranché (Removable Media Manager)** avec affichage « indisponible » plutôt que suppression.
+- **Modules concernés** : Library Manager, File Scanner, Filesystem Watcher, Removable Media Manager, Repositories SQLite.
+- **Difficultés possibles** : scan de dossiers volumineux sans bloquer l'UI (traitement asynchrone) ; distinguer de façon fiable un fichier réellement supprimé d'un fichier simplement inaccessible (disque débranché) ; identifier un support de stockage de manière stable malgré un changement de lettre de lecteur.
+
+### Étape 3 — Lecteur vidéo
+- **Objectif** : lecture fiable des formats courants avec contrôles avancés.
+- **Fonctionnalités** : intégration libmpv, pistes audio/sous-titres, vitesse de lecture, capture d'écran, accélération GPU.
+- **Modules concernés** : Playback Engine Bridge, Playback Session Manager, UI lecteur.
+- **Difficultés possibles** : disparités d'accélération matérielle selon OS/pilote, gestion des sous-titres externes mal synchronisés.
+
+**Étape 3a — terminée.** Lecteur HTML5 (`<video>`) fonctionnel : lecture/pause, recherche, volume, vitesse, capture d'écran (canvas), mode réduit/étendu, persistance de la progression. Sert de socle d'interface (`PlayerContext`/`PlayerDock`) volontairement découplé du moteur, pour permettre son remplacement sans réécrire le reste de l'application.
+
+**Étape 3b — Playback Engine Bridge natif (Windows).** Remplace le moteur HTML5 par une intégration native de libmpv (voir §3.2 pour le comparatif d'approches et le choix retenu), pilotée par `PlayerContext`/`PlayerDock` sans changement de leur interface publique. Livré :
+- Chargement dynamique de libmpv, cycle de vie du moteur indépendant des fenêtres (`services/playback_engine`).
+- Rendu natif Windows (fenêtre enfant Win32 + contexte OpenGL, *render API* de mpv), positionné/synchronisé avec un emplacement réservé dans le DOM. **Abandonné dès l'Étape 3c** (conflit d'*airspace* avec la WebView2 — voir §3.2 et l'Étape 3c ci-dessous) : ce point n'est plus l'architecture actuelle, conservé ici comme trace de la décision initiale et de son contexte.
+- Contrôles complets (lecture/pause, recherche, volume, muet, vitesse, arrêt) pilotés par commandes Tauri.
+- Capture d'écran native (remplace la capture canvas, devenue impossible sans `<video>`).
+- **Fenêtre détachée réellement fonctionnelle** : `commands::window::open_player_window` ouvre une seconde fenêtre Tauri qui charge le même bundle et affiche le même lecteur ; la surface de rendu bascule d'une fenêtre à l'autre sans jamais interrompre la lecture (voir §4.2).
+- Dégradation non bloquante si libmpv est absente (`PlaybackEngineState::Unavailable`) : le reste de l'application reste utilisable.
+
+Restent hors périmètre de cette entrée : portage Linux/macOS (§3.6/§9) — l'architecture n'est validée que sur Windows pour l'instant —, et l'image dans l'image (perdue avec la suppression du `<video>` HTML5 — alternative à concevoir, indépendante du choix Win32/OpenGL vs logiciel/WebGL). Les deux autres points initialement notés ici comme restants ont depuis été livrés : la boucle de rendu event-driven à l'Étape 3c (ci-dessous), la sélection des pistes audio/sous-titres à l'Étape 3e (§4.2 bis). Le socle backend n'a pas pu être compilé dans l'environnement de génération (ni toolchain Windows, ni GPU, ni accès réseau côté assistant) — voir les notes « ⚠️ » en tête des fichiers concernés ; une première compilation par vos soins reste l'étape suivante logique, comme pour le socle de l'Étape 0.
+
+**Étape 3c — Abandon du rendu natif, passage au rendu logiciel.** Déclenchée par le bug de production décrit en §3.2 (écran noir / superposition incorrecte par conflit d'*airspace* entre la fenêtre Win32 et la WebView2). Livré :
+- Suppression complète de `windows.rs`/`unsupported.rs` (fenêtre enfant Win32 + contexte OpenGL WGL) au profit d'un rendu logiciel mpv (`MPV_RENDER_API_TYPE_SW`, `sw_render.rs`) transmis via `tauri::ipc::Channel` binaire brut à un `<canvas>` React — plus aucune fenêtre native côté lecteur, donc plus aucune surface candidate à un conflit d'*airspace*.
+- Isolation du Playback Engine Bridge confirmée en pratique, pas seulement en principe (§4.2) : `player_attach_surface`/`player_resize_surface` (ex-`player_update_surface_rect`) ont changé de signature (plus de `window_label`/`x`/`y`, remplacés par `width`/`height` + `Channel`), mais `load`/`set_paused`/`seek_absolute`/`set_volume`/`set_muted`/`set_rate`/`capture_screenshot` sont restées strictement inchangées — un remplacement complet du pipeline d'affichage n'a touché que la partie affichage.
+- Boucle de rendu réveillée par mpv (`mpv_render_context_set_update_callback` + `Condvar`) plutôt que par scrutation à fréquence fixe : le rendu logiciel étant documenté par mpv comme nettement plus coûteux en CPU que le rendu GPU, éviter tout redessin superflu (lecture en pause, mise en tampon) compte davantage qu'avec l'ancien pipeline OpenGL.
+- Bénéfice indirect : le contrat frontend (`<canvas>` + `Channel` binaire) est désormais indépendant de l'OS, contrairement à l'ancienne fenêtre Win32 — un pas de plus vers le portage Linux/macOS (§3.6/§9), qui reste néanmoins hors périmètre de cette entrée (seul le backend Rust aura à évoluer par plateforme).
+
+Reste hors périmètre : la corruption d'image apparue avec cette nouvelle chaîne d'affichage, diagnostiquée et corrigée immédiatement après — voir Étape 3d.
+
+**Étape 3d — Migration du `<canvas>` 2D vers WebGL.** Déclenchée par une corruption d'image constatée après quelques secondes de lecture (jamais dès la première image), diagnostiquée par un audit binaire du pipeline (hash comparés à chaque étape, des deux côtés de l'IPC) localisant la divergence à la lecture `getImageData()` suivant un `putImageData()` — signature caractéristique de la promotion logicielle → GPU d'un contexte canvas 2D dans les moteurs Chromium/Blink, dont WebView2 (voir §3.2 pour l'explication complète). Livré :
+- Contexte **WebGL** en lieu et place du contexte 2D (`PlayerSurface.tsx`) : chaque image est uploadée en texture GPU (`texImage2D`) puis dessinée sur un quad plein cadre — chemin déterministe, sans notion de promotion implicite.
+- Orientation verticale correcte portée par les texcoords du quad, pas par `UNPACK_FLIP_Y_WEBGL` (qui aurait doublé le retournement et inversé l'image).
+- Aucun changement côté Rust : le format de transport (`"rgb0"` + `Channel` binaire, livré à l'Étape 3c) reste identique — la migration est restée intégralement confinée à `PlayerSurface.tsx`, à nouveau une conséquence directe du principe d'isolation du Playback Engine Bridge (affichage ≠ moteur).
+
+**Étape 3e — Contrôles avancés (file de lecture, pistes audio/sous-titres).** Complète les contrôles du lecteur avec les fonctionnalités classiques listées dans l'objectif de l'Étape 3 (§8, ci-dessus), restées hors périmètre des étapes 3a/3b. Livré :
+- **File de lecture (Queue)** : nouveau concept d'architecture, décrit en détail en §4.2 bis — éphémère, en mémoire, agnostique de sa provenance, explicitement distinct de la future Playlist persistée. Boutons Piste précédente/suivante, avec enchaînement automatique en fin de fichier (sans répétition) et redémarrage du média courant si « Précédent » est actionné moins de 3 secondes après le début de la lecture (convention VLC/MPC-HC).
+- **Sélection des pistes audio/sous-titres** : `PlaybackEngineHandle::list_tracks`/`set_audio_track`/`set_subtitle_track` côté Rust (§4.2, bullet Playback Engine Bridge) ; menu contextuel natif Tauri v2 (`@tauri-apps/api/menu`, permission `core:menu:default`) construit à la demande côté frontend, avec entrée « Aucun » pour désactiver les sous-titres.
+- **`PlayerControls`** *(nouveau composant)* : `PlayerDock` et `DetachedPlayerWindow` dupliquaient intégralement leurs contrôles depuis l'Étape 3a ; factorisé à cette étape plutôt que dupliqué une troisième fois pour les 4 nouveaux boutons.
+
+Reste hors périmètre, pour une prochaine itération : modes Répéter/Lecture aléatoire (évoqués mais volontairement écartés à cette étape), chargement de sous-titres externes (le menu ne propose que les pistes déjà embarquées dans le fichier, conformément à la demande initiale), et la Playlist persistée elle-même (§4.2 bis).
+
+### Étape 4 — Métadonnées, catégories et navigation par contenu
+- **Objectif** : remplacer la liste de fichiers bruts par une véritable médiathèque organisée — catégories, Titres/Saisons/Épisodes, enrichissement automatique. Portée précisée par la clarification de l'architecture fonctionnelle (§6) : sensiblement plus large que la version initiale de cette entrée.
+- **Livré :**
+  - **Catégories** (§6.1) : nouvelle table, `libraries.category_id` remplace l'ancien `media_type` texte libre (conservée en base mais dépréciée — voir migration 0004) ; les 5 catégories système (Films, Séries, Anime, Documentaires, Privé) créées au démarrage, bascule automatique des bibliothèques déjà créées aux Étapes 2/3 (`db::seed::backfill_library_categories`).
+  - **Modèle de contenu Titre/Saison/Épisode** (§6.3) : un seul modèle à deux natures (`movie`/`series`) réutilisé par les 4 catégories — un documentaire unitaire est un Titre `movie` comme un Film, sans troisième modèle. Genres/casting/studios en tables de jointure.
+  - **Metadata Service** (`services::metadata`) : fournisseur local/hors-ligne (analyse de nom de fichier — saison/épisode, année, nettoyage du titre), architecture à fournisseurs multiples prête pour un futur fournisseur en ligne (trait `MetadataProvider`, aucun autre module à modifier pour en ajouter un). Déclenché automatiquement après chaque scan réussi.
+  - **Nouvelles pages** : Accueil (tuiles de catégories, §6.7), grille de Titres par catégorie, page Titre (affiche, bannière, description, genres, casting, durée, année, studios, bouton Lecture), liste d'épisodes par Saison — la Queue (§4.2 bis) y est alimentée par tous les épisodes d'une saison, pour un enchaînement continu.
+  - **Personnalisation** (§6.6, fondation) : `services::image_store` copie une image choisie par l'utilisateur vers le répertoire de données ; bannière de catégorie et affiche/bannière de Titre personnalisables, toujours prioritaires sur la valeur automatique.
+  - **Base de la catégorie Privé** (§6.4) : table `private_libraries` entièrement séparée (migration 0005), sans lien avec `categories`/`libraries` — non exposée par aucune commande, comme `profiles` à l'Étape 0. L'authentification elle-même reste hors périmètre, livrée à l'Étape 6.
+- **Écart avec la doc initiale de cette entrée, découvert pendant l'implémentation :** la page d'un Titre n'affiche finalement pas les pistes audio/sous-titres. `player_list_tracks` (Étape 3e) n'interroge que le fichier *déjà chargé* dans mpv — un Titre parcouru en navigation n'a encore rien chargé, et charger le fichier juste pour sonder ses pistes aurait coupé une lecture éventuellement en cours ailleurs et perturbé la Queue. La sélection de pistes reste donc exclusivement dans les contrôles du lecteur (menu Piste audio/Sous-titres, fonctionnel depuis l'Étape 3e), pas dupliquée sur la page de navigation.
+- **Modules concernés** : Library Manager, Metadata Service, Personalization Manager (fondation), Repositories.
+- **Reste hors périmètre**, pour une prochaine itération : fournisseurs en ligne réels (TMDB/TVDB...), durée technique des fichiers (lue depuis le conteneur plutôt que déclarée par un fournisseur), Thumbnail & Image Service dédié (redimensionnement/recompression des images personnalisées — actuellement copiées telles quelles), Search Engine (index de base). Compilation non vérifiée dans cet environnement (ni toolchain, ni réseau) — comme pour les étapes précédentes, une première compilation par vos soins est l'étape suivante logique.
+
+### Étape 5 — Personnalisation
+- **Objectif** : permettre à l'utilisateur de façonner l'apparence de son application — fonctionnalité majeure du produit (§1, §6.6), pas une simple option secondaire.
+- **Livré :**
+  - **Architecture de personnalisation générique** (§6.6) : table `custom_images` (`entity_type`, `entity_id`, `purpose`), remplace les colonnes `custom_poster_path`/`custom_banner_path` posées à l'Étape 4 — ajouter une future personnalisation (bibliothèque privée, avatar de profil...) ne demandera plus de migration de schéma. Composant frontend partagé `PersonalizableImage`, sans connaissance d'aucune entité précise.
+  - **Bannières de catégories** (`CategoryPage`) et **affiches/bannières de Titres** (`TitleDetailPage`) personnalisables, avec réinitialisation vers la valeur automatique.
+  - **Suppression de bibliothèque**, jusqu'ici possible côté backend (Étape 2) mais jamais exposée : bouton de suppression avec confirmation explicite (`LibraryDetailPage`), fichiers sur le disque jamais touchés, et — nouveau — nettoyage des Titres/Épisodes devenus orphelins (plus alimentés par aucune bibliothèque) ainsi que de leurs personnalisations, base et disque. Un Titre alimenté par plusieurs bibliothèques d'une même Catégorie (§6.1) n'est supprimé que si *toutes* cessent de le nourrir.
+    - **Erratum (corrigé)** : `media_repository::distinct_title_ids`, qui détermine quels Titres vérifier après suppression, ne remontait que les Titres de nature *film* (atteints directement via `media_files.title_id`). Les Titres de nature *série* — donc systématiquement Séries et Anime, et les documentaires à épisodes — ne sont jamais reliés à un Média de cette façon (uniquement via `episodes.title_id`) : ils n'étaient donc jamais proposés au nettoyage, et restaient visibles indéfiniment après suppression de leur seule bibliothèque, alors que leurs Épisodes, eux, avaient bien été supprimés. La requête couvre désormais aussi les Titres atteints via leurs Épisodes.
+  - **Correctif de mise en page** : bande blanche visible en bas de fenêtre à hauteur réduite, causée par un `min-height: auto` implicite sur la chaîne flex de `AppShell` (un enfant `flex:1` ne peut pas rétrécir sous la hauteur de son contenu sans `min-height: 0` explicite) — corrigé avec `overflow: hidden` en défense supplémentaire sur `#root`/`.avm-shell`.
+  - **Détection de Saison par la hiérarchie de dossiers** (erratum Étape 4, voir §6.3) : complète l'analyse du nom de fichier par un signal tiré du dossier parent quand celui-ci ne révèle aucune saison — nécessaire pour regrouper correctement une bibliothèque organisée en `Titre/Saison NN/fichier` sous un seul Titre à plusieurs Saisons, au lieu d'une Saison par Titre.
+  - **Suppression manuelle d'un Titre** depuis sa carte (grille de Catégorie, bouton en overlay au survol) — même garantie que pour une bibliothèque : les fichiers média sur le disque ne sont jamais touchés, seul le rattachement en base est défait (`domain::title::delete_title`, réutilise `title_repository::delete`). Couvre en particulier le nettoyage d'un Titre resté visible après suppression de sa bibliothèque du fait de l'erratum ci-dessus, désormais corrigé pour l'avenir mais pas rétroactivement (voir "reste hors périmètre"). Si la bibliothèque source est toujours active, un Titre supprimé ainsi peut réapparaître au prochain scan de cette bibliothèque (le Metadata Service, idempotent, retraite alors les fichiers redevenus "non appariés") — l'interface en avertit explicitement au moment de la confirmation.
+  - **Sélection multiple et suppression groupée** (`CategoryPage`) : bouton "Sélectionner" qui bascule chaque carte de la grille en case à cocher (composant `Card` du ui-kit étendu avec un mode `selectable`, purement optionnel — aucun changement pour les grilles de bibliothèques/catégories qui ne l'utilisent pas), "Tout sélectionner"/"Tout désélectionner", puis suppression en une confirmation. Implémentée côté frontend par un appel à la commande `delete_title` existante pour chaque Titre sélectionné (`Promise.allSettled`, pour qu'un échec isolé n'interrompe pas les autres suppressions) — pas de nouvelle commande de suppression groupée côté backend, volontairement : chaque suppression individuelle reste déjà correcte et suffisamment rapide pour un usage interactif, une commande dédiée n'aurait fait qu'ajouter une seconde façon de faire la même chose en base.
+- **Modules concernés** : Personalization Manager, Library Manager, Metadata Service, UI, design system.
+- **Reste hors périmètre**, pour une prochaine itération : apparence des bibliothèques privées et thèmes généraux (posés en §6.6 comme prêts à réutiliser `custom_images`, mais non branchés — dépendent de fonctionnalités pas encore livrées, Étape 6) ; réorganisation manuelle de l'ordre des catégories sur l'Accueil ; redimensionnement/recompression des images personnalisées (toujours copiées telles quelles, comme noté à l'Étape 4) ; nettoyage des Saisons devenues vides alors que leur Titre parent a encore du contenu ailleurs, ex. via une autre bibliothèque (limitation connue, distincte de l'erratum ci-dessus : une Saison sans Épisode n'est pas supprimée tant que son Titre ne l'est pas lui-même — voir `episode_repository::delete`) ; ré-appariement rétroactif des Titres déjà créés avant le correctif de détection de Saison (une bibliothèque scannée avant ce correctif doit être supprimée puis rescannée pour en bénéficier — le Metadata Service ne retraite jamais un fichier déjà apparié, par conception, §6.3).
+
+### Étape 6a — Sécurité, profils et coffre privé (fondation)
+*(Anciennement « Étape 6 » — scindée en 6a/6b après analyse de périmètre : le texte initial mêlait deux sous-systèmes assez indépendants — authentification/chiffrement/profils d'une part, gestion de contenu privé (dossiers, scan, galerie) d'autre part — sur le modèle du découpage déjà appliqué au lecteur vidéo, Étapes 3a→3e.)*
+- **Objectif** : cloisonnement réel des profils et du coffre privé en tant que conteneur, sur la base logique déjà posée à l'Étape 4 (§6.4). Rend le coffre déverrouillable et les bibliothèques privées gérables (créer/renommer/supprimer) — sans encore de dossiers, de scan ni de galerie (voir Étapes 6b-i/6b-ii).
+- **Livré :**
+  - **Profile Manager complet** (§6.5) : CRUD profils (création/renommage/suppression), modèle de permissions hybride (`can_access_private`, `can_manage_global_settings`, `can_manage_profiles` — colonnes explicites, valeurs par défaut selon le type à la création, éditables ensuite individuellement), bascule de profil actif portée côté Rust (`AppState::active_profile_id`, jamais un identifiant transmis par le frontend). Garde-fous : impossible de supprimer le profil actif ou le dernier profil disposant de `can_manage_profiles`.
+  - **Privacy/Security Manager** (§6.4 bis) : coffre chiffré AES-256-GCM sur fichier séparé `vault.db` (SQLite tenu en mémoire pendant le déverrouillage, sérialisé/rechiffré après chaque écriture — pas de SQLCipher, abandonné en cours d'étape suite à un échec de compilation d'OpenSSL, voir l'erratum en §6.4 bis), clé AES 256 bits dérivée du PIN/mot de passe par Argon2id (KDF pur, aucun hash stocké — sel et paramètres dans `vault_security`, table non chiffrée de `aethervault.db`). État déverrouillé exclusivement en mémoire (`AppState::vault`), jamais persisté, reverrouillé à chaque lancement. Double vérification cumulative à chaque commande touchant le coffre : déverrouillé **et** profil actif autorisé.
+  - **Bibliothèques privées "conteneurs"** : créer/renommer/supprimer un espace Images ou Vidéos une fois le coffre déverrouillé, sans dossier ni scan (voir Étapes 6b-i/6b-ii) — `private_libraries` déplacée de `aethervault.db` vers `vault.db` (l'ancienne table, jamais exposée par aucune commande, supprimée par une migration dédiée).
+  - **Restrictions de profil** appliquées de bout en bout, jamais seulement côté UI : accès au coffre (`can_access_private`), gestion des paramètres de sécurité (`can_manage_global_settings` — création/changement du secret du coffre, réservés à ce niveau plutôt qu'à `can_access_private` seul), gestion des profils (`can_manage_profiles`).
+  - **Correctif de `playback_progress`** (doc §6.5) : scopée par profil (`profile_id` ajouté à la clé primaire), les lignes existantes rattachées au premier profil de l'installation lors de la migration. Nécessaire dès lors que la bascule de profil devient réelle — sans effet observable auparavant.
+  - **UI** : `ProfilesPage` (liste, bascule, création/édition/suppression), `PrivatePage` (remplace l'ancien placeholder — création du coffre avec avertissement explicite d'irrécupérabilité, déverrouillage, gestion des bibliothèques privées), section Sécurité de `SettingsPage` (changement du secret), indicateur de profil actif dans la `TopBar`.
+- **Modules concernés** : Privacy/Security Manager, Profile Manager, accès aux données (chiffrement), UI dédiée (Paramètres, Profils, Privé).
+- **Reste hors périmètre**, reporté aux Étapes 6b-i/6b-ii : association de dossiers aux bibliothèques privées, scan de contenu, vignettes/EXIF, visionneuse/galerie, lecture vidéo privée. Reste également hors périmètre de cette session : sélecteur de profil au lancement (l'application démarre directement sur le premier profil administrateur, sans écran de choix), mémorisation du profil actif d'une session à l'autre (redémarre toujours sur ce même profil par défaut, par symétrie avec le reverrouillage systématique du coffre).
+- **Points à vérifier après compilation** : contrairement à la première version de cette étape, l'architecture retenue (A2, §6.4 bis) n'ajoute plus aucun prérequis de compilation au-delà de ce qui compile déjà le reste du projet depuis l'Étape 0 — à confirmer malgré tout au premier `cargo build`, `rusqlite` (feature `backup`) et `aes-gcm`/`argon2` (crates Rust pur) n'ayant pas pu être compilés dans cet environnement, faute de réseau et de toolchain Rust disponibles ici.
+
+### Étape 6b-i — Vidéos privées (dossiers, scan manuel, lecture)
+*(Anciennement une partie de « Étape 6b » — scindée en 6b-i/6b-ii après analyse de périmètre, voir §6.4 encart : Vidéos et Images privées sont deux sous-systèmes indépendants, l'un réutilisant largement l'existant, l'autre entièrement neuf.)*
+- **Objectif** : donner un contenu réel aux bibliothèques privées de type Vidéos créées à l'Étape 6a.
+- **Livré :**
+  - **Modèle de données** (`vault.db`, migration v2) : `private_video_folders`/`private_video_files`, même gabarit que `library_folders`/`media_files` mais sans `title_id`/`episode_id` ; `private_playback_progress`, sans clé étrangère déclarée vers `profiles` (bases séparées, doc §6.4 bis/ter).
+  - **Scan manuel uniquement** — décision validée explicitement (pas de Filesystem Watcher continu pour cette première version). `services::private_video_scanner` sépare volontairement détection de fichier, traitement d'un seul fichier (`upsert_one_file`) et parcours complet (`scan_library`), pour qu'un futur Watcher privé n'ait besoin de dupliquer aucune de ces briques (doc §6.4 ter).
+  - **Stratégie de persistance différenciée** affinée : dossiers/scan persistés immédiatement (une fois à la fin du parcours) ; progression de lecture **jamais persistée à chaque mise à jour de position** (toutes les 5 secondes), seulement à la fin d'un visionnage ou au verrouillage du coffre (`lock_vault` persiste désormais avant de verrouiller).
+  - **Lecture** intégrée à la Queue existante sans modification du Playback Engine Bridge — un fichier privé se charge comme un fichier public (même chemin disque). `PlayableMedia` porte un indicateur `isPrivate` (frontend uniquement), lu par `PlayerContext` pour adresser la sauvegarde périodique de progression à la bonne commande.
+  - **Bannière de la catégorie Privé** personnalisable, à parité avec les quatre autres catégories (écart d'accessibilité comblé, doc §6.6) — aucun nouveau mécanisme côté Rust, uniquement un point d'entrée UI manquant jusqu'ici.
+  - **UI** : `PrivateVideoLibraryPage` (nouvelle — dossiers, scan, grille de fichiers, lecture), `PrivatePage` mise à jour (navigation vers le détail d'une bibliothèque Vidéos, bannière personnalisable).
+- **Modules concernés** : File Scanner (implémentation séparée pour le coffre — `services::private_video_scanner`), Privacy/Security Manager, Profile Manager (Queue/progression scopées par profil), UI dédiée.
+- **Reste hors périmètre** : Filesystem Watcher privé (pourra être ajouté sans réécriture du scanner, voir §6.4 ter, si l'usage le justifie), galerie d'Images (Étape 6b-ii).
+
+### Étape 6b-ii — Galerie d'Images privées (vignettes, EXIF, visionneuse)
+- **Objectif** : donner un contenu réel aux bibliothèques privées de type Images créées à l'Étape 6a.
+- **Livré :**
+  - **Modèle de données** (`vault.db`, migration v3) : `private_image_folders`/`private_image_files`, même gabarit que les vidéos (Étape 6b-i) — un album, c'est un dossier. En plus : `width`/`height` (dimensions d'affichage, après orientation EXIF), `taken_at`/`camera_model` (EXIF, jamais les coordonnées GPS — décision utilisateur), `thumbnail_blob` (vignette chiffrée), `cover_file_id` (couverture d'album, nullable, `ON DELETE SET NULL`).
+  - **Décodage/traitement** : crate `image` (≥ 0.25.8, lecture/application native de l'orientation EXIF) et `kamadak-exif` (date de prise de vue et modèle d'appareil uniquement). **JPEG/PNG/WebP/GIF/BMP/TIFF uniquement — HEIC/HEIF explicitement exclu** (dépendance C `libheif`, même catégorie de risque que l'abandon de SQLCipher, §6.4 bis).
+  - **Vignettes** : JPEG ~400 px, qualité ~80, générées au scan, orientation corrigée avant redimensionnement, stockées chiffrées dans `vault.db` (jamais sur disque en clair).
+  - **Couverture d'album personnalisable** : réutilise le *principe* de `custom_images` (par défaut, personnalisable, réinitialisable) sans la table elle-même — `cover_file_id` reste à l'intérieur du coffre et ne peut référencer qu'une photo du même album (écart assumé et documenté, §6.4 quater).
+  - **Service des vignettes au frontend** : commande dédiée renvoyant les octets encodés en base64 (crate `base64`) ; l'image plein format de la visionneuse reste un vrai fichier disque, servi par `assetUrl`/`convertFileSrc` sans mécanisme nouveau.
+  - **Scan manuel uniquement**, synchrone, même principe que les vidéos (Étape 6b-i) — coût CPU plus élevé (décodage/redimensionnement/encodage par image), mutex du coffre retenu pour la durée du scan, compromis assumé pour un usage personnel mono-utilisateur.
+  - **Architecture prête pour un futur Watcher privé** : `services::private_image_scanner` sépare détection, traitement pur d'un seul fichier (`process_image`) et écriture d'un seul fichier (`upsert_one_file`) du parcours complet (`scan_library`), même principe qu'à l'Étape 6b-i.
+  - **Visionneuse plein écran** (`ImageViewer`) pensée comme fondation extensible : état de navigation isolé (`useImageViewer`), raccourcis clavier isolés (`useViewerKeyboardShortcuts`), zones image/barre d'outils séparées — diaporama, zoom, rotation, favoris, informations EXIF détaillées et raccourcis supplémentaires **volontairement non implémentés**, mais accueillables sans restructuration.
+  - **UI** : `PrivateImageLibraryPage` (grille d'albums), `PrivateAlbumPage` (grille de photos, définition de couverture, ouverture de la visionneuse), `PrivatePage` mise à jour (navigation vers les bibliothèques Images).
+- **Modules concernés** : Thumbnail & Image Service (nouveau), File Scanner (implémentation séparée pour le coffre — `services::private_image_scanner`), Privacy/Security Manager, UI dédiée.
+- **Reste hors périmètre** : Filesystem Watcher privé (pourra être ajouté sans réécriture du scanner, voir ci-dessus), diaporama/zoom/rotation/favoris/informations EXIF détaillées dans la visionneuse, support HEIC/HEIF.
+
+### Étape 7 — Fonctionnalités avancées
+- **Objectif** : recherche multi-critères, sections dynamiques en complément de l'Accueil, sauvegarde/restauration.
+- **Fonctionnalités** : Search Engine complet, **sections dynamiques (Continuer la lecture, Derniers ajouts, Favoris, Bibliothèques récemment consultées — Recommandations en emplacement réservé pour l'IA future)**, **export/import de configuration (Backup/Restore Manager)**, mode image dans l'image. Ces sections viennent s'ajouter à la grille de tuiles de catégories posée dès l'Étape 4 (§6.7) — au-dessus ou en dessous d'elle sur l'Accueil —, **jamais à sa place** : les catégories restent en toute circonstance visibles et constituent le cœur permanent de la navigation (§2, principe 6). L'Accueil d'AetherVault Media ne devient jamais une simple page de recommandations façon Netflix/Plex/Jellyfin/Emby.
+- **Modules concernés** : Search Engine, Home Feed Aggregator, Backup/Restore Manager, Favorites/History Manager, UI.
+- **Difficultés possibles** : performance de recherche sur de très grandes bibliothèques (nécessite indexation) ; conception d'un format d'export versionné et rétrocompatible pour ne pas casser une restauration future après mise à jour du logiciel ; intégrer les sections dynamiques sans reléguer visuellement les catégories au second plan.
+
+### Étape 8 — Extensibilité et préparation IA
+- **Objectif** : ouvrir l'architecture aux plugins et poser les bases de l'IA (sans l'implémenter en profondeur immédiatement).
+- **Fonctionnalités** : Plugin Host fonctionnel, premiers points d'extension (ex. provider de métadonnées additionnel), esquisse d'API pour recherche en langage naturel et correction de noms de fichiers, brique de recommandations personnalisées alimentée par Home Feed Aggregator.
+- **Modules concernés** : Plugin Host, plugin-sdk, Search Engine (extension), Metadata Service (extension), Home Feed Aggregator (extension).
+- **Difficultés possibles** : garantir l'isolation/sécurité des plugins, en particulier vis-à-vis de la bibliothèque privée et des données par profil.
+
+### Étape 9 — Packaging, installateur et distribution *(nouvelle étape)*
+- **Objectif** : produire un installateur Windows conforme aux standards d'un logiciel de bureau professionnel.
+- **Fonctionnalités** : génération `.msi` (WiX) via le bundler Tauri, intégration de l'icône officielle à toutes les échelles (exe, installateur, raccourcis, barre des tâches), création optionnelle de raccourci Bureau, raccourci Menu Démarrer automatique, inscription dans « Applications installées », désinstallation propre (avec confirmation explicite pour la conservation ou la suppression des données), intégration du Tauri Updater pour les mises à jour futures, signature de l'exécutable et de l'installateur (pour limiter les faux positifs antivirus/SmartScreen).
+- **Modules concernés** : pipeline de build (`scripts/`, `installer/`), updater.
+- **Difficultés possibles** : obtention d'un certificat de signature de code (coût, démarche) — sans signature, Windows SmartScreen peut afficher un avertissement à la première installation ; mise en place d'un canal de distribution des mises à jour (hébergement du manifeste de version) fiable même en usage local-first.
+
+---
+
+## 9. Points techniques à anticiper
+
+- **Grandes bibliothèques multimédia** : pagination et virtualisation des listes côté UI, indexation SQLite (index sur titre, genre, année, acteur), scan incrémental plutôt que scan complet à chaque démarrage.
+- **Performance générale** : scans et génération de vignettes en tâches de fond (threads/async Rust), jamais sur le thread UI.
+- **Gros fichiers vidéo** : lecture en flux (streaming depuis le disque, jamais chargement complet en mémoire), gestion du seek sur fichiers volumineux.
+- **Compatibilité des codecs** : s'appuyer sur FFmpeg (via libmpv) pour la couverture la plus large ; prévoir une détection des codecs non supportés avec message clair plutôt qu'un échec silencieux ; vigilance sur les implications de licences de certains codecs selon la distribution du logiciel.
+- **Accélération GPU** : détection automatique des capacités matérielles (VAAPI/DXVA2/VideoToolbox) avec repli automatique sur décodage logiciel si indisponible.
+- **Stockage des métadonnées** : images (affiches/bannières) stockées sur disque (pas en BLOB dans SQLite) avec uniquement les chemins en base, pour rester performant et portable.
+- **Sécurité de la bibliothèque privée** *(mécanisme tranché à l'Étape 6a, révisé en cours d'étape — voir l'erratum en §6.4 bis)* : chiffrement AES-256-GCM applicatif du fichier `vault.db` (SQLite tenu en mémoire pendant le déverrouillage), clé dérivée du PIN/mot de passe par Argon2id (utilisé en KDF, aucun hash de vérification stocké), séparation stricte des chemins d'accès entre bibliothèques normales et privées au niveau du code (pas seulement au niveau de l'UI), vérification de l'état déverrouillé et de la permission du profil actif systématiquement côté Rust plutôt que confiée au frontend. Aucun prérequis de build supplémentaire (SQLCipher/OpenSSL, envisagés puis abandonnés, auraient nécessité un compilateur OpenSSL vendored) — non vérifié par compilation dans cet environnement, à vérifier après compilation.
+- **PIN/mot de passe oublié** : aucune récupération possible par construction (pas de hash stocké, pas de porte dérobée) — le coffre devient définitivement illisible. À faire figurer explicitement dans l'interface de création du PIN/mot de passe (Paramètres), avant validation.
+- **Gestion des images (galerie privée)** — *livré à l'Étape 6b-ii* (§6.4 quater) : pipeline de génération de vignettes (crate `image`, orientation EXIF appliquée), lecture des métadonnées EXIF (date/modèle d'appareil, jamais le GPS ; crate `kamadak-exif`), stockage chiffré des vignettes dans `vault.db`. Surveillance des dossiers pour détecter les ajouts *non livrée* — scan manuel uniquement pour cette version, architecture prête pour un futur Watcher privé sans réécriture (§6.4 ter/quater).
+- **Personnalisation** : stocker la configuration de thème/apparence séparément des données médias pour permettre réinitialisation ou export sans risque.
+- **Compatibilité multiplateforme** : abstraction des chemins de fichiers, gestion des permissions disque (notamment macOS), tests de bout en bout sur les trois OS dès l'étape 0.
+- **Surveillance de dossiers (watcher)** *(nouveau)* : volume d'événements potentiellement élevé sur de très gros dossiers (ex. copie massive de fichiers) — prévoir un mécanisme de « debounce » pour regrouper les événements rapprochés avant de déclencher une mise à jour, afin d'éviter une rafale de traitements inutiles.
+- **Disques amovibles** *(nouveau)* : l'identification d'un disque doit reposer sur un identifiant stable (numéro de série de volume, UUID) plutôt que sur la lettre de lecteur (qui peut changer entre deux branchements), pour retrouver correctement les fichiers au rebranchement.
+- **Format de sauvegarde/restauration** *(nouveau)* : versionner explicitement le format du paquet d'export dès la première implémentation, pour garantir qu'une sauvegarde faite avec une ancienne version du logiciel reste restaurable après une mise à jour majeure.
+- **Permissions par profil** *(nouveau)* : définir clairement, dès l'Étape 6, ce qu'un profil Invité ou Enfant peut/ne peut pas faire (accès aux bibliothèques privées, modification des paramètres globaux, création d'autres profils), pour éviter d'ajouter ces restrictions a posteriori sur une architecture qui ne les prévoyait pas.
+- **Signature et distribution de l'installateur** *(nouveau)* : un exécutable/installateur non signé déclenche fréquemment des avertissements Windows SmartScreen ; anticiper le coût et le délai d'obtention d'un certificat de signature de code si une diffusion grand public est envisagée.
+- **Licence de libmpv** *(nouveau, Étape 3b)* : libmpv est chargée dynamiquement, jamais liée statiquement, précisément pour éviter d'imposer la licence GPLv2 à l'ensemble d'AetherVault. Point à vérifier explicitement à l'Étape 9 : le binaire `libmpv-2.dll` effectivement embarqué par l'installateur doit être un build compilé en configuration **LGPL** (`--enable-lgpl`), pas un build GPL par défaut — sans quoi la distribution dynamique ne suffit pas à elle seule à garantir la licence souhaitée pour AetherVault.
+
+---
+
+## 10. Prochaines étapes proposées
+
+1. Valider ensemble ce document (choix techniques, architecture, roadmap) — modifications bienvenues avant toute écriture de code.
+2. Confirmer si l'icône fournie doit servir de base unique (nécessitant une déclinaison multi-résolutions par nos soins) ou si des variantes seront fournies séparément.
+3. Une fois validé, démarrer l'**Étape 0 (socle applicatif)** : mise en place du monorepo, du shell Tauri/React, de la base SQLite initiale (avec la notion de profil dès le schéma), et du premier pipeline de packaging avec l'icône officielle — avec une explication des choix d'implémentation avant chaque bloc de code.

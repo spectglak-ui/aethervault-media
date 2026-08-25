@@ -1,0 +1,28 @@
+# ----- Node -----
+node_modules/
+dist/
+dist-ssr/
+
+# ----- Rust / Tauri -----
+target/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+
+# ----- Logs -----
+logs/
+*.log
+
+# ----- Données locales générées à l'exécution (jamais versionnées) -----
+*.db
+*.db-journal
+*.db-wal
+vault.tmp
+aethervault-frame-dumps/
+
+# ----- Éditeurs (optionnel : retire ces 2 lignes si tu veux partager tes réglages VS Code) -----
+.vscode/
+.idea/
+
+# ----- OS -----
+.DS_Store
+Thumbs.db

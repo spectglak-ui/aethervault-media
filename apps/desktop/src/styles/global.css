@@ -1,0 +1,45 @@
+* {
+  box-sizing: border-box;
+}
+
+/*
+ * `overflow: hidden` ici est la pièce maîtresse du correctif du "bandeau
+ * blanc en bas de fenêtre" observé en réduisant la hauteur : sans lui, un
+ * débordement interne (voir `.avm-shell__content` dans layout.css) peut
+ * repousser `body` au-delà de la fenêtre réelle plutôt que de défiler en
+ * interne — `body` n'ayant pas de couleur de fond définie, cette zone
+ * excédentaire s'affichait en blanc (fond par défaut du navigateur/WebView).
+ * Avec `overflow: hidden` ici, tout défilement doit obligatoirement se
+ * produire à l'intérieur de `.avm-shell__content` (seul élément avec
+ * `overflow-y: auto`) — jamais au niveau de la fenêtre elle-même.
+ */
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Transition douce lors d'un changement de thème (y compris un thème
+   importé). Limitée aux propriétés de couleur : jamais `transform` ou une
+   propriété qui déclenche un recalcul de mise en page — seulement du
+   repaint, donc peu coûteux même appliqué largement. */
+*,
+*::before,
+*::after {
+  transition:
+    background-color var(--motion-duration-base) var(--motion-ease-standard),
+    border-color var(--motion-duration-base) var(--motion-ease-standard),
+    color var(--motion-duration-base) var(--motion-ease-standard);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}

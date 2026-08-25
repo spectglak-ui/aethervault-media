@@ -1,0 +1,89 @@
+[package]
+name = "aethervault-media"
+version = "0.1.0"
+description = "AetherVault Media — centre multimédia personnel local-first"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "aethervault_media_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# --- Base de données -----------------------------------------------------
+# `aethervault.db` (catalogue public) et `vault.db` (coffre privé) utilisent
+# toutes deux ce même binding rusqlite, en "bundled" (SQLite compilé depuis
+# les sources, aucune dépendance système). Le coffre privé n'utilise PAS
+# SQLCipher (essayé puis abandonné à l'Étape 6a suite à un échec de
+# compilation d'OpenSSL — voir doc §6.4 bis, erratum) : le chiffrement du
+# coffre est géré entièrement au niveau applicatif (voir plus bas), pas au
+# niveau du moteur SQLite. La feature `backup` (API sqlite3_backup, stable
+# et ne nécessitant aucune dépendance supplémentaire) sert uniquement à
+# transférer les octets d'une connexion SQLite en mémoire vers/depuis un
+# fichier de travail temporaire — voir `security::vault`.
+rusqlite = { version = "0.31", features = ["bundled", "backup"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.24"
+
+# --- Privacy/Security Manager (Étape 6a) --------------------------------
+# Chiffrement du coffre privé entièrement applicatif : AES-256-GCM (`aes-gcm`,
+# crate Rust pur, aucune dépendance OpenSSL) pour le contenu, Argon2id
+# (`argon2`) utilisé exclusivement comme fonction de dérivation de clé (KDF) —
+# aucun hash de vérification n'est jamais stocké, voir §6.4 bis. `rand` sert
+# à générer le sel aléatoire (à la création/au changement de secret) et le
+# nonce AES-GCM (à chaque écriture du coffre) — jamais à générer la clé
+# elle-même.
+argon2 = "0.5"
+aes-gcm = "0.10"
+rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+walkdir = "2"
+notify = "6"
+
+# --- Metadata Service (Étape 4, complété Étape 5) -----------------------
+# Utilisée uniquement par le fournisseur local/hors-ligne pour analyser les
+# noms de fichiers (détection saison/épisode, année, nettoyage du titre —
+# services/metadata/filename.rs) et, en complément, la hiérarchie de
+# dossiers quand le nom de fichier seul ne révèle rien (convention
+# Titre/Saison NN — services/metadata/path_hints.rs). Aucun autre usage
+# dans le projet.
+regex = "1"
+
+# --- Playback Engine Bridge (Étape 3b, migration rendu logiciel 3c) ----
+# libmpv est chargée dynamiquement (jamais liée statiquement) : c'est ce
+# qui nous permet de rester distribuables sous une licence propre à
+# AetherVault sans hériter de la GPL — voir la note de licence dans la
+# documentation technique (§4.2) et `services/playback_engine/mod.rs`.
+libloading = "0.8"
+
+# --- Galerie d'Images privées (Étape 6b-ii) ------------------------------
+# `image` (≥ 0.25.8, requis pour la lecture/application native de
+# l'orientation EXIF) : décodage/redimensionnement, JPEG/PNG/WebP/GIF/BMP/
+# TIFF uniquement — HEIC/HEIF volontairement exclu (nécessiterait
+# `libheif`, une dépendance C, la même catégorie de risque que celle qui a
+# coûté l'abandon de SQLCipher, voir doc §6.4 bis/quater). `kamadak-exif`
+# (crate Rust pur, importé sous le nom `exif`) : uniquement pour la date de
+# prise de vue et le modèle d'appareil — jamais les coordonnées GPS,
+# volontairement non lues. `base64` : encodage des vignettes chiffrées
+# pour leur transit en JSON vers le frontend (doc §6.4 quater).
+image = "0.25.8"
+kamadak-exif = "0.6"
+base64 = "0.22"
+# Parallélisation du scan d'images (correctif de performance) : crate Rust
+# pur, aucune dépendance C, très largement utilisé dans l'écosystème.
+rayon = "1"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"

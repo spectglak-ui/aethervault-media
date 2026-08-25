@@ -1,0 +1,294 @@
+.avm-shell {
+  --sidebar-width: 240px;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  transition: grid-template-columns var(--motion-duration-base) var(--motion-ease-standard);
+  height: 100vh;
+  /* Complète `overflow: hidden` posé sur `#root` (global.css) : ceinture
+     et bretelles, pour que rien ne puisse jamais dépasser de la coquille
+     elle-même, quelle que soit la fenêtre parente. */
+  overflow: hidden;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+}
+
+/* Seul point de vérité pour la largeur réduite : piloté par l'état JS
+   (voir useSidebarCollapsed), jamais par une media query séparée — ce qui
+   éviterait tout désaccord entre la largeur CSS et l'affichage des
+   libellés des éléments de navigation. */
+.avm-shell--collapsed {
+  --sidebar-width: 76px;
+}
+
+.avm-sidebar {
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  padding: 1.25rem 0.75rem;
+  overflow: hidden;
+}
+
+.avm-sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.5rem 1.25rem;
+  min-height: 32px;
+}
+
+.avm-sidebar__brand {
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.avm-sidebar__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.avm-shell__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* Sans ce `min-height: 0` explicite, cet enfant flex (dans une colonne)
+     hérite d'un `min-height: auto` qui l'empêche de rétrécir sous la
+     hauteur naturelle de son contenu — exactement la cause du "bandeau
+     blanc" en réduisant la fenêtre : `.avm-shell__content` (flex:1,
+     overflow-y: auto) ne peut alors jamais vraiment se mettre à défiler,
+     il pousse tout le reste en dehors de la fenêtre à la place. Un des
+     pièges flexbox les plus connus et les plus faciles à oublier. */
+  min-height: 0;
+}
+
+.avm-topbar {
+  padding: 0.9rem 1.5rem;
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.avm-topbar__profile {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: none;
+  border: none;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  flex-shrink: 0;
+}
+
+.avm-topbar__profile:hover {
+  background: var(--color-surface);
+}
+
+.avm-shell__content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2rem;
+}
+
+/* ⚠️ Refonte (retour d'usage — trois états désormais : Normal / PiP /
+   Plein écran, plus de mini-lecteur docké). Historique : `.avm-player`
+   avait deux tailles (`--docked`, petit widget 340×190 en coin d'écran, et
+   `--fullscreen`, recouvrement total). Le mini-lecteur docké faisait
+   doublon avec le PiP (fenêtre Tauri séparée, `always_on_top`) en moins
+   capable — disparaissait en changeant d'application, prenait de la place
+   dans la fenêtre principale — sans compter que sa largeur de 340px ne
+   pouvait de toute façon pas contenir tous les boutons de contrôle
+   (coupés silencieusement par `overflow: hidden`).
+   Il n'existe donc plus qu'UNE seule mise en page ici, utilisée aussi
+   bien en lecture normale qu'en plein écran (les deux se distinguent
+   uniquement par l'engagement ou non de l'API Fullscreen du navigateur,
+   voir PlayerContext/PlayerDock — jamais par un style différent). Quand
+   la lecture est détachée en PiP, `PlayerDock` ne rend plus rien du tout
+   ici : plus besoin de notice ni de taille réduite, la fenêtre "player"
+   a l'exclusivité de l'affichage. */
+.avm-player {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: #000;
+}
+
+.avm-player__surface {
+  display: block;
+  width: 100%;
+  height: 100vh;
+  background: #000;
+  /* Correctif (étirement de l'image) : sans object-fit, le navigateur
+     étire le contenu déjà correctement dessiné (voir PlayerSurface.tsx)
+     pour remplir cette boîte, sans respecter son ratio d'origine. Valeur
+     de base = "Ajuster" (contain), le comportement par défaut demandé ;
+     les 3 classes ci-dessous ne font que la remplacer selon le mode
+     choisi (voir `displayMode` dans PlayerContext). */
+  object-fit: contain;
+  object-position: center;
+}
+
+.avm-player__surface--cover {
+  object-fit: cover;
+}
+
+/* "Étirer" : l'ancien comportement (déformation pour remplir tout
+   l'espace), désormais un choix explicite plutôt qu'un défaut subi. */
+.avm-player__surface--stretch {
+  object-fit: fill;
+}
+
+/* "Taille originale" : aucune mise à l'échelle, un pixel vidéo = un
+   pixel écran (recadré/centré si plus grand que l'espace disponible). */
+.avm-player__surface--original {
+  object-fit: none;
+}
+
+/* "Ajuster" (contain) est déjà la valeur de base ci-dessus — cette
+   classe existe uniquement pour que `PlayerSurface.tsx` puisse toujours
+   appliquer une classe `avm-player__surface--${displayMode}`, quel que
+   soit le mode, sans cas particulier à gérer côté JS. */
+.avm-player__surface--contain {
+  object-fit: contain;
+}
+
+/* Correctif (masquage automatique des contrôles, voir useControlsAutoHide) :
+   enveloppe ajoutée autour de <PlayerControls> dans PlayerDock, sans
+   toucher à PlayerControls lui-même — incrustation en bas de la vidéo (le
+   conteneur .avm-player est déjà position:fixed, donc un contexte de
+   positionnement valide pour ce bloc en absolute) avec un dégradé pour
+   rester lisible sur une image claire, masquable via --hidden (piloté par
+   useControlsAutoHide). */
+.avm-player__controls-wrap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding-top: 2.5rem;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0));
+  transition: opacity var(--motion-duration-base) var(--motion-ease-standard),
+    transform var(--motion-duration-base) var(--motion-ease-standard);
+}
+
+.avm-player__controls-wrap--hidden {
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+}
+
+/* Fond transparent : le dégradé de l'enveloppe ci-dessus assure déjà la
+   lisibilité par-dessus la vidéo — un fond plein ici ferait double emploi
+   et casserait l'incrustation. */
+.avm-player__controls {
+  background: transparent;
+  padding: 0.75rem 1rem;
+}
+
+/* IconButton (ui-kit) utilise `var(--color-text-muted)`, pensé pour un
+   fond de surface classique — insuffisamment lisible une fois incrusté
+   sur un dégradé vidéo sombre, quel que soit le thème clair/sombre
+   choisi dans les réglages. Correctif localisé à ce contexte précis,
+   sans toucher au composant partagé (utilisé partout ailleurs sur un
+   fond de surface normal). */
+.avm-player__controls .avm-icon-button,
+.avm-player__controls .avm-player__time,
+.avm-player__controls .avm-player__rate {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.avm-player__controls .avm-icon-button:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.avm-player__title {
+  color: var(--color-text);
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.avm-player__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  margin-bottom: 0.5rem;
+  border-radius: var(--radius-sm, 4px);
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+  color: var(--color-danger);
+  font-size: 0.8rem;
+}
+
+/* Correctif (retour utilisateur — capture d'écran) : même structure que
+   le bandeau d'erreur ci-dessus, recolorée pour une confirmation plutôt
+   qu'une erreur. Appliquée en plus de `.avm-player__error` (pas à la
+   place), donc ne redéfinit que les couleurs. */
+.avm-player__error--success {
+  background: color-mix(in srgb, var(--color-success) 14%, transparent);
+  color: var(--color-success);
+}
+
+.avm-player__error span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.avm-player__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.avm-player__row .avm-slider {
+  flex: 1;
+  min-width: 40px;
+}
+
+.avm-player__time {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.avm-player__volume {
+  width: 70px;
+  flex-shrink: 0;
+}
+
+.avm-player__rate {
+  font-size: 0.8rem;
+  background: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0.2rem 0.3rem;
+}
+
+.avm-detached-player-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+}

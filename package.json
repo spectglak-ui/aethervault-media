@@ -1,0 +1,11 @@
+{
+  "name": "aethervault-media",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AetherVault Media — centre multimédia personnel local-first",
+  "scripts": {
+    "dev": "pnpm --filter @aethervault/desktop tauri dev",
+    "build": "pnpm --filter @aethervault/desktop tauri build"
+  },
+  "packageManager": "pnpm@9.0.0"
+}
