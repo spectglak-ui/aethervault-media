@@ -18,10 +18,17 @@ pub struct ProfileRecord {
     pub can_manage_global_settings: bool,
     pub can_manage_profiles: bool,
     pub created_at: String,
+    /// Hash Argon2id (chaîne PHC) du mot de passe — `None` si le profil
+    /// n'a pas de mot de passe (accès direct, Étape 6c).
+    pub password_hash: Option<String>,
+    /// Hash Argon2id du code de récupération (Étape 6c) — `None` si
+    /// aucun code n'a été généré.
+    pub recovery_code_hash: Option<String>,
 }
 
 const SELECT_COLUMNS: &str = "id, name, profile_type, can_access_private, \
-    can_manage_global_settings, can_manage_profiles, created_at";
+    can_manage_global_settings, can_manage_profiles, created_at, \
+    password_hash, recovery_code_hash";
 
 fn map_row(row: &rusqlite::Row) -> rusqlite::Result<ProfileRecord> {
     Ok(ProfileRecord {
@@ -32,6 +39,8 @@ fn map_row(row: &rusqlite::Row) -> rusqlite::Result<ProfileRecord> {
         can_manage_global_settings: row.get(4)?,
         can_manage_profiles: row.get(5)?,
         created_at: row.get(6)?,
+        password_hash: row.get(7)?,
+        recovery_code_hash: row.get(8)?,
     })
 }
 
@@ -128,5 +137,21 @@ pub fn update_permissions(
 
 pub fn delete(conn: &Connection, id: i64) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM profiles WHERE id = ?1", rusqlite::params![id])?;
+    Ok(())
+}
+
+/// Met à jour les champs d'authentification d'un profil (mot de passe
+/// et/ou code de récupération). `None` supprime le champ (profil sans
+/// mot de passe / sans code de récupération).
+pub fn update_auth(
+    conn: &Connection,
+    id: i64,
+    password_hash: Option<&str>,
+    recovery_code_hash: Option<&str>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE profiles SET password_hash = ?1, recovery_code_hash = ?2 WHERE id = ?3",
+        rusqlite::params![password_hash, recovery_code_hash, id],
+    )?;
     Ok(())
 }

@@ -93,6 +93,11 @@ pub const MIGRATIONS: &[Migration] = &[
         description: "Persistance des réglages du lecteur (volume, muet, vitesse)",
         sql: include_str!("0012_player_settings.sql"),
     },
+	Migration {
+    version: 13,
+    description: "Authentification des profils (mot de passe + code de récupération, Étape 6c)",
+    sql: include_str!("0013_profile_auth.sql"),
+},
 ];
 
 /// Applique, dans l'ordre, toutes les migrations dont la version est

@@ -9,6 +9,7 @@ use crate::db::repositories::profile_repository::ProfileRecord;
 use crate::domain::profile;
 use crate::security::permissions::ProfilePermissions;
 use crate::state::AppState;
+use crate::db::repositories::profile_repository;
 
 #[tauri::command]
 pub fn list_profiles(state: tauri::State<AppState>) -> Result<Vec<ProfileRecord>, String> {
@@ -21,21 +22,34 @@ pub fn get_active_profile(state: tauri::State<AppState>) -> Result<ProfileRecord
     profile::get_profile(&state.db_pool, active_profile_id)
 }
 
-/// Ne demande aucune authentification propre (doc §6.5) : uniquement le
-/// coffre privé est protégé par PIN/mot de passe, pas les profils entre
-/// eux.
+/// Bascule le profil actif. Depuis l'Étape 6c, requiert l'authentification
+/// du profil cible (mot de passe ou code de récupération) si celui-ci
+/// a un mot de passe défini — sinon la bascule reste libre (accès direct).
 #[tauri::command]
 pub fn switch_active_profile(
     state: tauri::State<AppState>,
     profile_id: i64,
+    password: Option<String>,
 ) -> Result<ProfileRecord, String> {
-    let target = profile::switch_active_profile(&state.db_pool, profile_id)?;
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let target = profile_repository::get_by_id(&conn, profile_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Profil introuvable.".to_string())?;
 
+    // Vérifie le mot de passe si le profil cible en a un
+    if let Some(hash) = &target.password_hash {
+        let pwd = password.ok_or_else(|| "Ce profil requiert un mot de passe.".to_string())?;
+        if !crate::security::profile_auth::verify_password(&pwd, hash)? {
+            return Err("Mot de passe incorrect.".to_string());
+        }
+    }
+
+    // Authentification réussie : bascule
     let mut guard = state
         .active_profile_id
         .lock()
         .map_err(|_| "État du profil actif inaccessible.".to_string())?;
-    *guard = target.id;
+    *guard = Some(target.id);
 
     Ok(target)
 }

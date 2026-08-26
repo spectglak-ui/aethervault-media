@@ -12,3 +12,4 @@
 pub mod kdf;
 pub mod permissions;
 pub mod vault;
+pub mod profile_auth;

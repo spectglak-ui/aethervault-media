@@ -31,11 +31,8 @@ pub fn get_playback_progress(
     state: tauri::State<AppState>,
     media_file_id: i64,
 ) -> Result<Option<PlaybackProgressRecord>, String> {
-    let active_profile_id = *state
-        .active_profile_id
-        .lock()
-        .map_err(|_| "État du profil actif inaccessible.".to_string())?;
-    playback::get_progress(&state.db_pool, active_profile_id, media_file_id)
+    let active_profile_id = state.read_active_profile_id()?;
+playback::get_progress(&state.db_pool, active_profile_id, media_file_id)
 }
 
 #[tauri::command]
@@ -45,17 +42,14 @@ pub fn save_playback_progress(
     position_seconds: f64,
     duration_seconds: f64,
 ) -> Result<(), String> {
-    let active_profile_id = *state
-        .active_profile_id
-        .lock()
-        .map_err(|_| "État du profil actif inaccessible.".to_string())?;
-    playback::save_progress(
-        &state.db_pool,
-        active_profile_id,
-        media_file_id,
-        position_seconds,
-        duration_seconds,
-    )
+    let active_profile_id = state.read_active_profile_id()?;
+playback::save_progress(
+    &state.db_pool,
+    active_profile_id,
+    media_file_id,
+    position_seconds,
+    duration_seconds,
+)
 }
 
 /// Charge un fichier dans le moteur natif. `path` est un chemin de

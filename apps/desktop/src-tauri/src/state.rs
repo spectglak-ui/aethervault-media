@@ -1,5 +1,4 @@
 //! État partagé de l'application (`tauri::State`).
-
 use crate::db::DbPool;
 use crate::security::vault::VaultState;
 use crate::services::metadata::MetadataService;
@@ -35,14 +34,15 @@ pub struct AppState {
     /// (client HTTP, cache de clé d'API) qu'il serait coûteux de recréer
     /// à chaque appel.
     pub metadata_service: Arc<MetadataService>,
-    /// Profil actif (Profile Manager, Étape 6a, doc §6.5) : autorité
-    /// exclusivement côté Rust — jamais un identifiant transmis librement
-    /// par le frontend à chaque appel. Réinitialisé au premier profil
-    /// disposant de `can_manage_profiles` à chaque lancement (jamais
-    /// mémorisé d'une session à l'autre, par symétrie avec le
-    /// verrouillage systématique du coffre ci-dessous). `domain::profile`
-    /// est seul responsable d'y écrire.
-    pub active_profile_id: Mutex<i64>,
+    /// Profil actif (Profile Manager, Étape 6a, doc §6.5 ; Étape 6c :
+    /// devient `Option<i64>`) : autorité exclusivement côté Rust — jamais
+    /// un identifiant transmis librement par le frontend à chaque appel.
+    /// `None` = aucun profil connecté (login requis) ; au démarrage actuel
+    /// (6c-i), initialisé à `Some(premier admin)` pour conserver le
+    /// comportement existant — le basculement vers l'écran de login
+    /// arrivera avec l'intro animée (6c-ii/iv). `domain::profile` est seul
+    /// responsable d'y écrire.
+    pub active_profile_id: Mutex<Option<i64>>,
     /// État du coffre privé (Privacy/Security Manager, Étape 6a, doc
     /// §6.4/§6.4 bis) : `Locked` par défaut à chaque lancement, jamais
     /// persisté sur disque. `domain::privacy` est seul responsable d'y
@@ -54,11 +54,13 @@ impl AppState {
     /// Lit le profil actif — factorisé ici (Étape 6b-i) plutôt que dupliqué
     /// dans chaque module de `commands/` (`profile.rs`, `security.rs`,
     /// `private_video.rs` en avaient chacun une copie identique).
+    /// Étape 6c : renvoie une erreur explicite si aucun profil n'est
+    /// actif (login requis), au lieu de lire un `i64` direct.
     pub fn read_active_profile_id(&self) -> Result<i64, String> {
-        self.active_profile_id
+        let guard = self
+            .active_profile_id
             .lock()
-            .map(|guard| *guard)
-            .map_err(|_| "État du profil actif inaccessible.".to_string())
+            .map_err(|_| "État du profil actif inaccessible.".to_string())?;
+        guard.ok_or_else(|| "Aucun profil actif — login requis.".to_string())
     }
 }
-

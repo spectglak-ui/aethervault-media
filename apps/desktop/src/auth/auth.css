@@ -1,0 +1,285 @@
+/* ── Intro (Étape 6c) ─────────────────────────────────────────────── */
+.avm-intro {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  background: #0a0c10;
+  cursor: pointer;
+}
+
+.avm-intro__halo {
+  position: absolute;
+  width: 70vmin;
+  height: 70vmin;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(246, 161, 60, 0.16), transparent 70%);
+  animation: avm-intro-pulse 2.6s ease-in-out infinite;
+}
+
+@keyframes avm-intro-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.08); opacity: 1; }
+}
+
+.avm-intro__logo {
+  position: relative;
+  width: min(34vmin, 220px);
+  height: auto;
+  filter: drop-shadow(0 0 24px rgba(246, 161, 60, 0.35));
+}
+
+.avm-intro__name {
+  position: relative;
+  margin: 0;
+  color: rgba(255, 255, 255, 0.85);
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+/* ── Gate (login / onboarding) ────────────────────────────────────── */
+.avm-auth {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  overflow-y: auto;
+  padding: 2rem 1rem;
+}
+
+.avm-auth__card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+  max-width: 560px;
+  width: 100%;
+}
+
+.avm-auth__title {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.avm-auth__subtitle {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.avm-auth__hint {
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  text-align: center;
+  max-width: 46ch;
+}
+
+.avm-auth__profiles {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1.75rem;
+}
+
+.avm-auth__profile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  background: none;
+  border: none;
+  padding: 0.25rem;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.avm-auth__avatar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 1.6rem;
+  font-weight: 700;
+  transition: transform var(--motion-duration-base) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-base) var(--motion-ease-standard);
+}
+
+.avm-auth__profile:hover .avm-auth__avatar {
+  transform: translateY(-3px) scale(1.04);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.avm-auth__avatar--big {
+  width: 96px;
+  height: 96px;
+  font-size: 1.9rem;
+}
+
+.avm-auth__lock {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  padding: 4px;
+  border-radius: 50%;
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.avm-auth__profile-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.avm-auth__form {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+  max-width: 380px;
+}
+
+.avm-auth__back {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.avm-auth__label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: 100%;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.avm-auth__input {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 8px);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+}
+
+.avm-auth__input:focus {
+  outline: 2px solid rgba(246, 161, 60, 0.5);
+  outline-offset: 1px;
+}
+
+.avm-auth__error {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.avm-auth__actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.avm-auth__code {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.7rem 1rem;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md, 8px);
+  background: var(--color-surface);
+}
+
+.avm-auth__code code {
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  letter-spacing: 0.08em;
+}
+
+.avm-auth__check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.avm-auth__extra-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+
+.avm-auth__extra-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  width: 100%;
+}
+
+/* Boutons locaux (indépendants du ui-kit pour ne rien présumer) */
+.avm-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 1.1rem;
+  border: none;
+  border-radius: var(--radius-md, 8px);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter var(--motion-duration-base) var(--motion-ease-standard);
+}
+
+.avm-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.avm-btn--primary {
+  background: linear-gradient(135deg, #f6a13c, #e2574b);
+  color: #fff;
+}
+
+.avm-btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.avm-btn--ghost {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+}

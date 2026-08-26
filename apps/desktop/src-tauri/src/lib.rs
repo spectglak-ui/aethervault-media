@@ -70,8 +70,7 @@ pub fn run() {
             // par symétrie avec le coffre privé, toujours relancé verrouillé
             // ci-dessous. `ensure_default_profile` garantit qu'un tel profil
             // existe toujours à ce stade.
-            let active_profile_id = domain::profile::default_startup_profile_id(&pool)
-                .expect("aucun profil administrateur disponible au démarrage");
+            
 
             let log_dir = handle
                 .path()
@@ -127,7 +126,10 @@ pub fn run() {
                 scanning_libraries,
                 playback_engine,
                 metadata_service,
-                active_profile_id: std::sync::Mutex::new(active_profile_id),
+                        // Étape 6c-ii : plus d'admin auto-activé au démarrage — le frontend
+        // passe par AuthGate (login / onboarding) qui appelle login_profile
+        // ou setup_first_admin. `None` = aucun profil actif.
+        active_profile_id: std::sync::Mutex::new(None),
                 // `Locked` par défaut à chaque lancement — jamais restauré
                 // automatiquement (doc §6.4).
                 vault: std::sync::Mutex::new(security::vault::VaultState::Locked),
@@ -144,6 +146,14 @@ pub fn run() {
             commands::profile::rename_profile,
             commands::profile::update_profile_permissions,
             commands::profile::delete_profile,
+			// Authentification des profils (Étape 6c)
+commands::auth::get_login_state,
+commands::auth::login_profile,
+commands::auth::logout_profile,
+commands::auth::setup_first_admin,
+commands::auth::change_own_password,
+commands::auth::admin_reset_password,
+commands::auth::recover_with_code,
             commands::security::get_vault_status,
             commands::security::setup_vault,
             commands::security::unlock_vault,
