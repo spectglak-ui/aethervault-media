@@ -29,7 +29,7 @@ Contrainte fondamentale : **la v1 n'est pas un serveur**. Pas de couche client/s
 3. **Extensibilité dès le premier jour** : même si aucun plugin n'existe en v1, les points d'extension (metadata providers, plugins UI, futurs modules IA) doivent exister dans l'architecture.
 4. **Stabilité avant fonctionnalités** : chaque étape de la roadmap doit produire une base testée avant d'ajouter la suivante.
 5. **Confidentialité par design** : la bibliothèque privée est un sous-système isolé, pas une simple case à cocher sur une bibliothèque normale.
-6. **L'Accueil est une porte d'entrée organisée, jamais un flux de recommandations** : les grandes catégories (Films, Séries, Anime, Documentaires, Privé) restent en permanence visibles et constituent le cœur de la navigation — contrairement à Netflix/Plex/Jellyfin/Emby, dont l'accueil met en avant des rangées de contenu au détriment de la structure. Les futures sections dynamiques (Étape 7 : Continuer la lecture, Derniers ajouts, Favoris, Recommandés) viendront en complément des catégories, jamais à leur place. Voir §6.7.
+6. **L'Accueil est une porte d'entrée organisée, jamais un flux de recommandations** : les grandes catégories (Films, Séries, Anime, Documentaires, Privé) restent en permanence visibles et constituent le cœur de la navigation — contrairement à Netflix/Plex/Jellyfin/Emby, dont l'accueil met en avant des rangées de contenu au détriment de la structure. Les sections dynamiques viendront en complément des catégories, jamais à leur place : l'Étape 7 a livré le héro « à la une » et la rangée « Ajouts récents » de l'Accueil v2 ; « Continuer la lecture », Favoris et Recommandés restent à venir. Voir §6.7.
 7. **Rigueur "logiciel de bureau"** : installation, identité visuelle, mise à jour et désinstallation sont pensées dès la fondation, pas ajoutées après coup.
 
 ---
@@ -94,7 +94,7 @@ Voir §4.2 (Playback Engine Bridge), `apps/desktop/src-tauri/src/services/playba
 
 **Migration vers un rendu OpenGL headless annoncée mais non retrouvée dans le code livré — signalé plutôt qu'affirmé.** Les commentaires de `services/playback_engine/mpv_ffi.rs` indiquent, pour cette même étape, une migration du backend de rendu logiciel (`"sw"`) vers un backend **OpenGL headless** (`MPV_RENDER_API_TYPE_OPENGL`, un fichier `gl_render.rs` cité comme faisant partie de la livraison, types `mpv_opengl_init_params`/`mpv_opengl_fbo` réintroduits après avoir été retirés à l'Étape 3c) — présentée comme la réponse au coût CPU du rendu logiciel documenté ci-dessus. Cette évolution **n'est pas reflétée dans le code effectivement présent dans ce dépôt** : le fichier `gl_render.rs` n'existe pas dans `services/playback_engine/`, `mod.rs` ne déclare aucun module de ce nom, et `PlaybackEngineHandle::attach_surface` continue d'appeler exclusivement `sw_render::run` avec l'option `vo=libmpv` et le backend `"sw"`, strictement inchangés depuis l'Étape 3c. Impossible de déterminer, à la seule lecture du code, si cette migration a été commencée puis abandonnée sans nettoyage des commentaires, ou si le fichier correspondant a simplement été omis de cette livraison : ce point doit être clarifié avant de documenter une quelconque architecture de rendu OpenGL comme réellement en place. En l'état vérifiable, l'architecture de rendu reste celle de l'Étape 3d (logiciel + `<canvas>` WebGL) — voir l'Étape 3f (§8) pour le détail des correctifs réellement livrés sur ce pipeline inchangé.
 
-**Note de licence** : libmpv est chargée dynamiquement (jamais liée statiquement) au démarrage. C'est important : lier statiquement libmpv imposerait la licence GPLv2 à l'ensemble d'AetherVault, sauf à utiliser un build de libmpv explicitement compilé en configuration LGPL. Le chargement dynamique conserve la possibilité de distribuer AetherVault sous une licence propre, à condition que le binaire `libmpv-2.dll` embarqué par l'installateur (Étape 9) soit bien un build LGPL — point à vérifier explicitement au moment de l'empaquetage.
+**Note de licence** : libmpv est chargée dynamiquement (jamais liée statiquement) au démarrage. C'est important : lier statiquement libmpv imposerait la licence GPLv2 à l'ensemble d'AetherVault, sauf à utiliser un build de libmpv explicitement compilé en configuration LGPL. Le chargement dynamique conserve la possibilité de distribuer AetherVault sous une licence propre, à condition que le binaire `libmpv-2.dll` embarqué par l'installateur (Étape 8) soit bien un build LGPL — point vérifié à l'Étape 8 (voir §10, note « Licence de libmpv »).
 
 ### 3.3 Base de données locale
 
@@ -141,7 +141,7 @@ Ce point était absent de la v1 du document ; il est désormais traité comme un
 | **Tauri Bundler (WiX → .msi)** | Format `.msi` standard Windows, meilleure intégration avec "Applications installées" / déploiement en entreprise | Configuration WiX un peu plus verbeuse |
 | **Inno Setup (indépendant)** | Très répandu, contrôle fin de l'installateur | Outil externe à intégrer manuellement au pipeline de build |
 
-**Choix retenu : bundler officiel de Tauri**, avec génération d'un `.msi` (WiX) comme format principal — le plus adapté à un enregistrement propre dans "Applications installées" — et possibilité de produire également un `.exe` NSIS si un contrôle plus fin de l'expérience d'installation est souhaité plus tard.
+Choix retenu (révisé à l'Étape 8) : bundler officiel de Tauri, cible `nsis` uniquement (`.exe`). Le format MSI/WiX, initialement retenu, a été abandonné au moment de l'implémentation : il exige l'installation manuelle de l'outil WiX sur la machine de build, alors que l'outil NSIS est téléchargé et géré automatiquement par Tauri au premier build — et l'installeur NSIS couvre l'intégralité des besoins listés ci-dessous (enregistrement dans "Applications installées", raccourcis, désinstallation propre). Voir l'Étape 8 (§8) pour la livraison effective.
 
 Fonctionnellement, l'installateur devra couvrir, dès la configuration initiale du projet :
 - installation du logiciel dans le répertoire standard (`Program Files`) ;
@@ -164,7 +164,7 @@ Fonctionnellement, l'installateur devra couvrir, dès la configuration initiale 
 | Métadonnées | Architecture « providers » (en ligne + hors-ligne + cache local) |
 | Plugins | Contrat d'interface + sandbox, cible WASM à terme |
 | Surveillance de fichiers | Crate `notify` (Rust), abstraction cross-platform d'inotify/FSEvents/ReadDirectoryChangesW |
-| Installateur Windows | Tauri Bundler → `.msi` (WiX) principal, `.exe` NSIS en option |
+| Installateur Windows|Tauri Bundler →  .exe  NSIS (Étape 8 livrée ; MSI/WiX abandonné, toolchain manuelle)|
 | Mise à jour | Plugin Tauri Updater (vérification de signature) |
 | Plateformes | Windows dès la v1 ; Linux/macOS en extension via le même bundler |
 
@@ -301,7 +301,7 @@ aethervault-media/
 │       │   │   ├── updater/           # intégration Tauri Updater
 │       │   │   └── main.rs
 │       │   ├── icons/                 # AVM.ico + déclinaisons (icns, png multi-résolutions)
-│       │   ├── installer/             # config WiX (.msi) / NSIS (.exe)
+│       │   ├── installer/             # config NSIS (.exe) — Étape 8 ; WiX/MSI abandonné (toolchain manuelle)
 │       │   └── Cargo.toml
 │       └── src/                       # Frontend React/TypeScript
 │           ├── pages/                 # Accueil (tuiles de catégories, §6.7), Films, Séries,
@@ -453,7 +453,7 @@ Accueil (tuiles de catégories, en permanence visibles — §2, principe 6)
 
 Les catégories restent le cœur permanent de cette navigation (§2, principe 6). Les sections dynamiques prévues à l'Étape 7 (Continuer la lecture, Derniers ajouts, Favoris, Recommandés) viendront s'ajouter au-dessus ou en dessous de cette grille sur l'Accueil, jamais à sa place — voir §8, Étape 7.
 
-**Écart avec l'Étape 1 (barre latérale)** : la maquette initiale (§8, Étape 1) prévoyait des entrées Favoris/Historique dans la navigation secondaire. En l'état actuel du code (`layout/Sidebar.tsx`), la navigation secondaire est composée d'Explorer, Collections, Profils et Paramètres — Favoris et Historique n'y figurent plus, cohérent avec le fait que ces deux modules ne sont toujours pas livrés (§6.5 : seule la progression de lecture existe). `ExplorePage` et `CollectionsPage` sont des pages d'attente (`EmptyState`), qui renvoient respectivement au Search Engine (§8, Étape 7) et à une future fonctionnalité de collections thématiques non détaillée par ailleurs dans ce document — à spécifier avant implémentation.
+**Écart avec l'Étape 1 (barre latérale)** : la maquette initiale (§8, Étape 1) prévoyait des entrées Favoris/Historique dans la navigation secondaire. En l'état actuel du code (`layout/Sidebar.tsx`), la navigation secondaire est composée d'Explorer, Collections, Profils et Paramètres — Favoris et Historique n'y figurent plus, cohérent avec le fait que ces deux modules ne sont toujours pas livrés (§6.5 : seule la progression de lecture existe). `ExplorePage` est, depuis l'Étape 7, le Search Engine livré (recherche multicritère, facets distinctes, grille d'affiches cliquables — §8, Étape 7) ; `CollectionsPage` reste une page d'attente renvoyant à une future fonctionnalité de collections thématiques non détaillée par ailleurs dans ce document — à spécifier avant implémentation.
 
 ### 6.8 Paquet de sauvegarde
 
@@ -729,105 +729,84 @@ Reste hors périmètre : UI de gestion des mots de passe dans `ProfilesPage` (d�
 ## Étape 7 — Explorateur / Search Engine, métadonnées TMDB & sonde technique
 
 ### Périmètre & architecture
-- L'enrichissement TMDB est une **passe dédiée** (`services::metadata::tmdb::
-  enrich_library`) chaînée après l'appariement local, plutôt qu'un second
-  fournisseur dans `MetadataService::new` : elle couvre d'un seul mécanisme
-  les fichiers nouvellement appariés **et** le catalogue existant, sans
-  toucher au trait `MetadataProvider` (`LocalProvider` reste le seul
-  fournisseur de la chaîne, inchangé).
+- L'enrichissement TMDB est une **passe dédiée** (`services::metadata::tmdb::enrich_library`) chaînée après l'appariement local, plutôt qu'un second fournisseur dans `MetadataService::new` : elle couvre d'un seul mécanisme les fichiers nouvellement appariés **et** le catalogue existant, sans toucher au trait `MetadataProvider` (`LocalProvider` reste le seul fournisseur de la chaîne, inchangé).
 - Chaîne complète d'arrière-plan après chaque scan réussi :
   scan → appariement (`metadata`) → enrichissement TMDB (`tmdb`) →
   vignettes (`thumbnails`, Séries/Anime) → sonde technique (`probe`) →
   `done`. Chaque phase émet `library:scan-progress`, throttlée ~150 ms.
-- Périmètre produit : les 4 catégories publiques uniquement ; le coffre
-  privé n'est jamais interrogé ni enrichi.
+- Périmètre produit : les 4 catégories publiques uniquement ; le coffre privé n'est jamais interrogé ni enrichi.
 
 ### Stockage (migrations 0014 & 0015, `aethervault.db`)
-- `app_settings(key PK, value)` : `tmdb_api_key`, `tmdb_language`
-  (défaut `fr-FR`), `tmdb_auto_enrich` (défaut ON). Non sensible → hors
-  coffre (le coffre reste réservé au contenu privé, §6.4 bis).
-- `titles.tmdb_id INTEGER` (index unique partiel) + `titles.imdb_id TEXT` :
-  un `tmdb_id` non NULL marque le Titre comme enrichi ; le rattrapage ne
-  reprend que les Titres sans `tmdb_id` (pas de correction manuelle en v1).
-- `media_probes` : table 1-1 **séparée** de `media_files`
-  (`media_file_id PK`, width, height, resolution, video_codec,
-  audio_langs/subtitle_langs en JSON, probe_updated_at) — aucune requête
-  existante n'est touchée ; un fichier non sondé n'a simplement pas de
-  ligne (critères techniques absents des filtres, sans erreur).
+- `app_settings(key PK, value)` : `tmdb_api_key`, `tmdb_language` (défaut `fr-FR`), `tmdb_auto_enrich` (défaut ON). Non sensible → hors coffre.
+- `titles.tmdb_id INTEGER` (index unique partiel) + `titles.imdb_id TEXT` : un `tmdb_id` non NULL marque le Titre comme enrichi ; le rattrapage ne reprend que les Titres sans `tmdb_id`.
+- `media_probes` : table 1-1 séparée de `media_files` (`media_file_id PK`, width, height, resolution, video_codec, audio_langs/subtitle_langs en JSON, probe_updated_at) — aucune requête existante n'est touchée.
 
 ### Fournisseur TMDB (`services/metadata/tmdb.rs`, crate `ureq`)
-- Client HTTP bloquant 100 % Rust (rustls), appels sur threads
-  d'arrière-plan uniquement ; throttle 250 ms/titre ; timeout 10-15 s.
-- `search/movie|tv` (nom + année), fiche détaillée
-  `append_to_response=credits,external_ids` ; synopsis `fr-FR` avec repli
-  `en-US` si vide ; top 10 acteurs + réalisateurs (`crew.job = Director`) ;
-  jamais de valeur inventée.
-- Images : `w500` (poster) / `w1280` (backdrop) téléchargées dans
-  `<data_dir>/metadata/tmdb/<tmdb_id>_poster.jpg|_backdrop.jpg` et stockées
-  en chemins locaux (jamais d'URL morte hors-ligne, cohérent §9).
-- Dégradation : clé absente / réseau coupé → passe sautée, `LocalProvider`
-  fait le travail comme avant, aucune erreur.
+- Client HTTP bloquant 100 % Rust (rustls), appels sur threads d'arrière-plan uniquement ; throttle 250 ms/titre ; timeout 10-15 s.
+- `search/movie|tv` (nom + année), fiche détaillée `append_to_response=credits,external_ids` ; synopsis `fr-FR` avec repli `en-US` ; top 10 acteurs + réalisateurs ; jamais de valeur inventée.
+- Images : `w500` (poster) / `w1280` (backdrop) téléchargées dans `<data_dir>/metadata/tmdb/` et stockées en chemins locaux.
 
 ### Sonde technique (`services/media_probe.rs`)
-- Handle mpv dédié `vo=null` + `ao=null` + `pause=yes` (aucun rendu, aucun
-  décodage complet) ; attente **bornée** de `FILE_LOADED`
-  (`wait_event(0.2)` en boucle avec deadline 10 s — l'événement arrive
-  toujours, aucun risque de gel) ; puis `video-params/w/h`, `video-codec`
-  (normalisation `hevc → h265`) et `track-list/N/type|lang` (pistes audio
-  et sous-titres distinctes).
-- Résolution dérivée de la hauteur : ≥2000 → 2160p, ≥1300 → 1440p,
-  ≥900 → 1080p, ≥600 → 720p, sinon SD.
-- File de travail : `media_files` de la bibliothèque sans ligne
-  `media_probes` **et** `is_available = 1` (un dossier débranché ne coûte
-  rien). Échec = ligne de sonde **vide** (marqué « sondé ») : un fichier
-  pathologique ne coûte jamais 10 s à chaque scan. Filet anti-gel : thread
-  dédié + délai absolu (pattern `grab_one_frame_guarded`).
+- Handle mpv dédié `vo=null` + `ao=null` + `pause=yes` (aucun rendu) ; attente bornée de `FILE_LOADED` (deadline 10 s) ; puis `video-params/w/h`, `video-codec` (normalisation `hevc → h265`) et `track-list/N/type|lang`.
+- Résolution dérivée : ≥2000 → 2160p, ≥1300 → 1440p, ≥900 → 1080p, ≥600 → 720p, sinon SD.
+- File de travail : `media_files` sans ligne `media_probes` ET `is_available = 1` (un dossier débranché ne coûte rien). Échec = ligne vide. Filet anti-gel : thread dédié + délai absolu.
 
 ### Recherche multicritère (`title_repository::search_titles`)
-- Un `EXISTS` par famille de critère (genres, acteur, réalisateur,
-  technique) — jamais de jointure explosive ; les critères techniques
-  (résolution ET codec ET langue) doivent être satisfaits par **une même
-  sonde**, sur un fichier du Titre directement ou via un épisode
-  (`media_files.title_id` OU `episode_id IN (épisodes du titre)`).
-- `LIMIT 500` + compteur ; `list_search_facets` = valeurs distinctes
-  (genres du catalogue, résolutions/codecs/langues dépliés côté Rust depuis
-  le JSON — pas d'extension SQLite).
-- Commandes : `search_titles`, `search_facets`, `get_metadata_settings`,
-  `save_metadata_settings`.
+- Un `EXISTS` par famille de critère (genres, acteur, réalisateur, technique) — jamais de jointure explosive.
+- `LIMIT 500` + compteur ; `list_search_facets` = valeurs distinctes (genres + résolutions/codecs/langues dépliées côté Rust).
+- Commandes : `search_titles`, `search_facets`.
 
 ### Fonds d'écran de page (pages Titre & Catégorie)
-- La bannière horizontale (`__banner-wrap`) est **remplacée** par un fond
-  absolu DANS la page (`__wallpaper`, `position: absolute; inset: 0`,
-  contenu par-dessus via `__content { z-index: 1 }`) : image assombrie
-  (`brightness(0.5)`) + dégradé de fondu vers `--color-bg`. Réglage retenu
-  en test réel : `blur(0px)` (fond net assombri) — le flou fort (40 px)
-  rendait l'image méconnaissable ; un `position: fixed; z-index: -1`
-  initial passait derrière le fond opaque du shell (corrigé en `absolute`).
-- Personnalisation inchangée côté données (`custom_images`, purpose
-  `banner`) : seuls le rendu et l'emplacement des boutons changent
-  (barre d'actions du header).
+- La bannière horizontale est remplacée par un fond absolu DANS la page (`__wallpaper`, `position: absolute; inset: 0`, contenu par-dessus via `__content { z-index: 1 }`) : image assombrie + dégradé de fondu vers `--color-bg`. Réglage retenu : `blur(0px)` (fond net assombri).
+- Personnalisation inchangée côté données (`custom_images`, purpose `banner`) : seuls le rendu et l'emplacement des boutons changent.
+
+### Accueil v2 (3 niveaux)
+- Héro « à la une » : un Titre au hasard parmi ceux ayant un backdrop TMDB (`random_with_banner`), affiché en bandeau assombri avec synopsis + boutons Lecture / Plus d'infos.
+- Tuiles catégories en 16:9 (fini les logos coupés), nom en overlay, hover élévation.
+- Rangées horizontales « style Netflix » : Ajouts récents + une rangée par catégorie publique, affiches verticales, survol nom/année.
+
+### Shaders de post-traitement (Option A, WebGL)
+- Le backend de rendu mpv utilisé est **logiciel** (`sw_render`) — l'interpolation et les shaders mpv natifs (GLSL hooks) sont impossibles sans backend GPU. Option A retenue : post-traitement **WebGL côté canvas**, une seule passe, aucun FBO.
+- Quatre presets intégrés : Désactivé (passthrough), Netteté (CAS-lite), Couleurs vives, Anime4K-lite. Un seul fragment shader contenant les 4 modes, sélectionnés par `uniform float uMode` — changement instantané sans re-attach ni recompilation (l'ancienne approche « recompiler à chaque changement » figeait l'image).
+- Preset persisté dans `app_settings` (clé `post_shader`), diffusé par événement `post-shader-changed` aux deux fenêtres (principale + PiP). Menu ✨ dans les contrôles du lecteur.
+- **Interpolation de mouvement reportée** (nécessite un backend GPU mpv fonctionnel).
+
+### Fenêtre principale frameless
+- `"decorations": false` + `"maximized": true` dans `tauri.conf.json` : l'app s'ouvre maximisée sans barre de titre native.
+- `TopBar.tsx` porte `data-tauri-drag-region` (espace vide draggable) + `<WindowControls />` (réduire / agrandir / fermer) avec icône qui bascule selon l'état.
+- `core:window:allow-*` : 5 permissions ajoutées dans `capabilities/default.json`.
+
+### Scrollbars
+- Pseudo-éléments `::-webkit-scrollbar` sombres (WebView2 = Chromium) : thumb discret qui passe à l'accent au hover.
+
+### Installeur NSIS
+- `bundle.targets = ["nsis"]` (abandonné `msi` qui exige WiX installé à la main).
+- `bundle.resources` embarque `libmpv-2.dll` → installée dans `<app>\resources\`.
+- `locate_library` cherche dans `exe_dir` puis `exe_dir\resources` (repli pour le build packagé).
+- Installation `currentUser` (sans UAC), sélecteur de langue FR/EN.
+- Bases (`aethervault.db`, `vault.db`) dans `%APPDATA%` : l'installation/désinstallation n'y touche jamais.
+- libmpv est LGPL, liée dynamiquement : l'embarquer telle quelle est conforme à la licence (pas de modification).
 
 ### Erratum — leçons des tests réels
-- TMDB : 2 échecs sur 64 titres (Anime) = titres non reconnus par TMDB —
-  comportement best-effort attendu, comptés en échec sans interruption.
-- Sonde : 1179 fichiers sondés, 0 échec (16 Films + 1163 Anime au premier
-  passage).
+- TMDB : 2 échecs sur 64 titres (Anime) = titres non reconnus par TMDB — comportement best-effort attendu.
+- Sonde : 1179 fichiers sondés, 0 échec (16 Films + 1163 Anime au premier passage).
+- Rebuild du pipeline WebGL à chaque changement de shader = gel d'image → corrigé en uniform unique.
+- `position: fixed; z-index: -1` pour le wallpaper passait derrière le shell → corrigé en `absolute` dans la page.
+- Scrollbars : la règle `* { scrollbar-width: thin; ... }` invalide si le `*` manque (erreur de copier-coller).
 
-### Étape 8 — Extensibilité et préparation IA
-- **Objectif** : ouvrir l'architecture aux plugins et poser les bases de l'IA (sans l'implémenter en profondeur immédiatement).
-- **Fonctionnalités** : Plugin Host fonctionnel, premiers points d'extension (ex. provider de métadonnées additionnel), esquisse d'API pour recherche en langage naturel et correction de noms de fichiers, brique de recommandations personnalisées alimentée par Home Feed Aggregator.
-- **Modules concernés** : Plugin Host, plugin-sdk, Search Engine (extension), Metadata Service (extension), Home Feed Aggregator (extension).
-- **Difficultés possibles** : garantir l'isolation/sécurité des plugins, en particulier vis-à-vis de la bibliothèque privée et des données par profil.
-
-### Étape 9 — Packaging, installateur et distribution *(nouvelle étape)*
-- **Objectif** : produire un installateur Windows conforme aux standards d'un logiciel de bureau professionnel.
-- **Fonctionnalités** : génération `.msi` (WiX) via le bundler Tauri, intégration de l'icône officielle à toutes les échelles (exe, installateur, raccourcis, barre des tâches), création optionnelle de raccourci Bureau, raccourci Menu Démarrer automatique, inscription dans « Applications installées », désinstallation propre (avec confirmation explicite pour la conservation ou la suppression des données), intégration du Tauri Updater pour les mises à jour futures, signature de l'exécutable et de l'installateur (pour limiter les faux positifs antivirus/SmartScreen).
-- **Modules concernés** : pipeline de build (`scripts/`, `installer/`), updater.
-- **Difficultés possibles** : obtention d'un certificat de signature de code (coût, démarche) — sans signature, Windows SmartScreen peut afficher un avertissement à la première installation ; mise en place d'un canal de distribution des mises à jour (hébergement du manifeste de version) fiable même en usage local-first.
+### Étape 8 — Installateur Windows NSIS (livrée)
+(Révision de l'objectif initial de cette entrée : MSI/WiX abandonné au profit de NSIS seul — voir l'erratum en §3.7.)
+Livré :
+`bundle.targets = ["nsis"]` dans `tauri.conf.json` ; le premier build télécharge automatiquement l'outil NSIS (connexion requise une fois) puis produit `target/release/bundle/nsis/AetherVault Media_0.1.0_x64-setup.exe`.
+`installMode : "currentUser"` (installation sans UAC/admin, dans le profil utilisateur), `languages : ["French", "English"]` avec sélecteur de langue au lancement (`displayLanguageSelector : true`).
+Raccourci Menu Démarrer automatique, raccourci Bureau optionnel (case NSIS), inscription dans « Applications installées » et désinstallation propre fournis par le template NSIS — la désinstallation ne supprime que les fichiers programme.
+libmpv-2.dll embarquée via `bundle.resources` (`libs/libmpv-2.dll` → `<installation>\resources\libmpv-2.dll`), avec repli ajouté dans `locate_library` (`services/playback_engine/mod.rs`) : recherche dans `exe_dir` puis `exe_dir\resources` — le même code fonctionne en développement (dll à côté de l'exécutable) et installé. Le dll doit être copié dans `src-tauri/libs/` avant le build (procédure documentée dans le README). La note de licence du §3.2 s'applique à l'empaquetage : embarquer un build LGPL non modifié.
+Données utilisateur (`aethervault.db`, `vault.db`, vignettes et images personnalisées dans `%APPDATA%`) jamais touchées par l'installation ni la désinstallation.
+Reste hors périmètre : signature de code (avertissement SmartScreen possible au premier lancement, voir §10), Tauri Updater (mises à jour futures), paquets Linux/macOS (§3.6/§9).
 
 ---
 
-## 9. Points techniques à anticiper
+## 10. Points techniques à anticiper
 
 - **Grandes bibliothèques multimédia** : pagination et virtualisation des listes côté UI, indexation SQLite (index sur titre, genre, année, acteur), scan incrémental plutôt que scan complet à chaque démarrage.
 - **Performance générale** : scans et génération de vignettes en tâches de fond (threads/async Rust), jamais sur le thread UI.
@@ -844,12 +823,12 @@ Reste hors périmètre : UI de gestion des mots de passe dans `ProfilesPage` (d�
 - **Disques amovibles** *(nouveau)* : l'identification d'un disque doit reposer sur un identifiant stable (numéro de série de volume, UUID) plutôt que sur la lettre de lecteur (qui peut changer entre deux branchements), pour retrouver correctement les fichiers au rebranchement.
 - **Format de sauvegarde/restauration** *(nouveau)* : versionner explicitement le format du paquet d'export dès la première implémentation, pour garantir qu'une sauvegarde faite avec une ancienne version du logiciel reste restaurable après une mise à jour majeure.
 - **Permissions par profil** *(nouveau)* : définir clairement, dès l'Étape 6, ce qu'un profil Invité ou Enfant peut/ne peut pas faire (accès aux bibliothèques privées, modification des paramètres globaux, création d'autres profils), pour éviter d'ajouter ces restrictions a posteriori sur une architecture qui ne les prévoyait pas.
-- **Signature et distribution de l'installateur** *(nouveau)* : un exécutable/installateur non signé déclenche fréquemment des avertissements Windows SmartScreen ; anticiper le coût et le délai d'obtention d'un certificat de signature de code si une diffusion grand public est envisagée.
-- **Licence de libmpv** *(nouveau, Étape 3b)* : libmpv est chargée dynamiquement, jamais liée statiquement, précisément pour éviter d'imposer la licence GPLv2 à l'ensemble d'AetherVault. Point à vérifier explicitement à l'Étape 9 : le binaire `libmpv-2.dll` effectivement embarqué par l'installateur doit être un build compilé en configuration **LGPL** (`--enable-lgpl`), pas un build GPL par défaut — sans quoi la distribution dynamique ne suffit pas à elle seule à garantir la licence souhaitée pour AetherVault.
+- **Signature et distribution de l'installateur** *(nouveau)* : un exécutable/installateur non signé déclenche fréquemment des avertissements Windows SmartScreen ; anticiper le coût et le délai d'obtention d'un certificat de signature de code si une diffusion grand public est envisagée. (Étape 8 livrée non signée : un avertissement SmartScreen au premier lancement est donc attendu et normal.)
+- **Licence de libmpv** *(nouveau, Étape 3b)* : libmpv est chargée dynamiquement, jamais liée statiquement, précisément pour éviter d'imposer la licence GPLv2 à l'ensemble d'AetherVault. Point vérifié à l'Étape 8 (l'installateur embarque désormais le dll via `bundle.resources`) : le binaire `libmpv-2.dll` effectivement embarqué doit être un build compilé en configuration LGPL (`--enable-lgpl`), pas un build GPL par défaut — sans quoi la distribution dynamique ne suffit pas à elle seule à garantir la licence souhaitée pour AetherVault.
 
 ---
 
-## 10. Prochaines étapes proposées
+## 11. Prochaines étapes proposées
 
 1. Valider ensemble ce document (choix techniques, architecture, roadmap) — modifications bienvenues avant toute écriture de code.
 2. Confirmer si l'icône fournie doit servir de base unique (nécessitant une déclinaison multi-résolutions par nos soins) ou si des variantes seront fournies séparément.

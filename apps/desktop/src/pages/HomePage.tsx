@@ -1,77 +1,193 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { Card, PageHeader } from "@aethervault/ui-kit";
-import type { Category } from "@aethervault/shared-types";
+import { Info, Play } from "lucide-react";
+import { Button, PageHeader } from "@aethervault/ui-kit";
+import type { Category, TitleDetails, TitleSummary } from "@aethervault/shared-types";
 import { categoryApi } from "../features/category/api";
-import { categoryRoute } from "../lib/categoryRoute";
+import { titleApi } from "../features/title/api";
+import { libraryApi } from "../features/library/api";
+import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
 import "./pages.css";
 
 /**
- * Porte d'entrée principale de l'application (doc §2, principe 6 ; §6.7) :
- * les grandes catégories restent en permanence visibles et constituent le
- * cœur de la navigation — contrairement à Netflix/Plex/Jellyfin/Emby,
- * cette page ne présente jamais de média directement, uniquement les
- * catégories qui y mènent. Les futures sections dynamiques (Étape 7 :
- * Continuer la lecture, Derniers ajouts, Favoris, Recommandés) viendront
- * s'ajouter au-dessus ou en dessous de cette grille, jamais à sa place.
- *
- * La catégorie Privé (`key === "private"`) est un cas particulier : elle
- * n'affiche jamais de compteur (`title_count` vaut toujours `null` pour
- * elle côté backend, doc §6.4) et mène à un écran d'authentification
- * plutôt qu'à la liste de titres habituelle — cet écran lui-même arrive à
- * l'Étape 6, cette tuile reste donc pour l'instant un simple repère
- * visuel de la structure finale plutôt qu'une fonctionnalité complète.
+ * Accueil v2 (Étape 7, 3 niveaux validés) :
+ * - héro « à la une » : backdrop TMDB assombri + nom/méta/synopsis +
+ *   boutons Lecture (films) / Plus d'infos, change à chaque lancement ;
+ * - tuiles catégories en 16:9 (plus de logos coupés), nom en overlay,
+ *   hover élévation ;
+ * - rangées horizontales « style Netflix » : Ajouts récents + une rangée
+ *   par catégorie publique, affiches verticales, survol nom/année.
  */
 export function HomePage() {
   const navigate = useNavigate();
+  const { play } = usePlayer();
   const [categories, setCategories] = useState<Category[] | null>(null);
+  const [rows, setRows] = useState<Record<number, TitleSummary[]>>({});
+  const [recent, setRecent] = useState<TitleSummary[] | null>(null);
+  const [hero, setHero] = useState<TitleDetails | null>(null);
+  const [starting, setStarting] = useState(false);
 
-  const refresh = useCallback(() => {
-    categoryApi
-      .list()
-      .then(setCategories)
-      .catch(() => setCategories([]));
+  useEffect(() => {
+    categoryApi.list().then(setCategories).catch(() => setCategories([]));
+    titleApi.hero().then(setHero).catch(() => setHero(null));
+    titleApi.recent().then(setRecent).catch(() => setRecent([]));
   }, []);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    if (!categories) return;
+    for (const category of categories) {
+      if (category.key === "private") continue;
+      titleApi
+        .listByCategory(category.id)
+        .then((list) => setRows((prev) => ({ ...prev, [category.id]: list })))
+        .catch(() => {});
+    }
+  }, [categories]);
 
-  const openCategory = (category: Category) => navigate(categoryRoute(category));
+  const heroCategory =
+    hero && categories ? categories.find((c) => c.id === hero.category_id) : undefined;
+
+  const handleHeroPlay = async () => {
+    if (!hero || hero.media_file_id === null) return;
+    setStarting(true);
+    try {
+      const file = await libraryApi.getMediaFile(hero.media_file_id);
+      play({ id: file.id, title: hero.name, path: file.path, libraryId: file.library_id });
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const openTitle = (title: TitleSummary) => {
+    const category = categories?.find((c) => c.id === title.category_id);
+    if (category) navigate(`/category/${category.key}/title/${title.id}`);
+  };
 
   return (
     <div>
-      <PageHeader
-        title="Accueil"
-        description="Toute votre médiathèque, organisée par catégorie."
-      />
-
-      {categories === null && <p>Chargement…</p>}
+      {hero && assetUrl(hero.banner) ? (
+        <section className="avm-home-hero">
+          <img src={assetUrl(hero.banner)} alt="" />
+          <div className="avm-home-hero__overlay" />
+          <div className="avm-home-hero__content">
+            <h1>{hero.name}</h1>
+            <p className="avm-home-hero__meta">
+              {[
+                hero.year,
+                hero.rating ? `★ ${hero.rating.toFixed(1)}` : null,
+                heroCategory?.name ?? null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+            {hero.description && (
+              <p className="avm-home-hero__synopsis">{hero.description}</p>
+            )}
+            <div className="avm-home-hero__actions">
+              {hero.kind === "movie" && hero.media_file_id !== null && (
+                <Button
+                  variant="primary"
+                  onClick={() => void handleHeroPlay()}
+                  disabled={starting}
+                >
+                  <Play size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
+                  Lecture
+                </Button>
+              )}
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  if (heroCategory)
+                    navigate(`/category/${heroCategory.key}/title/${hero.id}`);
+                }}
+              >
+                <Info size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
+                Plus d'infos
+              </Button>
+            </div>
+          </div>
+        </section>
+      ) : (
+        <PageHeader
+          title="Accueil"
+          description="Toute votre médiathèque, organisée par catégorie."
+        />
+      )}
 
       {categories !== null && (
-        <div className="avm-category-grid">
+        <div className="avm-home-tiles">
           {categories.map((category) => (
-            <Card
+            <button
               key={category.id}
-              title={category.name}
-              subtitle={
-                category.title_count !== null
-                  ? `${category.title_count} titre(s)`
-                  : undefined
+              className="avm-home-tile"
+              onClick={() =>
+                navigate(category.key === "private" ? "/private" : `/category/${category.key}`)
               }
-              image={assetUrl(category.banner)}
-              onClick={() => openCategory(category)}
             >
-              <div className="avm-card__icon-row">
-                <span className="avm-category-tile__icon" aria-hidden="true">
-                  {category.icon}
+              {assetUrl(category.banner) ? (
+                <img src={assetUrl(category.banner)} alt="" />
+              ) : (
+                <div className="avm-card__placeholder" aria-hidden="true" />
+              )}
+              <span className="avm-home-tile__overlay">
+                <span className="avm-home-tile__name">{category.name}</span>
+                <span className="avm-home-tile__count">
+                  {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
                 </span>
-              </div>
-            </Card>
+              </span>
+            </button>
           ))}
         </div>
       )}
+
+      {recent !== null && recent.length > 0 && (
+        <PosterRow title="Ajouts récents">
+          {recent.map((title) => (
+            <PosterCard key={`recent-${title.id}`} title={title} onOpen={() => openTitle(title)} />
+          ))}
+        </PosterRow>
+      )}
+
+      {categories !== null &&
+        categories
+          .filter((c) => c.key !== "private" && (rows[c.id]?.length ?? 0) > 0)
+          .map((category) => (
+            <PosterRow key={category.id} title={category.name}>
+              {(rows[category.id] ?? []).map((title) => (
+                <PosterCard
+                  key={`${category.key}-${title.id}`}
+                  title={title}
+                  onOpen={() => openTitle(title)}
+                />
+              ))}
+            </PosterRow>
+          ))}
     </div>
+  );
+}
+
+function PosterRow({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="avm-home-row">
+      <h2>{title}</h2>
+      <div className="avm-home-row__scroll">{children}</div>
+    </section>
+  );
+}
+
+function PosterCard({ title, onOpen }: { title: TitleSummary; onOpen: () => void }) {
+  return (
+    <button className="avm-home-poster" onClick={onOpen}>
+      {assetUrl(title.poster) ? (
+        <img src={assetUrl(title.poster)} alt="" loading="lazy" />
+      ) : (
+        <div className="avm-card__placeholder" aria-hidden="true" />
+      )}
+      <span className="avm-home-poster__overlay">
+        <span className="avm-home-poster__name">{title.name}</span>
+        {title.year !== null && <span className="avm-home-poster__meta">{title.year}</span>}
+      </span>
+    </button>
   );
 }

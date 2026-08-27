@@ -129,7 +129,7 @@ export function PrivateAlbumPage() {
                 {!file.is_available && <span className="avm-badge avm-badge--warning">Indisponible</span>}
                 <IconButton
                   label={isCover ? "Couverture actuelle de l'album" : "Définir comme couverture de l'album"}
-                  onClick={(event) => handleSetCover(event, file.id)}
+                  onClick={(event: React.MouseEvent) => handleSetCover(event, file.id)}
                   className={`avm-photo-card__cover-toggle${isCover ? " avm-photo-card__cover-toggle--active" : ""}`}
                 >
                   <Star size={14} />

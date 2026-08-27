@@ -187,7 +187,7 @@ export function PrivateImageLibraryPage() {
               </button>
               <div className="avm-album-card__footer">
                 <span className="avm-album-card__name">{folderDisplayName(folder.path)}</span>
-                <IconButton label="Retirer cet album" onClick={(event) => handleRemoveFolder(event, folder.id)}>
+                <IconButton label="Retirer cet album" onClick={(event: React.MouseEvent) => handleRemoveFolder(event, folder.id)}>
                   <Trash2 size={14} />
                 </IconButton>
               </div>

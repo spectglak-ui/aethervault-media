@@ -12,6 +12,7 @@ import {
   Crop,
   X,
   Camera,
+  Sparkles,
   Volume2,
   VolumeX,
   Pin,
@@ -31,6 +32,13 @@ interface PlayerControlsProps {
 }
 
 const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
+const SHADER_LABELS: Record<string, string> = {
+  off: "Désactivé",
+  sharp: "Netteté",
+  vivid: "Couleurs vives",
+  anime: "Anime4K-lite",
+};
 
 const DISPLAY_MODE_LABELS: Record<"contain" | "cover" | "stretch" | "original", string> = {
   contain: "Ajuster",
@@ -186,6 +194,25 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
       // best-effort
     }
   };
+  
+    const openShaderMenu = async () => {
+    try {
+      const current = await playerApi.getPostShader();
+      const items = await Promise.all(
+        Object.entries(SHADER_LABELS).map(([id, label]) =>
+          CheckMenuItem.new({
+            text: label,
+            checked: current === id,
+            action: () => void playerApi.setPostShader(id),
+          })
+        )
+      );
+      const menu = await Menu.new({ items });
+      await menu.popup();
+    } catch {
+      // best-effort
+    }
+  };
 
   return (
     <div className="avm-player__controls">
@@ -291,6 +318,14 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             onClick={() => void openDisplayModeMenu()}
           >
             <Crop size={16} />
+          </IconButton>
+        )}
+		        {variant === "normal" && (
+          <IconButton
+            label="Shader d'image (post-traitement)"
+            onClick={() => void openShaderMenu()}
+          >
+            <Sparkles size={16} />
           </IconButton>
         )}
         {variant === "normal" && (

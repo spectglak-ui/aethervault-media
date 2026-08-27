@@ -1,3 +1,4 @@
+import { Channel } from "@tauri-apps/api/core";
 import { invoke } from "@tauri-apps/api/core";
 import type { PlaybackProgress, PlayerTrackList } from "@aethervault/shared-types";
 
@@ -9,6 +10,9 @@ import type { PlaybackProgress, PlayerTrackList } from "@aethervault/shared-type
  * documentation technique §4.2.
  */
 export const playerApi = {
+	  /** Étape 8 (Option A) : preset de post-traitement WebGL (shaders). */
+  getPostShader: () => invoke<string>("get_post_shader"),
+  setPostShader: (preset: string) => invoke<void>("set_post_shader", { preset }),
   getProgress: (mediaFileId: number) =>
     invoke<PlaybackProgress | null>("get_playback_progress", { mediaFileId }),
   saveProgress: (mediaFileId: number, positionSeconds: number, durationSeconds: number) =>

@@ -529,3 +529,26 @@ pub fn all_genres(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     let rows = stmt.query_map([], |row| row.get(0))?;
     rows.collect()
 }
+
+// ---- Accueil v2 (Étape 7) ---------------------------------------------
+
+/// Titres les plus récemment créés, toutes catégories confondues —
+/// la rangée « Ajouts récents » de l'Accueil.
+pub fn list_recent(conn: &Connection, limit: i64) -> rusqlite::Result<Vec<TitleRecord>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM titles ORDER BY created_at DESC, id DESC LIMIT ?1"
+    ))?;
+    let rows = stmt.query_map(rusqlite::params![limit], map_row)?;
+    rows.collect()
+}
+
+/// Un Titre au hasard parmi ceux qui ont un backdrop TMDB — le héro
+/// « à la une » de l'Accueil (change à chaque lancement).
+pub fn random_with_banner(conn: &Connection) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT id FROM titles WHERE banner_path IS NOT NULL ORDER BY RANDOM() LIMIT 1",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+}
