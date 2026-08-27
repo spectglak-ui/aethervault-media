@@ -18,7 +18,7 @@ métadonnées TMDB et sonde technique, Accueil v2 (héro + rangées), shaders de
 post-traitement WebGL, fenêtre frameless, et installateur NSIS embarquant
 libmpv. Voir la documentation technique, sections §6.5 et §8, pour le détail.
 
-## Étape 6d — Vignettes d'aperçu automatiques & barre de progression du scan
+## — Vignettes d'aperçu automatiques & barre de progression du scan
 
 - **Catalogue public (Séries & Anime uniquement)** : à la fin de chaque
   scan + appariement Metadata Service, une vignette JPEG ~480 px est extraite
@@ -37,7 +37,7 @@ libmpv. Voir la documentation technique, sections §6.5 et §8, pour le détail.
   fichier (aucun fichier ne peut geler la file), traceur d'étape pour
   diagnostiquer tout gel futur.
 
-## Étape 7 — Explorateur / Search Engine, métadonnées TMDB & sonde technique
+## — Explorateur / Search Engine, métadonnées TMDB & sonde technique
 
 - **Fournisseur en ligne TMDB** (même modèle que Jellyfin) : après chaque
   scan, les Titres sans `tmdb_id` sont enrichis automatiquement — synopsis
@@ -80,7 +80,7 @@ libmpv. Voir la documentation technique, sections §6.5 et §8, pour le détail.
   fermer personnalisés.
 - **Scrollbars** sombres, cohérentes avec le thème.
 
-## Étape 8 — Installateur Windows NSIS
+## — Installateur Windows NSIS
 
 - `pnpm --filter @aethervault/desktop tauri build` produit
   `apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.1.0_x64-setup.exe`
