@@ -1,3 +1,4 @@
+import { PrivateScanProgressBar } from "../components/PrivateScanProgressBar";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { FolderPlus, RefreshCw, Trash2 } from "lucide-react";
@@ -29,20 +30,41 @@ function describeSummary(summary: {
   return summary.failed > 0 ? `${base} ${summary.failed} fichier(s) ignoré(s) (erreur de lecture).` : base;
 }
 
+/** Étape 6d-privé : miniature chiffrée d'un fichier privé, chargée en
+ * base64 via `private_video_thumbnail` ; placeholder sobre si absente. */
+function PrivateVideoThumb({ fileId }: { fileId: number }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    privateVideoApi
+      .thumbnail(fileId)
+      .then((b64) => {
+        if (!cancelled) setSrc(`data:image/jpeg;base64,${b64}`);
+      })
+      .catch(() => {
+        /* pas encore de vignette : placeholder */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId]);
+  return <img className="avm-private-thumb" src={src ?? undefined} alt="" />;
+}
+
 /**
  * Détail d'une bibliothèque privée de type Vidéos (Étape 6b-i, doc §6.4
  * ter) — même principe que `LibraryDetailPage` (bibliothèques publiques),
- * mais scan **manuel uniquement** (pas d'écoute d'événements de
- * progression : la commande de scan est synchrone et renvoie directement
- * son résumé, voir `privateVideoApi.scan`) et aucune surveillance
- * continue des dossiers.
+ * mais scan manuel uniquement (pas d'écoute d'événements de progression :
+ * la commande de scan est synchrone et renvoie directement son résumé,
+ * voir `privateVideoApi.scan`) et aucune surveillance continue des
+ * dossiers. Étape 6d-privé : chaque fichier affiche sa miniature
+ * (stockée chiffrée dans vault.db, servie en base64).
  */
 export function PrivateVideoLibraryPage() {
   const { id } = useParams<{ id: string }>();
   const privateLibraryId = Number(id);
   const navigate = useNavigate();
   const { playQueue } = usePlayer();
-
   const [libraryName, setLibraryName] = useState<string | null>(null);
   const [folders, setFolders] = useState<PrivateVideoFolder[]>([]);
   const [files, setFiles] = useState<PrivateVideoFile[]>([]);
@@ -59,14 +81,12 @@ export function PrivateVideoLibraryPage() {
         privateVideoApi.listFolders(privateLibraryId),
         privateVideoApi.listFiles(privateLibraryId),
       ]);
-
       const library = libraries.find((candidate) => candidate.id === privateLibraryId) ?? null;
       if (!library) {
         setError("Bibliothèque privée introuvable.");
         setLibraryName(null);
         return;
       }
-
       setLibraryName(library.name);
       setFolders(folderList);
       setFiles(fileList);
@@ -83,7 +103,6 @@ export function PrivateVideoLibraryPage() {
   const handleAddFolder = async () => {
     const path = await libraryApi.pickFolder();
     if (!path) return;
-
     setBusy(true);
     setError(null);
     try {
@@ -161,7 +180,7 @@ export function PrivateVideoLibraryPage() {
           ) : undefined
         }
       />
-
+	        <PrivateScanProgressBar privateLibraryId={privateLibraryId} />
       <Modal
         open={deleteModalOpen}
         onClose={() => setDeleteModalOpen(false)}
@@ -181,10 +200,8 @@ export function PrivateVideoLibraryPage() {
           </Button>
         </div>
       </Modal>
-
       {error && <p className="avm-settings-error">{error}</p>}
       {lastSummary && !error && <p className="avm-settings-muted">{lastSummary}</p>}
-
       {folders.length === 0 ? (
         <EmptyState
           icon={<FolderPlus size={32} />}
@@ -208,7 +225,6 @@ export function PrivateVideoLibraryPage() {
               </li>
             ))}
           </ul>
-
           {files.length === 0 ? (
             <EmptyState
               title="Aucun fichier détecté pour l'instant"
@@ -233,7 +249,12 @@ export function PrivateVideoLibraryPage() {
                     playQueue(playableFiles.map(toPlayableMedia), startIndex);
                   }}
                 >
-                  <span>{file.file_name}</span>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0 }}>
+                    <PrivateVideoThumb fileId={file.id} />
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {file.file_name}
+                    </span>
+                  </div>
                   <div className="avm-media-list__badges">
                     {!file.is_available && (
                       <span className="avm-badge avm-badge--warning">Indisponible</span>

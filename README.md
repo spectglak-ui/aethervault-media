@@ -25,6 +25,25 @@ Argon2id, code de récupération affiché une fois, `active_profile_id`
 devenu `Option<i64>`) et du gate frontend (`AuthGate.tsx`, `prefers-reduced-motion`
 respecté).
 
+## Étape 6d — Vignettes d'aperçu automatiques & barre de progression du scan
+
+- **Catalogue public (Séries & Anime uniquement)** : à la fin de chaque
+  scan + appariement Metadata Service, une vignette JPEG ~480 px est extraite
+  de chaque épisode (image à ~1 s, instance libmpv dédiée, rendu logiciel)
+  puis stockée dans `<data_dir>/thumbnails/episodes/episode_<id>.jpg` ; le
+  chemin est enregistré dans `episodes.still_path`. Rattrapage manuel via la
+  commande `generate_episode_thumbnails`.
+- **Coffre privé (vidéos)** : vignettes générées au scan privé, stockées
+  **chiffrées en BLOB dans `vault.db`** (`thumbnail_blob`, migration v4) —
+  jamais en clair sur disque ; servies au frontend en base64 via
+  `private_video_thumbnail`.
+- **Barre de progression du scan** : événements `library:scan-progress`
+  (analyse → appariement → vignettes) et `private:scan-progress`, affichés
+  par `ScanProgressBar` / `PrivateScanProgressBar` à côté du bouton Scanner.
+- **Robustesse éprouvée en test réel** : thread dédié + délai absolu par
+  fichier (aucun fichier ne peut geler la file), traceur d'étape pour
+  diagnostiquer tout gel futur (« gel mpv à l'étape « X » »).
+
 ## Prérequis (Windows)
 
 1. **Rust** — via [rustup](https://rustup.rs).

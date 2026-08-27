@@ -120,3 +120,30 @@ pub fn delete(conn: &Connection, episode_id: i64) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM episodes WHERE id = ?1", rusqlite::params![episode_id])?;
     Ok(())
 }
+
+/// Épisodes d'une bibliothèque ayant un fichier média rattaché mais
+/// aucune vignette — cibles de la génération automatique (Étape 6d).
+pub fn missing_still_paths(
+    conn: &Connection,
+    library_id: i64,
+) -> rusqlite::Result<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT e.id, mf.path FROM episodes e
+         JOIN media_files mf ON mf.episode_id = e.id
+         WHERE mf.library_id = ?1 AND (e.still_path IS NULL OR e.still_path = '')
+         ORDER BY e.id ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![library_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.collect()
+}
+
+/// Enregistre le chemin de la vignette générée (Étape 6d).
+pub fn update_still_path(conn: &Connection, episode_id: i64, still_path: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE episodes SET still_path = ?1 WHERE id = ?2",
+        rusqlite::params![still_path, episode_id],
+    )?;
+    Ok(())
+}

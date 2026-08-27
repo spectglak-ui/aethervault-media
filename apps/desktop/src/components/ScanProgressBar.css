@@ -1,0 +1,46 @@
+/* Mini barre de progression de scan (Étape 6d) — variante inline, pensée
+   pour vivre à côté du bouton « Scanner » dans la liste des
+   bibliothèques. Autosuffisante : ne dépend d'aucune autre classe. */
+.avm-scan-progress--inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-right: 0.75rem;
+}
+
+.avm-scan-progress--inline .avm-scan-progress__label {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.avm-scan-progress--inline .avm-scan-progress__track {
+  width: 110px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+  position: relative;
+}
+
+.avm-scan-progress--inline .avm-scan-progress__fill {
+  height: 100%;
+  background: linear-gradient(90deg, #f6a13c, #e2574b);
+  transition: width 0.2s ease;
+}
+
+.avm-scan-progress--inline .avm-scan-progress__fill--indeterminate {
+  width: 40%;
+  animation: avm-scan-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes avm-scan-indeterminate {
+  0% {
+    margin-left: -40%;
+  }
+  100% {
+    margin-left: 100%;
+  }
+}

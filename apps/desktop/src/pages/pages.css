@@ -601,3 +601,74 @@
 .avm-photo-card__cover-toggle--active {
   color: var(--color-accent);
 }
+
+/* ── Barre de progression du scan (Étape 6d) ─────────────────────────
+   Trois phases (scan → appariement → vignettes) pilotées par
+   `library:scan-progress` ; déterminée quand `total > 0`, indéterminée
+   sinon (phase d'appariement). */
+.avm-scan-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.75rem 0 1.25rem;
+}
+
+.avm-scan-progress__labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.avm-scan-progress__track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+  position: relative;
+}
+
+.avm-scan-progress__fill {
+  height: 100%;
+  background: linear-gradient(90deg, #f6a13c, #e2574b);
+  transition: width 0.2s ease;
+}
+
+.avm-scan-progress__fill--indeterminate {
+  width: 40%;
+  animation: avm-scan-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes avm-scan-indeterminate {
+  0% {
+    margin-left: -40%;
+  }
+  100% {
+    margin-left: 100%;
+  }
+}
+
+.avm-scan-progress__current {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Vignettes vidéos privées (Étape 6d-privé) ─────────────────────── */
+.avm-private-thumb {
+  width: 96px;
+  height: 54px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.avm-private-thumb:not([src]) {
+  opacity: 0.45;
+}
