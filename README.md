@@ -1,6 +1,6 @@
 # AetherVault Media
 
-<img width="212" height="212" alt="logo" src="https://github.com/user-attachments/assets/c392e065-f0ec-4beb-8c01-15602badb9d8" />
+<img width="1919" height="635" alt="Capture d’écran 2026-08-27 214721" src="https://github.com/user-attachments/assets/9152b0d9-8d67-4511-b3d8-588f48f80259" />
 
 Centre multimédia personnel, local-first, inspiré de Jellyfin/Plex. Voir
 `docs/AetherVault-Media-Documentation-Technique.md` pour l'architecture
