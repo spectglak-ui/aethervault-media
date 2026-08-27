@@ -116,11 +116,11 @@ export function SeasonEpisodesPage() {
                   <span>
                     {episode.episode_number}. {episode.name ?? `Épisode ${episode.episode_number}`}
                   </span>
-				              {episode.resolution && (
-              <span className="avm-badge avm-badge--info" style={{ marginLeft: 8 }}>
-                {episode.resolution}
-              </span>
-            )}
+				              {episode.media_file_id !== null && (
+  <span className="avm-badge avm-badge--info" style={{ marginLeft: 8 }}>
+    Disponible
+  </span>
+)}
                   {episode.description && (
                     <span className="avm-card__subtitle">{episode.description}</span>
                   )}

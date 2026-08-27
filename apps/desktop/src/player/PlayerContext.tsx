@@ -514,6 +514,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       displayMode,
       setDisplayMode,
       isDetached,
+	  hasNext: false,
+      hasPrevious: false,
+      lastError: null,
+      dismissError: () => {},
 
       play: (media) => loadAndBroadcast([media], 0),
 

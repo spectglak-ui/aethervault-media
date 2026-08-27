@@ -12,17 +12,19 @@
   "app": {
 	"withGlobalTauri": true,
     "windows": [
-      {
-        "label": "main",
-        "title": "AetherVault Media",
-        "width": 1100,
-        "height": 720,
-        "minWidth": 900,
-        "minHeight": 600,
-        "resizable": true,
-        "center": true,
-        "additionalBrowserArgs": "--ignore-gpu-blocklist"
-      },
+          {
+      "label": "main",
+      "title": "AetherVault Media",
+      "width": 1100,
+      "height": 720,
+      "minWidth": 900,
+      "minHeight": 600,
+      "resizable": true,
+      "center": true,
+      "maximized": true,
+      "decorations": false,
+      "additionalBrowserArgs": "--ignore-gpu-blocklist"
+    },
       {
         "label": "player",
         "title": "AetherVault Media — Lecteur",
@@ -46,9 +48,19 @@
       }
     }
   },
-  "bundle": {
+      "bundle": {
     "active": true,
-    "targets": ["msi", "nsis"],
+    "targets": ["nsis"],
+    "resources": {
+      "libs/libmpv-2.dll": "libmpv-2.dll"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["French", "English"],
+        "displayLanguageSelector": true
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

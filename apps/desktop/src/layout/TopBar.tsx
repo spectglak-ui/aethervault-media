@@ -2,14 +2,22 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Avatar, SearchInput } from "@aethervault/ui-kit";
 import { useActiveProfile } from "../profile/ActiveProfileContext";
+import { WindowControls } from "../components/WindowControls";
 
+/**
+ * Barre supérieure de la fenêtre principale. Depuis le passage frameless
+ * (Étape 7, `"decorations": false` dans tauri.conf.json), elle sert aussi
+ * de barre de titre : `data-tauri-drag-region` rend l'espace vide
+ * draggable (les enfants — recherche, profil, boutons de fenêtre —
+ * restent cliquables), et `<WindowControls />` remplace les boutons
+ * natifs réduire/agrandir/fermer.
+ */
 export function TopBar() {
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
   const { activeProfile } = useActiveProfile();
-
   return (
-    <header className="avm-topbar">
+    <header className="avm-topbar" data-tauri-drag-region>
       <SearchInput
         value={query}
         onChange={setQuery}
@@ -21,18 +29,20 @@ export function TopBar() {
           }
         }}
       />
-
-      {activeProfile && (
-        <button
-          type="button"
-          className="avm-topbar__profile"
-          onClick={() => navigate("/profiles")}
-          title="Changer de profil"
-        >
-          <Avatar name={activeProfile.name} size={28} />
-          <span>{activeProfile.name}</span>
-        </button>
-      )}
+      <div className="avm-topbar__right">
+        {activeProfile && (
+          <button
+            type="button"
+            className="avm-topbar__profile"
+            onClick={() => navigate("/profiles")}
+            title="Changer de profil"
+          >
+            <Avatar name={activeProfile.name} size={28} />
+            <span>{activeProfile.name}</span>
+          </button>
+        )}
+        <WindowControls />
+      </div>
     </header>
   );
 }

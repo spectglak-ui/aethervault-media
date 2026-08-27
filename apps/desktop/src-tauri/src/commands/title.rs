@@ -87,3 +87,16 @@ pub fn search_titles(
 pub fn search_facets(state: tauri::State<AppState>) -> Result<title::SearchFacets, String> {
     title::search_facets(&state.db_pool)
 }
+
+/// Accueil v2 (Étape 7) : rangée « Ajouts récents ».
+#[tauri::command]
+pub fn list_recent_titles(state: tauri::State<AppState>) -> Result<Vec<TitleSummary>, String> {
+    title::list_recent_titles(&state.db_pool, 20)
+}
+
+/// Accueil v2 (Étape 7) : héro « à la une » (aléatoire parmi les Titres
+/// ayant un backdrop), `null` si aucun Titre enrichi pour l'instant.
+#[tauri::command]
+pub fn get_home_hero(state: tauri::State<AppState>) -> Result<Option<TitleDetails>, String> {
+    title::home_hero(&state.db_pool)
+}

@@ -15,7 +15,7 @@
 
 /* Seul point de vérité pour la largeur réduite : piloté par l'état JS
    (voir useSidebarCollapsed), jamais par une media query séparée — ce qui
-   éviterait tout désaccord entre la largeur CSS et l'affichage des
+   évitera tout désaccord entre la largeur CSS et l'affichage des
    libellés des éléments de navigation. */
 .avm-shell--collapsed {
   --sidebar-width: 76px;
@@ -93,6 +93,15 @@
 
 .avm-topbar__profile:hover {
   background: var(--color-surface);
+}
+
+/* Étape 7 (frameless) : groupe droit de la barre du haut — chip profil +
+   boutons de fenêtre (réduire / agrandir / fermer). */
+.avm-topbar__right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
 }
 
 .avm-shell__content {
@@ -291,4 +300,45 @@
   background: var(--color-bg);
   color: var(--color-text-muted);
   font-family: var(--font-sans);
+}
+
+/* ---- Scrollbars sombres (Étape 7) : cohérentes avec le thème --------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text-muted) 45%, transparent) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-text-muted) 45%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-accent) 75%, transparent);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ---- Boutons de fenêtre personnalisés (frameless, Étape 7) ----------- */
+.avm-window-controls {
+  display: flex;
+  gap: 2px;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+.avm-window-controls button {
+  border-radius: 6px;
+}
+.avm-window-controls button:last-child:hover {
+  background: var(--color-danger, #e03131);
+  border-color: transparent;
+  color: #fff;
 }

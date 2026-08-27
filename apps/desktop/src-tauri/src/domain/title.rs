@@ -365,3 +365,34 @@ fn aggregate_technical_info(
         subtitle_langs,
     }
 }
+// ---- Accueil v2 (Étape 7) ---------------------------------------------
+
+pub fn list_recent_titles(pool: &DbPool, limit: i64) -> Result<Vec<TitleSummary>, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let records = title_repository::list_recent(&conn, limit).map_err(|e| e.to_string())?;
+    let mut summaries = Vec::with_capacity(records.len());
+    for record in records {
+        let custom_poster =
+            custom_image_repository::get(&conn, ENTITY_TYPE, record.id, POSTER_PURPOSE)
+                .map_err(|e| e.to_string())?;
+        summaries.push(TitleSummary {
+            id: record.id,
+            category_id: record.category_id,
+            kind: record.kind,
+            name: record.name,
+            year: record.year,
+            poster: custom_poster.or(record.poster_path),
+        });
+    }
+    Ok(summaries)
+}
+
+/// Héro de l'Accueil : un Titre enrichi (backdrop TMDB) choisi au hasard,
+/// réutilisant `get_title_details` pour la fiche complète.
+pub fn home_hero(pool: &DbPool) -> Result<Option<TitleDetails>, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let Some(id) = title_repository::random_with_banner(&conn).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    get_title_details(pool, id).map(Some)
+}

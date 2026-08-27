@@ -454,12 +454,17 @@ fn locate_library() -> Result<PathBuf, String> {
         .and_then(|path| path.parent().map(|p| p.to_path_buf()))
         .ok_or_else(|| "Impossible de déterminer le dossier de l'exécutable".to_string())?;
     const CANDIDATES: &[&str] = &["libmpv-2.dll", "mpv-2.dll", "libmpv.dll"];
-    for name in CANDIDATES {
-        let candidate = exe_dir.join(name);
+// Deux emplacements : à côté de l'exécutable (dev / copie manuelle) ou
+// dans le dossier resources de l'installation NSIS (Étape 7, bundle).
+let dirs = [exe_dir.clone(), exe_dir.join("resources")];
+for name in CANDIDATES {
+    for dir in &dirs {
+        let candidate = dir.join(name);
         if candidate.exists() {
             return Ok(candidate);
         }
     }
+}
     Err(format!(
         "Aucune libmpv trouvée à côté de l'exécutable ({}). Le binaire redistribuable (build \
          LGPL) doit être déposé là par l'installateur — voir doc §4.2.",

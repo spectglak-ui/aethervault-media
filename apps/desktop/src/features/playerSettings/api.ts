@@ -15,5 +15,5 @@ export const playerSettingsApi = {
   get: () => invoke<PlayerSettingsChangedPayload | null>("get_player_settings", {}),
 
   save: (settings: PlayerSettingsChangedPayload) =>
-    invoke<void>("save_player_settings", settings),
+    invoke<void>("save_player_settings", settings as unknown as Record<string, unknown>),
 };
