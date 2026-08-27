@@ -672,3 +672,180 @@
 .avm-private-thumb:not([src]) {
   opacity: 0.45;
 }
+
+/* ---- Étape 7 : Explorateur / Search Engine -------------------------- */
+.avm-explore-bar {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.avm-explore-input {
+  flex: 1;
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+.avm-explore-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  margin-bottom: 1.25rem;
+}
+.avm-explore-filters__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+.avm-explore-filters__label {
+  width: 90px;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+}
+.avm-explore-filters input,
+.avm-explore-filters select {
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  width: auto;
+}
+.avm-chip {
+  border: 1px solid var(--color-border);
+  background: none;
+  color: var(--color-text);
+  border-radius: 999px;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.avm-chip--active {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  font-weight: 600;
+}
+.avm-explore-card {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+}
+.avm-explore-card:hover {
+  border-color: var(--color-accent);
+}
+.avm-explore-card img,
+.avm-explore-card .avm-card__placeholder {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  display: block;
+  background: var(--color-surface);
+}
+.avm-explore-card__name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 0.5rem 0.6rem 0;
+}
+.avm-explore-card .avm-card__subtitle {
+  padding: 0.1rem 0.6rem 0.6rem;
+}
+/* ---- Étape 7 (lot 4) : fond d'écran de page flouté -------------------
+   Remplace la bannière horizontale : la bannière (ou l'affiche à défaut)
+   devient un fond absolu DANS la page, flouté + assombri, contenu
+   par-dessus. Les boutons de personnalisation vivent en haut à droite. */
+.avm-title-page {
+  position: relative;
+}
+.avm-title-page__wallpaper {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  z-index: 0;
+  pointer-events: none;
+}
+.avm-title-page__wallpaper img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: blur(0px) saturate(1.1) brightness(0.5);
+  transform: scale(1.05);
+}
+.avm-title-page__wallpaper-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.45) 0%,
+    color-mix(in srgb, var(--color-bg) 82%, transparent) 60%,
+    var(--color-bg) 100%
+  );
+}
+.avm-title-page__wallpaper-actions {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 2;
+  display: flex;
+  gap: 0.35rem;
+}
+.avm-title-page > *:not(.avm-title-page__wallpaper):not(.avm-title-page__wallpaper-actions) {
+  position: relative;
+  z-index: 1;
+}
+/* ---- Étape 7 (lot 4) : fond d'écran de page des catégories ------------
+   Même contrat que la page Titre : la bannière horizontale disparaît,
+   le fond (bannière de catégorie ou affiche du premier titre) habille
+   toute la page, flouté + assombri ; contenu par-dessus. */
+.avm-category-page {
+  position: relative;
+}
+.avm-category-page__wallpaper {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  z-index: 0;
+  pointer-events: none;
+}
+.avm-category-page__wallpaper img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: blur(0px) saturate(1.1) brightness(0.5);
+  transform: scale(1.05);
+}
+.avm-category-page__wallpaper-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.20) 0%,
+    color-mix(in srgb, var(--color-bg) 82%, transparent) 60%,
+    var(--color-bg) 100%
+  );
+}
+.avm-category-page__content {
+  position: relative;
+  z-index: 1;
+}

@@ -43,6 +43,34 @@ respecté).
 - **Robustesse éprouvée en test réel** : thread dédié + délai absolu par
   fichier (aucun fichier ne peut geler la file), traceur d'étape pour
   diagnostiquer tout gel futur (« gel mpv à l'étape « X » »).
+  
+  ## Étape 7 — Explorateur / Search Engine, métadonnées TMDB & sonde technique
+
+- **Fournisseur en ligne TMDB** (même modèle que Jellyfin) : après chaque
+  scan, les Titres sans `tmdb_id` sont enrichis automatiquement — synopsis
+  (fr-FR, repli en-US), genres, studios, top 10 casting, réalisateurs,
+  note, affiche/backdrop **téléchargés localement** dans
+  `<data_dir>/metadata/tmdb/`. Recherche par nom + année + nature
+  (`search/movie` / `search/tv`), `tmdb_id` + `imdb_id` conservés
+  (migration 0014). Clé API saisie dans **Paramètres → « Métadonnées en
+  ligne (TMDB) »** (stockée dans `aethervault.db`, jamais en dur),
+  enrichissement automatique désactivable.
+- **Sonde technique mpv** : résolution, codec vidéo, langues audio et
+  sous-titres de chaque fichier, lus sans lecture (handle dédié `vo=null`,
+  en pause) et stockés dans `media_probes` (migration 0015) — affichés dans
+  la section « Informations techniques » des pages Titre et utilisés comme
+  critères de recherche.
+- **Explorateur** (`/explore`) : recherche multicritère — nom, nature
+  (film/série), catégories, années, genres, acteur, réalisateur,
+  résolution, codec, langue audio — avec facets distinctes, debounce
+  300 ms, compteur de résultats et grille d'affiches cliquables. La barre
+  de recherche globale du shell navigue vers `/explore?q=…`. Périmètre :
+  catalogue public uniquement, **jamais le coffre privé**.
+- **Fonds d'écran de page** : sur les pages Titre et Catégorie, la petite
+  bannière horizontale est remplacée par un fond de page (bannière, ou
+  affiche du premier titre à défaut, assombrie et fondue vers le noir) ;
+  la personnalisation existante est conservée (boutons changer /
+  réinitialiser dans la barre d'actions).
 
 ## Prérequis (Windows)
 

@@ -726,11 +726,92 @@ Reste hors périmètre : UI de gestion des mots de passe dans `ProfilesPage` (d�
 - `private_video_scanner` : `ScanProgressEmitter` (partagé avec le domaine
   pour la phase `thumbnails`).
 
-### Étape 7 — Fonctionnalités avancées
-- **Objectif** : recherche multi-critères, sections dynamiques en complément de l'Accueil, sauvegarde/restauration.
-- **Fonctionnalités** : Search Engine complet, **sections dynamiques (Continuer la lecture, Derniers ajouts, Favoris, Bibliothèques récemment consultées — Recommandations en emplacement réservé pour l'IA future)**, **export/import de configuration (Backup/Restore Manager)**, mode image dans l'image. Ces sections viennent s'ajouter à la grille de tuiles de catégories posée dès l'Étape 4 (§6.7) — au-dessus ou en dessous d'elle sur l'Accueil —, **jamais à sa place** : les catégories restent en toute circonstance visibles et constituent le cœur permanent de la navigation (§2, principe 6). L'Accueil d'AetherVault Media ne devient jamais une simple page de recommandations façon Netflix/Plex/Jellyfin/Emby.
-- **Modules concernés** : Search Engine, Home Feed Aggregator, Backup/Restore Manager, Favorites/History Manager, UI.
-- **Difficultés possibles** : performance de recherche sur de très grandes bibliothèques (nécessite indexation) ; conception d'un format d'export versionné et rétrocompatible pour ne pas casser une restauration future après mise à jour du logiciel ; intégrer les sections dynamiques sans reléguer visuellement les catégories au second plan.
+## Étape 7 — Explorateur / Search Engine, métadonnées TMDB & sonde technique
+
+### Périmètre & architecture
+- L'enrichissement TMDB est une **passe dédiée** (`services::metadata::tmdb::
+  enrich_library`) chaînée après l'appariement local, plutôt qu'un second
+  fournisseur dans `MetadataService::new` : elle couvre d'un seul mécanisme
+  les fichiers nouvellement appariés **et** le catalogue existant, sans
+  toucher au trait `MetadataProvider` (`LocalProvider` reste le seul
+  fournisseur de la chaîne, inchangé).
+- Chaîne complète d'arrière-plan après chaque scan réussi :
+  scan → appariement (`metadata`) → enrichissement TMDB (`tmdb`) →
+  vignettes (`thumbnails`, Séries/Anime) → sonde technique (`probe`) →
+  `done`. Chaque phase émet `library:scan-progress`, throttlée ~150 ms.
+- Périmètre produit : les 4 catégories publiques uniquement ; le coffre
+  privé n'est jamais interrogé ni enrichi.
+
+### Stockage (migrations 0014 & 0015, `aethervault.db`)
+- `app_settings(key PK, value)` : `tmdb_api_key`, `tmdb_language`
+  (défaut `fr-FR`), `tmdb_auto_enrich` (défaut ON). Non sensible → hors
+  coffre (le coffre reste réservé au contenu privé, §6.4 bis).
+- `titles.tmdb_id INTEGER` (index unique partiel) + `titles.imdb_id TEXT` :
+  un `tmdb_id` non NULL marque le Titre comme enrichi ; le rattrapage ne
+  reprend que les Titres sans `tmdb_id` (pas de correction manuelle en v1).
+- `media_probes` : table 1-1 **séparée** de `media_files`
+  (`media_file_id PK`, width, height, resolution, video_codec,
+  audio_langs/subtitle_langs en JSON, probe_updated_at) — aucune requête
+  existante n'est touchée ; un fichier non sondé n'a simplement pas de
+  ligne (critères techniques absents des filtres, sans erreur).
+
+### Fournisseur TMDB (`services/metadata/tmdb.rs`, crate `ureq`)
+- Client HTTP bloquant 100 % Rust (rustls), appels sur threads
+  d'arrière-plan uniquement ; throttle 250 ms/titre ; timeout 10-15 s.
+- `search/movie|tv` (nom + année), fiche détaillée
+  `append_to_response=credits,external_ids` ; synopsis `fr-FR` avec repli
+  `en-US` si vide ; top 10 acteurs + réalisateurs (`crew.job = Director`) ;
+  jamais de valeur inventée.
+- Images : `w500` (poster) / `w1280` (backdrop) téléchargées dans
+  `<data_dir>/metadata/tmdb/<tmdb_id>_poster.jpg|_backdrop.jpg` et stockées
+  en chemins locaux (jamais d'URL morte hors-ligne, cohérent §9).
+- Dégradation : clé absente / réseau coupé → passe sautée, `LocalProvider`
+  fait le travail comme avant, aucune erreur.
+
+### Sonde technique (`services/media_probe.rs`)
+- Handle mpv dédié `vo=null` + `ao=null` + `pause=yes` (aucun rendu, aucun
+  décodage complet) ; attente **bornée** de `FILE_LOADED`
+  (`wait_event(0.2)` en boucle avec deadline 10 s — l'événement arrive
+  toujours, aucun risque de gel) ; puis `video-params/w/h`, `video-codec`
+  (normalisation `hevc → h265`) et `track-list/N/type|lang` (pistes audio
+  et sous-titres distinctes).
+- Résolution dérivée de la hauteur : ≥2000 → 2160p, ≥1300 → 1440p,
+  ≥900 → 1080p, ≥600 → 720p, sinon SD.
+- File de travail : `media_files` de la bibliothèque sans ligne
+  `media_probes` **et** `is_available = 1` (un dossier débranché ne coûte
+  rien). Échec = ligne de sonde **vide** (marqué « sondé ») : un fichier
+  pathologique ne coûte jamais 10 s à chaque scan. Filet anti-gel : thread
+  dédié + délai absolu (pattern `grab_one_frame_guarded`).
+
+### Recherche multicritère (`title_repository::search_titles`)
+- Un `EXISTS` par famille de critère (genres, acteur, réalisateur,
+  technique) — jamais de jointure explosive ; les critères techniques
+  (résolution ET codec ET langue) doivent être satisfaits par **une même
+  sonde**, sur un fichier du Titre directement ou via un épisode
+  (`media_files.title_id` OU `episode_id IN (épisodes du titre)`).
+- `LIMIT 500` + compteur ; `list_search_facets` = valeurs distinctes
+  (genres du catalogue, résolutions/codecs/langues dépliés côté Rust depuis
+  le JSON — pas d'extension SQLite).
+- Commandes : `search_titles`, `search_facets`, `get_metadata_settings`,
+  `save_metadata_settings`.
+
+### Fonds d'écran de page (pages Titre & Catégorie)
+- La bannière horizontale (`__banner-wrap`) est **remplacée** par un fond
+  absolu DANS la page (`__wallpaper`, `position: absolute; inset: 0`,
+  contenu par-dessus via `__content { z-index: 1 }`) : image assombrie
+  (`brightness(0.5)`) + dégradé de fondu vers `--color-bg`. Réglage retenu
+  en test réel : `blur(0px)` (fond net assombri) — le flou fort (40 px)
+  rendait l'image méconnaissable ; un `position: fixed; z-index: -1`
+  initial passait derrière le fond opaque du shell (corrigé en `absolute`).
+- Personnalisation inchangée côté données (`custom_images`, purpose
+  `banner`) : seuls le rendu et l'emplacement des boutons changent
+  (barre d'actions du header).
+
+### Erratum — leçons des tests réels
+- TMDB : 2 échecs sur 64 titres (Anime) = titres non reconnus par TMDB —
+  comportement best-effort attendu, comptés en échec sans interruption.
+- Sonde : 1179 fichiers sondés, 0 échec (16 Films + 1163 Anime au premier
+  passage).
 
 ### Étape 8 — Extensibilité et préparation IA
 - **Objectif** : ouvrir l'architecture aux plugins et poser les bases de l'IA (sans l'implémenter en profondeur immédiatement).

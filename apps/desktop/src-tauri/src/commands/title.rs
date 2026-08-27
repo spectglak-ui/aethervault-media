@@ -73,3 +73,17 @@ pub fn set_title_banner(
 pub fn delete_title(state: tauri::State<AppState>, title_id: i64) -> Result<(), String> {
     title::delete_title(&state.db_pool, title_id)
 }
+
+/// Explorateur (Étape 7, lot 3) : recherche multicritère + facets.
+#[tauri::command]
+pub fn search_titles(
+    state: tauri::State<AppState>,
+    query: crate::db::repositories::title_repository::TitleSearchQuery,
+) -> Result<Vec<crate::db::repositories::title_repository::TitleSearchResult>, String> {
+    title::search_titles(&state.db_pool, query)
+}
+
+#[tauri::command]
+pub fn search_facets(state: tauri::State<AppState>) -> Result<title::SearchFacets, String> {
+    title::search_facets(&state.db_pool)
+}

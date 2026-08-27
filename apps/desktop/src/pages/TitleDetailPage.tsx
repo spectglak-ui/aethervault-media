@@ -1,20 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Play } from "lucide-react";
-import { Button, EmptyState, PageHeader } from "@aethervault/ui-kit";
+import { ImageUp, Play, RotateCcw } from "lucide-react";
+import { Button, EmptyState, IconButton, PageHeader } from "@aethervault/ui-kit";
 import type { TitleDetails } from "@aethervault/shared-types";
 import { titleApi } from "../features/title/api";
 import { libraryApi } from "../features/library/api";
+import { categoryApi } from "../features/category/api";
 import { PersonalizableImage } from "../features/personalization/PersonalizableImage";
 import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
 import "./pages.css";
 
 /** `"5432 s"` → `"1 h 30 min"` — registre différent de `formatTime`
- * (player/formatTime.ts) : celui-ci affiche une progression de lecture en
- * temps réel (`m:ss`), celui-ci une durée totale à l'échelle d'une page de
- * navigation. Volontairement deux fonctions séparées plutôt qu'une
- * abstraction commune pour un besoin aussi simple. */
+ * (player/formatTime.ts) : celui-ci affiche une durée totale à l'échelle
+ * d'une page de navigation. */
 function formatDuration(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.round((totalSeconds % 3600) / 60);
@@ -23,28 +22,16 @@ function formatDuration(totalSeconds: number): string {
 }
 
 /**
- * Page d'un Titre (doc §6.3) : affiche, bannière, description, genres,
- * casting, durée, année, studios, bouton Lecture — pour `kind = "movie"`
- * (Films, ou Documentaires unitaires) directement ; pour `kind = "series"`
- * (Séries, Anime, Documentaires à épisodes), la liste des Saisons mène
- * vers `SeasonEpisodesPage`.
- *
- * Note volontaire (signalée avant implémentation, voir échange précédent) :
- * cette page n'affiche PAS la liste des pistes audio/sous-titres. La
- * commande `player_list_tracks` (Étape 3e) n'interroge que le fichier
- * *actuellement chargé* dans mpv — impossible de lister les pistes d'un
- * fichier avant de le charger, sans démarrer une lecture juste pour
- * sonder ses pistes (comportement intrusif : couperait une lecture en
- * cours ailleurs, perturberait la Queue). La sélection de pistes reste
- * donc là où elle fonctionne réellement : les contrôles du lecteur, une
- * fois la lecture démarrée (menu Piste audio / Sous-titres, déjà
- * fonctionnel depuis l'Étape 3e) — pas dupliquée ici.
+ * Page d'un Titre (doc §6.3). Étape 7 (lot 4) : la bannière horizontale
+ * est remplacée par un fond d'écran de page (bannière — ou affiche à
+ * défaut — floutée + assombrie), personnalisé via les deux boutons en
+ * haut à droite (même logique `custom_images` qu'avant, seul le rendu
+ * change).
  */
 export function TitleDetailPage() {
   const { key, titleId } = useParams<{ key: string; titleId: string }>();
   const navigate = useNavigate();
   const { play } = usePlayer();
-
   const [title, setTitle] = useState<TitleDetails | null | undefined>(undefined);
   const [starting, setStarting] = useState(false);
 
@@ -74,31 +61,45 @@ export function TitleDetailPage() {
   if (title === undefined) {
     return <p>Chargement…</p>;
   }
-
   if (title === null) {
     return <EmptyState title="Titre introuvable" description="Ce titre n'existe plus." />;
   }
 
   const banner = assetUrl(title.banner);
   const poster = assetUrl(title.poster);
+  const wallpaper = banner ?? poster;
+
+  const handlePickWallpaper = async () => {
+    const sourcePath = await categoryApi.pickImage();
+    if (!sourcePath) return;
+    await titleApi.setBanner(title.id, sourcePath);
+    refresh();
+  };
+  const handleResetWallpaper = async () => {
+    await titleApi.setBanner(title.id, null);
+    refresh();
+  };
 
   return (
     <div className="avm-title-page">
-      <div className="avm-title-page__banner-wrap">
-        <PersonalizableImage
-          src={banner}
-          alt=""
-          variant="banner"
-          isCustom={title.banner_is_custom}
-          onPick={async (sourcePath) => {
-            await titleApi.setBanner(title.id, sourcePath);
-            refresh();
-          }}
-          onReset={async () => {
-            await titleApi.setBanner(title.id, null);
-            refresh();
-          }}
-        />
+      {wallpaper && (
+        <div className="avm-title-page__wallpaper" aria-hidden="true">
+          <img src={wallpaper} alt="" />
+          <div className="avm-title-page__wallpaper-overlay" />
+        </div>
+      )}
+      <div className="avm-title-page__wallpaper-actions">
+        <IconButton label="Changer le fond de page" onClick={() => void handlePickWallpaper()}>
+          <ImageUp size={16} />
+        </IconButton>
+        {title.banner_is_custom && (
+          <IconButton
+            label="Réinitialiser le fond automatique"
+            onClick={() => void handleResetWallpaper()}
+          >
+            <RotateCcw size={16} />
+          </IconButton>
+        )}
       </div>
 
       <div className="avm-title-page__header">
@@ -118,7 +119,6 @@ export function TitleDetailPage() {
             }}
           />
         </div>
-
         <div className="avm-title-page__info">
           <PageHeader
             title={title.name}
@@ -130,9 +130,7 @@ export function TitleDetailPage() {
               .filter(Boolean)
               .join(" · ")}
           />
-
           {title.description && <p className="avm-title-page__description">{title.description}</p>}
-
           {title.genres.length > 0 && (
             <div className="avm-title-page__chips">
               {title.genres.map((genre) => (
@@ -142,13 +140,11 @@ export function TitleDetailPage() {
               ))}
             </div>
           )}
-
           {title.directors.length > 0 && (
             <p>
               <strong>Réalisation :</strong> {title.directors.join(", ")}
             </p>
           )}
-
           {title.cast.length > 0 && (
             <p>
               <strong>Casting :</strong>{" "}
@@ -159,21 +155,83 @@ export function TitleDetailPage() {
                 .join(", ")}
             </p>
           )}
-
           {title.studios.length > 0 && (
             <p>
               <strong>Studios :</strong> {title.studios.join(", ")}
             </p>
           )}
-
           {title.kind === "movie" && (
-            <Button variant="primary" onClick={handlePlay} disabled={starting || title.media_file_id === null}>
+            <Button
+              variant="primary"
+              onClick={handlePlay}
+              disabled={starting || title.media_file_id === null}
+            >
               <Play size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
               Lecture
             </Button>
           )}
         </div>
       </div>
+
+      {title.technical &&
+        (title.technical.resolutions.length > 0 ||
+          title.technical.codecs.length > 0 ||
+          title.technical.audio_langs.length > 0 ||
+          title.technical.subtitle_langs.length > 0) && (
+          <div className="avm-title-page__technical">
+            <h3>Informations techniques</h3>
+            <div className="avm-title-page__technical-grid">
+              {title.technical.resolutions.length > 0 && (
+                <div>
+                  <span className="avm-technical-label">Résolution</span>
+                  <div className="avm-technical-chips">
+                    {title.technical.resolutions.map((res) => (
+                      <span key={res} className="avm-badge avm-badge--info">
+                        {res}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {title.technical.codecs.length > 0 && (
+                <div>
+                  <span className="avm-technical-label">Codec vidéo</span>
+                  <div className="avm-technical-chips">
+                    {title.technical.codecs.map((codec) => (
+                      <span key={codec} className="avm-badge avm-badge--info">
+                        {codec.toUpperCase()}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {title.technical.audio_langs.length > 0 && (
+                <div>
+                  <span className="avm-technical-label">Audio</span>
+                  <div className="avm-technical-chips">
+                    {title.technical.audio_langs.map((lang) => (
+                      <span key={lang} className="avm-badge">
+                        {lang.toUpperCase()}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {title.technical.subtitle_langs.length > 0 && (
+                <div>
+                  <span className="avm-technical-label">Sous-titres</span>
+                  <div className="avm-technical-chips">
+                    {title.technical.subtitle_langs.map((lang) => (
+                      <span key={lang} className="avm-badge">
+                        {lang.toUpperCase()}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
       {title.kind === "series" && (
         <section className="avm-title-page__seasons">

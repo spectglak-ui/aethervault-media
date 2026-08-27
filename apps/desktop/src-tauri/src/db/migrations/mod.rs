@@ -98,6 +98,16 @@ pub const MIGRATIONS: &[Migration] = &[
     description: "Authentification des profils (mot de passe + code de récupération, Étape 6c)",
     sql: include_str!("0013_profile_auth.sql"),
 },
+        Migration {
+        version: 14,
+        description: "Métadonnées TMDB et paramètres applicatifs (Étape 7)",
+        sql: include_str!("0014_tmdb_and_settings.sql"),
+    },
+	    Migration {
+        version: 15,
+        description: "Sonde technique des fichiers média (résolution, codec vidéo, langues audio/sous-titres) pour l'Explorateur — Étape 7",
+        sql: include_str!("0015_technical_probe.sql"),
+    },
 ];
 
 /// Applique, dans l'ordre, toutes les migrations dont la version est

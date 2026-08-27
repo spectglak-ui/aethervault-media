@@ -7,6 +7,7 @@ import type { AppStatus, SecretKind, VaultStatus } from "@aethervault/shared-typ
 import { useActiveProfile } from "../profile/ActiveProfileContext";
 import { privacyApi } from "../features/privacy/api";
 import "./pages.css";
+import { metadataApi } from "../features/settings/api";
 
 type DiagnosticsState =
   | { kind: "loading" }
@@ -287,6 +288,89 @@ function ExperimentalPlayerSection() {
   );
 }
 
+/** Section « Métadonnées en ligne (TMDB) » (Étape 7) : clé API stockée
+ * dans aethervault.db (non sensible), langue des fiches, enrichissement
+ * automatique après scan. */
+function TmdbSection() {
+  const [apiKey, setApiKey] = useState("");
+  const [language, setLanguage] = useState("fr-FR");
+  const [autoEnrich, setAutoEnrich] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    metadataApi
+      .getSettings()
+      .then((settings) => {
+        setApiKey(settings.api_key);
+        setLanguage(settings.language);
+        setAutoEnrich(settings.auto_enrich);
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : "Chargement impossible."));
+  }, []);
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    setSaved(false);
+    setError(null);
+    try {
+      await metadataApi.saveSettings({ api_key: apiKey, language, auto_enrich: autoEnrich });
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Enregistrement impossible.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="avm-settings-section">
+      <h2>Métadonnées en ligne (TMDB)</h2>
+      <form onSubmit={handleSubmit} className="avm-vault-form">
+        <p className="avm-settings-muted">
+          Enrichit automatiquement les fiches (synopsis, genres, casting, affiches) via TMDB,
+          comme Jellyfin. La clé reste sur cette machine.
+        </p>
+        <label className="avm-form-field">
+          <span>Clé API TMDB (v3)</span>
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder="Collez votre clé API"
+          />
+        </label>
+        <label className="avm-form-field">
+          <span>Langue des fiches</span>
+          <select value={language} onChange={(event) => setLanguage(event.target.value)}>
+            <option value="fr-FR">Français (repli anglais si indisponible)</option>
+            <option value="en-US">Anglais</option>
+          </select>
+        </label>
+        <label className="avm-form-field">
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={autoEnrich}
+              onChange={(event) => setAutoEnrich(event.target.checked)}
+            />
+            Enrichir automatiquement après chaque scan
+          </span>
+        </label>
+        {error && <p className="avm-settings-error">{error}</p>}
+        {saved && <p className="avm-settings-success">Paramètres TMDB enregistrés.</p>}
+        <div className="avm-form-actions">
+          <Button type="submit" variant="primary" disabled={saving}>
+            {saving ? "Enregistrement…" : "Enregistrer"}
+          </Button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
 export function SettingsPage() {
   return (
     <div>
@@ -295,6 +379,7 @@ export function SettingsPage() {
         description="Apparence, sécurité du coffre privé et informations système."
       />
       <AppearanceSection />
+      <TmdbSection />
       <SecuritySection />
       <ExperimentalPlayerSection />
       <SystemInfoSection />
