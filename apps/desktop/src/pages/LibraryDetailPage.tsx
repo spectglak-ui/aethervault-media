@@ -23,16 +23,33 @@ function toPlayableMedia(file: MediaFile): PlayableMedia {
   };
 }
 
+/** Payload de `library:scan-progress` (Étape 6d) — un seul événement,
+ * trois phases utiles + le signal de fin `done`. */
+interface ScanProgressPayload {
+  library_id: number;
+  phase: "scan" | "metadata" | "thumbnails" | "done";
+  processed: number;
+  total: number;
+  current: string;
+}
+
+const PHASE_LABELS: Record<ScanProgressPayload["phase"], string> = {
+  scan: "Analyse des fichiers…",
+  metadata: "Appariement des métadonnées…",
+  thumbnails: "Génération des vignettes…",
+  done: "",
+};
+
 export function LibraryDetailPage() {
   const { id } = useParams<{ id: string }>();
   const libraryId = Number(id);
   const navigate = useNavigate();
   const { playQueue } = usePlayer();
-
   const [library, setLibrary] = useState<Library | null>(null);
   const [folders, setFolders] = useState<LibraryFolder[]>([]);
   const [mediaFiles, setMediaFiles] = useState<MediaFile[]>([]);
   const [scanning, setScanning] = useState(false);
+  const [progress, setProgress] = useState<ScanProgressPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -62,25 +79,39 @@ export function LibraryDetailPage() {
   // (un seul fichier ajouté/modifié/supprimé, pas un nouveau scan complet),
   // tandis que "library:scan-complete"/"scan-error" concernent un scan
   // manuel déclenché depuis cette page.
+  //
+  // Étape 6d : "library:scan-progress" pilote la barre de progression sur
+  // les trois phases (scan → appariement → vignettes). `scan-complete` ne
+  // masque plus l'état "en cours" : la chaîne continue après le scan
+  // (appariement puis vignettes) — seul `phase: "done"` rend la main.
   useEffect(() => {
     const unlistenUpdated = listen<number>("library:updated", (event) => {
       if (event.payload === libraryId) {
         refresh();
       }
     });
-
+    const unlistenProgress = listen<ScanProgressPayload>("library:scan-progress", (event) => {
+  if (event.payload.library_id !== libraryId) return;
+  if (event.payload.phase === "done") {
+    setScanning(false);
+    window.setTimeout(() => setProgress(null), 900);
+  } else {
+    setProgress(event.payload);
+    setScanning(true);
+  }
+});
     const unlistenComplete = listen<ScanCompleteEvent>("library:scan-complete", (event) => {
       if (event.payload.library_id === libraryId) {
-        setScanning(false);
         refresh();
       }
     });
     const unlistenError = listen<string>("library:scan-error", () => {
       setScanning(false);
+      setProgress(null);
     });
-
     return () => {
       unlistenUpdated.then((stop) => stop());
+      unlistenProgress.then((stop) => stop());
       unlistenComplete.then((stop) => stop());
       unlistenError.then((stop) => stop());
     };
@@ -89,7 +120,6 @@ export function LibraryDetailPage() {
   const handleAddFolder = async () => {
     const path = await libraryApi.pickFolder();
     if (!path) return;
-
     setScanning(true);
     try {
       await libraryApi.addFolder(libraryId, path);
@@ -126,6 +156,11 @@ export function LibraryDetailPage() {
     return <p>Chargement…</p>;
   }
 
+  const percent =
+    progress && progress.total > 0
+      ? Math.min(100, Math.round((progress.processed / progress.total) * 100))
+      : 0;
+
   return (
     <div>
       <PageHeader
@@ -152,7 +187,28 @@ export function LibraryDetailPage() {
           </div>
         }
       />
-
+      {progress && progress.phase !== "done" && (
+  <div className="avm-scan-progress">
+    <div className="avm-scan-progress__labels">
+      <span>{PHASE_LABELS[progress.phase]}</span>
+      {progress.total > 0 && (
+        <span>
+          {progress.processed}/{progress.total}
+        </span>
+      )}
+    </div>
+    <div className="avm-scan-progress__track">
+      {progress.total > 0 ? (
+        <div className="avm-scan-progress__fill" style={{ width: `${percent}%` }} />
+      ) : (
+        <div className="avm-scan-progress__fill avm-scan-progress__fill--indeterminate" />
+      )}
+    </div>
+    {progress.current && (
+      <span className="avm-scan-progress__current">{progress.current}</span>
+    )}
+  </div>
+)}
       <Modal
         open={deleteModalOpen}
         onClose={() => setDeleteModalOpen(false)}
@@ -173,9 +229,7 @@ export function LibraryDetailPage() {
           </Button>
         </div>
       </Modal>
-
       {error && <p className="avm-settings-error">{error}</p>}
-
       {folders.length === 0 ? (
         <EmptyState
           icon={<FolderPlus size={32} />}
@@ -194,7 +248,6 @@ export function LibraryDetailPage() {
               </li>
             ))}
           </ul>
-
           {mediaFiles.length === 0 ? (
             <EmptyState
               title="Aucun fichier détecté pour l'instant"
@@ -221,7 +274,9 @@ export function LibraryDetailPage() {
                       // liste telle que l'utilisateur la voit. Les fichiers
                       // indisponibles sont exclus, comme ils l'étaient déjà
                       // du clic lui-même.
-                      const playableFiles = mediaFiles.filter((candidate) => candidate.is_available);
+                      const playableFiles = mediaFiles.filter(
+                        (candidate) => candidate.is_available
+                      );
                       const startIndex = playableFiles.findIndex(
                         (candidate) => candidate.id === file.id
                       );

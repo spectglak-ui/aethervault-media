@@ -9,6 +9,7 @@ import { titleApi } from "../features/title/api";
 import { libraryApi } from "../features/library/api";
 import { CreateLibraryModal } from "../features/library/CreateLibraryModal";
 import { PersonalizableImage } from "../features/personalization/PersonalizableImage";
+import { ScanProgressBar } from "../components/ScanProgressBar";
 import { assetUrl } from "../lib/assetUrl";
 import "./pages.css";
 
@@ -20,11 +21,15 @@ import "./pages.css";
  * l'utilisateur de choisir une bibliothèque au préalable — c'est
  * précisément ce que permet le modèle Catégorie plutôt que l'ancien
  * `media_type` par bibliothèque.
+ *
+ * Étape 6d : la section « Bibliothèques » affiche désormais une mini
+ * barre de progression (`ScanProgressBar`) à côté du bouton « Scanner »
+ * de chaque bibliothèque — pilotée par l'événement `library:scan-progress`
+ * (phases scan → appariement → vignettes), invisible au repos.
  */
 export function CategoryPage() {
   const { key } = useParams<{ key: string }>();
   const navigate = useNavigate();
-
   const [category, setCategory] = useState<Category | null | undefined>(undefined);
   const [titles, setTitles] = useState<TitleSummary[] | null>(null);
   const [libraries, setLibraries] = useState<Library[]>([]);
@@ -32,7 +37,6 @@ export function CategoryPage() {
   const [deleteTarget, setDeleteTarget] = useState<TitleSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
@@ -43,7 +47,6 @@ export function CategoryPage() {
     categoryApi.list().then((categories) => {
       const found = categories.find((candidate) => candidate.key === key) ?? null;
       setCategory(found);
-
       if (found) {
         titleApi
           .listByCategory(found.id)
@@ -51,7 +54,6 @@ export function CategoryPage() {
           .catch(() => setTitles([]));
       }
     });
-
     libraryApi
       .list()
       .then((all) => setLibraries(all.filter((lib) => lib.category_id !== null)))
@@ -113,7 +115,6 @@ export function CategoryPage() {
   };
 
   const allSelected = (titles?.length ?? 0) > 0 && selectedIds.size === titles?.length;
-
   const toggleSelectAll = () => {
     if (!titles) return;
     setSelectedIds(allSelected ? new Set() : new Set(titles.map((title) => title.id)));
@@ -124,13 +125,11 @@ export function CategoryPage() {
     const ids = Array.from(selectedIds);
     const results = await Promise.allSettled(ids.map((id) => titleApi.remove(id)));
     const failedCount = results.filter((result) => result.status === "rejected").length;
-
     setBulkDeleting(false);
     setBulkDeleteOpen(false);
     setSelectionMode(false);
     setSelectedIds(new Set());
     refresh();
-
     setBulkError(
       failedCount > 0 ? `${failedCount} suppression(s) sur ${ids.length} ont échoué.` : null
     );
@@ -139,7 +138,6 @@ export function CategoryPage() {
   if (category === undefined) {
     return <p>Chargement…</p>;
   }
-
   if (category === null) {
     return (
       <EmptyState
@@ -169,7 +167,6 @@ export function CategoryPage() {
           }}
         />
       </div>
-
       <PageHeader
         title={`${category.icon ?? ""} ${category.name}`.trim()}
         description={
@@ -217,16 +214,13 @@ export function CategoryPage() {
           )
         }
       />
-
       {bulkError && <p className="avm-settings-error">{bulkError}</p>}
-
       {titles !== null && titles.length === 0 && (
         <EmptyState
           title="Aucun titre pour l'instant"
           description="Ajoutez une bibliothèque et lancez un scan pour commencer à remplir cette catégorie."
         />
       )}
-
       {titles !== null && titles.length > 0 && (
         <div className="avm-category-grid avm-category-grid--posters">
           {titles.map((title) => (
@@ -254,7 +248,6 @@ export function CategoryPage() {
           ))}
         </div>
       )}
-
       {categoryLibraries.length > 0 && (
         <section className="avm-category-libraries">
           <h2>Bibliothèques</h2>
@@ -263,6 +256,10 @@ export function CategoryPage() {
               <li key={lib.id} className="avm-media-list__item">
                 <span>{lib.name}</span>
                 <div className="avm-media-list__badges">
+                  {/* Étape 6d : barre de progression du scan (invisible au
+                      repos, apparaît pendant scan → appariement → vignettes
+                      et disparaît au signal "done"). */}
+                  <ScanProgressBar libraryId={lib.id} />
                   <Button variant="ghost" onClick={() => libraryApi.scan(lib.id)}>
                     <RefreshCw size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
                     Scanner
@@ -276,7 +273,6 @@ export function CategoryPage() {
           </ul>
         </section>
       )}
-
       <Modal
         open={deleteTarget !== null}
         onClose={() => setDeleteTarget(null)}
@@ -300,7 +296,6 @@ export function CategoryPage() {
           </Button>
         </div>
       </Modal>
-
       <Modal
         open={bulkDeleteOpen}
         onClose={() => setBulkDeleteOpen(false)}
@@ -323,7 +318,6 @@ export function CategoryPage() {
           </Button>
         </div>
       </Modal>
-
       <CreateLibraryModal
         open={modalOpen}
         categoryId={category.id}

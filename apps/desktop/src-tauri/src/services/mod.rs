@@ -9,3 +9,4 @@ pub mod private_image_scanner;
 pub mod private_video_scanner;
 pub mod scanner;
 pub mod watcher;
+pub mod episode_thumbnails;

@@ -655,6 +655,77 @@ Livré :
 Modules concernés : `auth/AuthGate.tsx`, `auth/auth.css`, `App.tsx`, `lib.rs`, `db/seed.rs`, `tauri.conf.json`.
 Reste hors périmètre : UI de gestion des mots de passe dans `ProfilesPage` (définir/changer/retirer son mot de passe, reset admin pour les autres profils, affichage unique du code de récupération) ; bouton de déconnexion dans la TopBar ; mémorisation du profil actif d'une session à l'autre ; upload d'images personnalisées pour les avatars (seuls dégradés + initiales pour l'instant).
 
+## Étape 6d — Vignettes d'aperçu automatiques (catalogue public & coffre privé)
+
+### Périmètre produit
+- Public : génération automatique **uniquement pour les catégories Séries et
+  Anime** (filtre sur `categories.key` dans
+  `commands::library::match_library_metadata`). Les Films n'ont pas
+  d'épisodes ; les Documentaires à épisodes sont exclus par choix
+  utilisateur.
+- Privé : vignettes des vidéos privées générées au scan manuel.
+- Déclenchement : à la fin de chaque scan réussi, dans le même thread
+  d'arrière-plan que l'appariement (jamais le thread UI).
+
+### Stockage (cohérent §9 / §6.4 bis)
+- Public : JPEG ~480 px sur disque (`<data_dir>/thumbnails/episodes/
+  episode_<id>.jpg`), chemin en base dans `episodes.still_path` (colonne de
+  la migration 0004, remplie depuis la 6d). Jamais de BLOB en base publique.
+- Privé : JPEG encodé **en mémoire** puis stocké **chiffré** en BLOB dans
+  `vault.db` (`private_video_files.thumbnail_blob`, migration v4
+  `0004_private_video_thumbnails.sql`). Aucun aperçu privé n'existe en clair
+  sur disque ; lecture via `private_video_thumbnail` (base64), même pattern
+  que la galerie d'images.
+
+### Extraction (`services::episode_thumbnails`)
+- Instance libmpv **dédiée** par fichier (jamais le handle de lecture), rendu
+  logiciel `MPV_RENDER_API_TYPE_SW` (principe de `sw_render.rs`) pour UNE
+  seule image, encodée par le crate `image`.
+- **Configuration prouvée en test réel** : `pause=yes` + `seek 0 relative`
+  immédiatement après `mpv_render_context_set_update_callback`. Sans ce
+  seek, mpv considère la frame comme déjà « présentée » et ne réveille
+  jamais le nouveau contexte (même mécanisme que le correctif « image figée
+  du PiP ») ; sans `pause=yes`, `mpv_terminate_destroy` se bloque au
+  nettoyage.
+- Position de capture `start=1` : un `start=10%` déclenche au chargement un
+  seek proportionnel à la durée qui se transforme en parcours interminable
+  sur certains MKV (HEVC sans table de cues) — constaté en test réel.
+- **Anti-gel** : extraction dans un thread dédié avec délai absolu
+  (10 s + marge 5 s) ; traceur d'étape (`Stage`) nommant précisément tout
+  gel futur ; thread gelé abandonné (fuite tolérée, cas exceptionnel).
+- **Aucun pompage `wait_event`** dans la boucle d'extraction : sur un handle
+  en pause, cet appel se bloque indéfiniment sur ce build libmpv (constaté
+  en test réel). Réveil uniquement par callback mpv + Condvar, comme le
+  thread de rendu de production.
+
+### Erratum — leçons des tests réels
+- `vo=image` / option globale `image-outdir` refusée par ce build libmpv
+  (code -5, `MPV_ERROR_OPTION_NOT_FOUND`) → piste abandonnée au profit du
+  rendu SW + encodage `image`.
+- `hwdec=auto-safe` suspecté de gels → `hwdec=no` retenu pour l'extraction.
+- Un fichier pathologique n'interrompt jamais le scan : échec compté,
+  fichier suivant (pattern de robustesse hérité du scanner).
+
+### Barre de progression du scan
+- Public `library:scan-progress` : `{ library_id, phase, processed, total,
+  current }` ; phases `scan` (total connu par un premier comptage),
+  `metadata` (indéterminée), `thumbnails` (déterminée), `done` (fin de
+  chaîne). Throttlée à ~150 ms.
+- Privé `private:scan-progress` : même forme avec `private_library_id` ;
+  la phase `scan` affiche le dossier courant (« sous-bibliothèque ») puis le
+  fichier courant ; `done` émis par `domain::private_video`. Événement
+  séparé pour éviter toute collision d'ids public/privé.
+- Frontend : `components/ScanProgressBar.tsx` (CategoryPage) et
+  `components/PrivateScanProgressBar.tsx` (PrivateVideoLibraryPage).
+
+### Ajouts techniques
+- Commandes : `generate_episode_thumbnails`, `private_video_thumbnail`.
+- `episode_repository` : `missing_still_paths`, `update_still_path`.
+- `private_video_repository` : `missing_thumbnails`, `update_thumbnail`,
+  `get_thumbnail`.
+- `private_video_scanner` : `ScanProgressEmitter` (partagé avec le domaine
+  pour la phase `thumbnails`).
+
 ### Étape 7 — Fonctionnalités avancées
 - **Objectif** : recherche multi-critères, sections dynamiques en complément de l'Accueil, sauvegarde/restauration.
 - **Fonctionnalités** : Search Engine complet, **sections dynamiques (Continuer la lecture, Derniers ajouts, Favoris, Bibliothèques récemment consultées — Recommandations en emplacement réservé pour l'IA future)**, **export/import de configuration (Backup/Restore Manager)**, mode image dans l'image. Ces sections viennent s'ajouter à la grille de tuiles de catégories posée dès l'Étape 4 (§6.7) — au-dessus ou en dessous d'elle sur l'Accueil —, **jamais à sa place** : les catégories restent en toute circonstance visibles et constituent le cœur permanent de la navigation (§2, principe 6). L'Accueil d'AetherVault Media ne devient jamais une simple page de recommandations façon Netflix/Plex/Jellyfin/Emby.

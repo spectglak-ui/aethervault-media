@@ -243,3 +243,43 @@ pub fn clear_progress(conn: &Connection, profile_id: i64, media_file_id: i64) ->
     )?;
     Ok(())
 }
+
+/// Étape 6d-privé : fichiers d'une bibliothèque privée n'ayant pas encore
+/// de vignette — cibles de la génération automatique au scan.
+// --- Vignettes (Étape 6d-privé) -----------------------------------------
+
+/// Fichiers d'une bibliothèque privée n'ayant pas encore de vignette —
+/// cibles de la génération automatique au scan.
+pub fn missing_thumbnails(
+    conn: &Connection,
+    private_library_id: i64,
+) -> rusqlite::Result<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, path FROM private_video_files
+         WHERE private_library_id = ?1 AND thumbnail_blob IS NULL
+         ORDER BY id ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![private_library_id], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?;
+    rows.collect()
+}
+
+/// Enregistre la vignette (JPEG en octets) d'un fichier privé — le BLOB
+/// vivra chiffré dans vault.db après `persist_if_unlocked`.
+pub fn update_thumbnail(conn: &Connection, file_id: i64, blob: &[u8]) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE private_video_files SET thumbnail_blob = ?1 WHERE id = ?2",
+        rusqlite::params![blob, file_id],
+    )?;
+    Ok(())
+}
+
+/// Lit la vignette d'un fichier privé (None si pas encore générée).
+pub fn get_thumbnail(conn: &Connection, file_id: i64) -> rusqlite::Result<Option<Vec<u8>>> {
+    conn.query_row(
+        "SELECT thumbnail_blob FROM private_video_files WHERE id = ?1",
+        rusqlite::params![file_id],
+        |row| row.get(0),
+    )
+}

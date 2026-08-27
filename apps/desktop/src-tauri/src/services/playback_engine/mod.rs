@@ -2,9 +2,11 @@
 //! (abandon du rendu Win32/OpenGL natif au profit du rendu logiciel +
 //! `<canvas>`, voir le rapport de transmission "écran noir" et la
 //! discussion qui a suivi).
-mod mpv_ffi;
+pub(crate) mod mpv_ffi;
 mod sw_render;
-use mpv_ffi::{MpvFormat, MpvFunctions};
+
+use mpv_ffi::MpvFormat;
+pub use mpv_ffi::MpvFunctions;
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::path::PathBuf;
@@ -75,6 +77,13 @@ impl PlaybackEngineState {
 }
 
 impl PlaybackEngineHandle {
+	    /// Étape 6d : expose les fonctions libmpv chargées pour qu'un service
+    /// externe (vignettes d'épisodes) crée ses PROPRES handles mpv
+    /// indépendants — jamais le handle de lecture lui-même, pour ne
+    /// jamais perturber une lecture en cours.
+    pub fn mpv_functions(&self) -> Arc<MpvFunctions> {
+        self.functions.clone()
+    }
     pub fn start(app_handle: AppHandle) -> Result<Arc<Self>, String> {
         let library_path = locate_library()?;
         let functions =

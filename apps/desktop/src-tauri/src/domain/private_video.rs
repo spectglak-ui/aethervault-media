@@ -3,7 +3,7 @@
 //! Même double vérification que le reste du Privacy/Security Manager
 //! (`domain::privacy`) à chaque fonction : coffre déverrouillé **et**
 //! profil actif autorisé (`can_access_private`) — réutilise directement
-//! `domain::privacy::require_private_access`/`require_unlocked_connection`
+//! `domain::privacy::require_private_access` / `require_unlocked_connection`
 //! plutôt que de dupliquer ce critère.
 //!
 //! Stratégie de persistance différenciée (doc §6.4 bis) :
@@ -11,10 +11,16 @@
 //!   persistées immédiatement (une fois à la fin du scan, jamais fichier
 //!   par fichier — voir `services::private_video_scanner`) ;
 //! - progression de lecture : mise à jour toutes les 5 secondes pendant la
-//!   lecture, **jamais persistée à chaque tick** — seulement à la fin
+//!   lecture, jamais persistée à chaque tick — seulement à la fin
 //!   d'un visionnage (marqué terminé) et au verrouillage du coffre
 //!   (`commands::security::lock_vault`).
-
+//!
+//! Étape 6d-privé : vignettes d'aperçu des vidéos privées, générées au
+//! scan (comme le catalogue public) mais stockées CHIFFRÉES en BLOB dans
+//! `vault.db` (`thumbnail_blob`, migration v4) — jamais sur disque en
+//! clair, conformément à l'exception déjà posée en §6.4 bis pour les
+//! vignettes du coffre. Génération best-effort : un fichier pathologique
+//! est compté en échec et n'interrompt ni le scan ni les autres fichiers.
 use crate::db::repositories::private_repository;
 use crate::db::repositories::private_video_repository::{
     self, PrivatePlaybackProgressRecord, PrivateVideoFileRecord,
@@ -22,9 +28,14 @@ use crate::db::repositories::private_video_repository::{
 use crate::db::DbPool;
 use crate::domain::privacy::{require_private_access, require_unlocked_connection};
 use crate::security::vault::VaultState;
+use crate::services::episode_thumbnails;
+use crate::services::playback_engine::MpvFunctions;
 use crate::services::private_video_scanner::{self, PrivateScanSummary};
+use crate::services::private_video_scanner::ScanProgressEmitter;
+use tauri::{AppHandle, Emitter};
 use serde::Serialize;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Seuil au-delà duquel un visionnage est considéré terminé — identique à
 /// celui du catalogue public (`domain::playback::COMPLETED_THRESHOLD`,
@@ -59,10 +70,8 @@ pub fn list_folders(
 ) -> Result<Vec<PrivateVideoFolderSummary>, String> {
     require_private_access(pool, active_profile_id)?;
     let conn = require_unlocked_connection(vault_state)?;
-
     let folders = private_video_repository::list_folders_by_library(conn, private_library_id)
         .map_err(|e| e.to_string())?;
-
     Ok(folders
         .into_iter()
         .map(|folder| PrivateVideoFolderSummary {
@@ -96,21 +105,23 @@ pub fn add_folder(
     active_profile_id: i64,
     vault_state: &VaultState,
     private_library_id: i64,
+        mpv_functions: Option<Arc<MpvFunctions>>,
     path: &str,
+    app: &AppHandle,
 ) -> Result<PrivateScanSummary, String> {
     require_private_access(pool, active_profile_id)?;
     let conn = require_unlocked_connection(vault_state)?;
     require_video_library(conn, private_library_id)?;
-
     if !Path::new(path).is_dir() {
         return Err("Le chemin choisi n'est pas un dossier accessible.".to_string());
     }
-
     private_video_repository::create_folder(conn, private_library_id, path).map_err(|e| e.to_string())?;
-    let summary = private_video_scanner::scan_library(conn, private_library_id)?;
-
+        let summary = private_video_scanner::scan_library(conn, private_library_id, app)?;
+    // Étape 6d-privé : vignettes chiffrées, best-effort, avant la
+    // persistance unique de fin de scan.
+    let _ = generate_thumbnails_after_scan(conn, mpv_functions.as_ref(), private_library_id, app);
     vault_state.persist_if_unlocked()?;
-
+    emit_private_done(app, private_library_id);
     Ok(summary)
 }
 
@@ -122,7 +133,6 @@ pub fn remove_folder(
 ) -> Result<(), String> {
     require_private_access(pool, active_profile_id)?;
     let conn = require_unlocked_connection(vault_state)?;
-
     private_video_repository::delete_folder(conn, folder_id).map_err(|e| e.to_string())?;
     vault_state.persist_if_unlocked()
 }
@@ -134,15 +144,115 @@ pub fn trigger_scan(
     active_profile_id: i64,
     vault_state: &VaultState,
     private_library_id: i64,
+    mpv_functions: Option<Arc<MpvFunctions>>,
+    app: &AppHandle,
 ) -> Result<PrivateScanSummary, String> {
     require_private_access(pool, active_profile_id)?;
     let conn = require_unlocked_connection(vault_state)?;
     require_video_library(conn, private_library_id)?;
-
-    let summary = private_video_scanner::scan_library(conn, private_library_id)?;
+    let summary = private_video_scanner::scan_library(conn, private_library_id, app)?;
+    // Étape 6d-privé : vignettes chiffrées des fichiers sans aperçu.
+    let _ = generate_thumbnails_after_scan(conn, mpv_functions.as_ref(), private_library_id, app);
     vault_state.persist_if_unlocked()?;
-
+    emit_private_done(app, private_library_id);
     Ok(summary)
+}
+
+/// Signal de fin de toute la chaîne scan → vignettes : la barre de
+/// progression privée se masque ~1 s après (composant frontend).
+fn emit_private_done(app: &AppHandle, private_library_id: i64) {
+    let _ = app.emit(
+        "private:scan-progress",
+        serde_json::json!({
+            "private_library_id": private_library_id,
+            "phase": "done",
+            "processed": 0,
+            "total": 0,
+            "current": "",
+        }),
+    );
+}
+
+/// Étape 6d-privé : génère les vignettes manquantes d'une bibliothèque
+/// vidéo privée (JPEG ~480 px encodé EN MÉMOIRE par
+/// `episode_thumbnails::extract_jpeg_bytes`, stocké chiffré dans
+/// `vault.db`). Best-effort : libmpv absente → sauté ; fichier
+/// pathologique → compté en échec, les autres continuent. Le mutex du
+/// coffre reste retenu pour la durée de la génération — même compromis
+/// assumé que le scan d'images privées (doc §6.4 quater).
+fn generate_thumbnails_after_scan(
+    conn: &rusqlite::Connection,
+    mpv_functions: Option<&Arc<MpvFunctions>>,
+    private_library_id: i64,
+    app: &AppHandle,
+) -> Result<(u32, u32), String> {
+    let Some(functions) = mpv_functions else {
+        log::info!("[vignettes-privé] libmpv indisponible — génération sautée.");
+        return Ok((0, 0));
+    };
+    let targets = private_video_repository::missing_thumbnails(conn, private_library_id)
+        .map_err(|e| e.to_string())?;
+    if targets.is_empty() {
+        return Ok((0, 0));
+    }
+        log::info!(
+        "[vignettes-privé] bibliothèque {private_library_id} : {} fichier(s) à traiter.",
+        targets.len()
+    );
+    let total = targets.len() as u64;
+    let mut progress = ScanProgressEmitter::new(app, private_library_id, total);
+    progress.tick("thumbnails", 0, "", true);
+    let mut generated = 0u32;
+    let mut failed = 0u32;
+    let mut processed: u64 = 0;
+    for (file_id, path) in targets {
+        if !Path::new(&path).exists() {
+            failed += 1;
+            continue;
+        }
+        match episode_thumbnails::extract_jpeg_bytes(functions.clone(), path.clone()) {
+            Ok(bytes) => match private_video_repository::update_thumbnail(conn, file_id, &bytes) {
+                Ok(()) => generated += 1,
+                Err(e) => {
+                    log::warn!(
+                        "[vignettes-privé] fichier {file_id} : vignette créée mais base non mise à jour : {e}"
+                    );
+                    failed += 1;
+                }
+            },
+                        Err(e) => {
+                log::warn!("[vignettes-privé] fichier {file_id} : {e}");
+                failed += 1;
+            }
+        }
+        processed += 1;
+        let current = Path::new(&path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        progress.tick("thumbnails", processed, &current, false);
+    }
+    progress.tick("thumbnails", processed, "", true);
+    log::info!(
+        "[vignettes-privé] bibliothèque {private_library_id} : {generated} vignette(s), {failed} échec(s)."
+    );
+    Ok((generated, failed))
+}
+
+/// Étape 6d-privé : lit la vignette chiffrée d'un fichier privé (octets
+/// JPEG bruts) — la commande Tauri correspondante l'encode en base64 pour
+/// le frontend, même pattern que la galerie d'images (§6.4 quater).
+pub fn get_thumbnail(
+    pool: &DbPool,
+    active_profile_id: i64,
+    vault_state: &VaultState,
+    file_id: i64,
+) -> Result<Vec<u8>, String> {
+    require_private_access(pool, active_profile_id)?;
+    let conn = require_unlocked_connection(vault_state)?;
+    private_video_repository::get_thumbnail(conn, file_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Aucune vignette pour ce fichier.".to_string())
 }
 
 pub fn get_playback_progress(
@@ -171,10 +281,8 @@ pub fn save_playback_progress(
 ) -> Result<(), String> {
     require_private_access(pool, active_profile_id)?;
     let conn = require_unlocked_connection(vault_state)?;
-
     let is_completed =
         duration_seconds > 0.0 && position_seconds / duration_seconds >= COMPLETED_THRESHOLD;
-
     if is_completed {
         private_video_repository::clear_progress(conn, active_profile_id, media_file_id)
             .map_err(|e| e.to_string())?;

@@ -63,6 +63,10 @@ const VAULT_MIGRATIONS: &[VaultMigration] = &[
         version: 3,
         sql: include_str!("vault_migrations/0003_private_image.sql"),
     },
+    VaultMigration {
+        version: 4,
+        sql: include_str!("vault_migrations/0004_private_video_thumbnails.sql"),
+    },
 ];
 
 /// Poignée vers un coffre déverrouillé : la connexion SQLite en mémoire
