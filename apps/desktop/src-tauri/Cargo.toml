@@ -82,6 +82,12 @@ base64 = "0.22"
 # pur, aucune dépendance C, très largement utilisé dans l'écosystème.
 rayon = "1"
 
+# --- Fournisseur en ligne TMDB (Étape 7) ----------------------------
+# Client HTTP bloquant 100 % Rust (rustls) — cohérent avec la philosophie
+# du projet (aucune dépendance C) : les appels TMDB tournent sur les
+# threads d'arrière-plan (scan/enrichissement), jamais sur le thread UI.
+ureq = "2"
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

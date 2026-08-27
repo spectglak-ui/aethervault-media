@@ -11,6 +11,8 @@ mod filename;
 mod local_provider;
 mod path_hints;
 
+pub mod tmdb;
+
 use crate::db::repositories::{
     category_repository, episode_repository, folder_repository, media_repository,
     season_repository, title_repository,

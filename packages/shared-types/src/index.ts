@@ -7,3 +7,5 @@ export * from "./profile";
 export * from "./theme";
 export * from "./library";
 export * from "./playback";
+export * from "./metadata";
+export * from "./search";

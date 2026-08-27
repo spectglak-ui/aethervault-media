@@ -87,5 +87,15 @@ export interface TitleDetails {
   /** Fichier à lire pour `kind = "movie"` uniquement — `null` pour
    * `kind = "series"` (la lecture se fait au niveau d'un épisode, voir
    * `EpisodeSummary.media_file_id`). */
+  /** Résolution du fichier média associé (si sondé) — `null` sinon. */
+  resolution: string | null;
   media_file_id: number | null;
+  technical: TechnicalInfo;
+}
+
+export interface TechnicalInfo {
+  resolutions: string[];
+  codecs: string[];
+  audio_langs: string[];
+  subtitle_langs: string[];
 }

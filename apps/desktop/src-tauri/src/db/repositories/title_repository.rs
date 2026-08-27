@@ -9,7 +9,7 @@
 
 use super::custom_image_repository;
 use rusqlite::{Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TitleRecord {
@@ -336,4 +336,196 @@ pub fn orphaned(conn: &Connection, title_ids: &[i64]) -> rusqlite::Result<Vec<i6
         }
     }
     Ok(orphans)
+}
+
+// ---- Fournisseur en ligne (Étape 7) --------------------------------
+
+/// Enregistre les identifiants du fournisseur en ligne — un `tmdb_id`
+/// non NULL marque le Titre comme enrichi (l'appariement local initial
+/// reste dans `metadata_source` jusqu'à ce qu'un rafraîchissement le
+/// remplace par "tmdb").
+pub fn set_online_ids(
+    conn: &Connection,
+    title_id: i64,
+    tmdb_id: i64,
+    imdb_id: Option<&str>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE titles SET tmdb_id = ?1, imdb_id = ?2, updated_at = ?3 WHERE id = ?4",
+        rusqlite::params![tmdb_id, imdb_id, chrono::Utc::now().to_rfc3339(), title_id],
+    )?;
+    Ok(())
+}
+
+/// Titres d'une catégorie pas encore enrichis par le fournisseur en
+/// ligne — la file de travail de l'enrichissement TMDB (Étape 7).
+pub fn list_missing_tmdb_by_category(
+    conn: &Connection,
+    category_id: i64,
+) -> rusqlite::Result<Vec<TitleRecord>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM titles WHERE category_id = ?1 AND tmdb_id IS NULL ORDER BY id"
+    ))?;
+    let rows = stmt.query_map(rusqlite::params![category_id], map_row)?;
+    rows.collect()
+}
+
+// ---- Recherche multi-critères (Étape 7, lot 3 : Explorateur) ---------
+
+/// Critères de l'Explorateur — tous optionnels, combinés en ET ; les
+/// listes sont des OU internes. `#[serde(default)]` : le frontend n'envoie
+/// que ce qu'il remplit.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct TitleSearchQuery {
+    pub q: Option<String>,
+    pub category_keys: Vec<String>,
+    pub kinds: Vec<String>,
+    pub year_from: Option<i64>,
+    pub year_to: Option<i64>,
+    pub genres: Vec<String>,
+    pub actor: Option<String>,
+    pub director: Option<String>,
+    pub resolutions: Vec<String>,
+    pub codecs: Vec<String>,
+    pub audio_langs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TitleSearchResult {
+    pub id: i64,
+    pub category_id: i64,
+    pub category_key: String,
+    pub category_name: String,
+    pub kind: String,
+    pub name: String,
+    pub year: Option<i64>,
+    pub poster: Option<String>,
+    pub rating: Option<f64>,
+}
+
+fn placeholders(count: usize) -> String {
+    vec!["?"; count].join(", ")
+}
+
+/// Recherche multicritère : critères éditoriaux (nom, catégories, nature,
+/// années, genres, acteur, réalisateur) ET techniques (résolution, codec,
+/// langue audio — une même sonde `media_probes` doit satisfaire tout ce
+/// qui est demandé, sur un fichier du Titre directement ou via un épisode).
+/// Jamais de jointure explosive : un `EXISTS` par famille de critère.
+pub fn search_titles(
+    conn: &Connection,
+    query: &TitleSearchQuery,
+) -> rusqlite::Result<Vec<TitleSearchResult>> {
+    let mut sql = String::from(
+        "SELECT t.id, t.category_id, c.key, c.name, t.kind, t.name, t.year, t.poster_path, t.rating
+         FROM titles t
+         JOIN categories c ON c.id = t.category_id
+         WHERE 1 = 1",
+    );
+    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+
+    if let Some(q) = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+        sql.push_str(" AND t.name LIKE ?");
+        values.push(rusqlite::types::Value::Text(format!("%{q}%")));
+    }
+    if !query.category_keys.is_empty() {
+        sql.push_str(&format!(" AND c.key IN ({})", placeholders(query.category_keys.len())));
+        for key in &query.category_keys {
+            values.push(rusqlite::types::Value::Text(key.clone()));
+        }
+    }
+    if !query.kinds.is_empty() {
+        sql.push_str(&format!(" AND t.kind IN ({})", placeholders(query.kinds.len())));
+        for kind in &query.kinds {
+            values.push(rusqlite::types::Value::Text(kind.clone()));
+        }
+    }
+    if let Some(from) = query.year_from {
+        sql.push_str(" AND t.year >= ?");
+        values.push(rusqlite::types::Value::Integer(from));
+    }
+    if let Some(to) = query.year_to {
+        sql.push_str(" AND t.year <= ?");
+        values.push(rusqlite::types::Value::Integer(to));
+    }
+    if !query.genres.is_empty() {
+        sql.push_str(&format!(
+            " AND EXISTS (SELECT 1 FROM title_genres tg JOIN genres g ON g.id = tg.genre_id
+              WHERE tg.title_id = t.id AND g.name IN ({}))",
+            placeholders(query.genres.len())
+        ));
+        for genre in &query.genres {
+            values.push(rusqlite::types::Value::Text(genre.clone()));
+        }
+    }
+    if let Some(actor) = query.actor.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+        sql.push_str(
+            " AND EXISTS (SELECT 1 FROM title_credits tc JOIN people p ON p.id = tc.person_id
+              WHERE tc.title_id = t.id AND tc.role = 'actor' AND p.name LIKE ?)",
+        );
+        values.push(rusqlite::types::Value::Text(format!("%{actor}%")));
+    }
+    if let Some(director) = query.director.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        sql.push_str(
+            " AND EXISTS (SELECT 1 FROM title_credits tc JOIN people p ON p.id = tc.person_id
+              WHERE tc.title_id = t.id AND tc.role = 'director' AND p.name LIKE ?)",
+        );
+        values.push(rusqlite::types::Value::Text(format!("%{director}%")));
+    }
+    if !query.resolutions.is_empty() || !query.codecs.is_empty() || !query.audio_langs.is_empty() {
+        let mut inner = String::from(
+            " AND EXISTS (SELECT 1 FROM media_files m
+              LEFT JOIN media_probes pr ON pr.media_file_id = m.id
+              WHERE (m.title_id = t.id OR m.episode_id IN
+                     (SELECT e.id FROM episodes e WHERE e.title_id = t.id))
+                AND m.is_available = 1",
+        );
+        if !query.resolutions.is_empty() {
+            inner.push_str(&format!(" AND pr.resolution IN ({})", placeholders(query.resolutions.len())));
+            for resolution in &query.resolutions {
+                values.push(rusqlite::types::Value::Text(resolution.clone()));
+            }
+        }
+        if !query.codecs.is_empty() {
+            inner.push_str(&format!(" AND pr.video_codec IN ({})", placeholders(query.codecs.len())));
+            for codec in &query.codecs {
+                values.push(rusqlite::types::Value::Text(codec.clone()));
+            }
+        }
+        for lang in &query.audio_langs {
+            inner.push_str(" AND pr.audio_langs LIKE ?");
+            values.push(rusqlite::types::Value::Text(format!("%\"{lang}\"%")));
+        }
+        inner.push(')');
+        sql.push_str(&inner);
+    }
+    sql.push_str(" ORDER BY t.name COLLATE NOCASE LIMIT 500");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), |row| {
+        Ok(TitleSearchResult {
+            id: row.get(0)?,
+            category_id: row.get(1)?,
+            category_key: row.get(2)?,
+            category_name: row.get(3)?,
+            kind: row.get(4)?,
+            name: row.get(5)?,
+            year: row.get(6)?,
+            poster: row.get(7)?,
+            rating: row.get(8)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Tous les genres présents au catalogue — chips de l'Explorateur.
+pub fn all_genres(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT g.name FROM genres g
+         JOIN title_genres tg ON tg.genre_id = g.id
+         ORDER BY g.name COLLATE NOCASE",
+    )?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    rows.collect()
 }

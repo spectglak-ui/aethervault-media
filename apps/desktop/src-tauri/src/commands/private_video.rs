@@ -18,7 +18,6 @@ use crate::domain::private_video::{self, PrivateVideoFolderSummary};
 use crate::security::vault::VaultState;
 use crate::services::private_video_scanner::PrivateScanSummary;
 use crate::state::AppState;
-use base64::Engine as _;
 
 fn with_vault_state<T>(
     state: &tauri::State<AppState>,

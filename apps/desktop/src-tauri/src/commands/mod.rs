@@ -26,3 +26,4 @@ pub mod status;
 pub mod title;
 pub mod window;
 pub mod auth;
+pub mod settings;

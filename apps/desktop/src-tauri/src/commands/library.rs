@@ -266,8 +266,19 @@ fn match_library_metadata(
         }),
     );
     match metadata_service.match_library(pool, library_id, category_id) {
-                Ok(summary) => {
+                        Ok(summary) => {
             let _ = app.emit("library:metadata-matched", summary);
+            // Étape 7 : enrichissement TMDB (Titres sans tmdb_id), si
+            // l'option est active et une clé présente — best-effort,
+            // avant les vignettes.
+            let auto = pool
+                .get()
+                .ok()
+                .map(|conn| crate::services::metadata::tmdb::load_settings(&conn).auto_enrich)
+                .unwrap_or(false);
+            if auto {
+                crate::services::metadata::tmdb::enrich_library(app, pool, &data_dir, library_id);
+            }
             // Étape 6d (cadrage produit, choix utilisateur) : vignettes
             // automatiques RÉSERVÉES aux catégories Séries et Anime.
             // Les Films n'ont pas d'épisodes (rien à générer de toute
@@ -284,15 +295,20 @@ fn match_library_metadata(
                 })
                 .map(|category| matches!(category.key.as_str(), "series" | "anime"))
                 .unwrap_or(false);
-            if allowed {
+                        if allowed {
                 episode_thumbnails::generate_missing(
                     app,
                     pool,
                     &data_dir,
-                    mpv_functions,
+                    mpv_functions.clone(),
                     library_id,
                 );
             }
+            // Étape 7 (lot 2) : sonde technique (résolution/codec/langues/
+            // sous-titres) des fichiers non sondés — TOUTES les catégories
+            // publiques (Films compris), best-effort, avant le signal
+            // « done » de la chaîne scan → appariement → vignettes → probe.
+            crate::services::media_probe::probe_missing(app, pool, mpv_functions, library_id);
         }
         Err(err) => {
             log::error!(
