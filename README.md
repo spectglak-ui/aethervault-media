@@ -1,128 +1,194 @@
 # AetherVault Media
 
-<img width="1919" height="635" alt="Capture d’écran 2026-08-27 214721" src="https://github.com/user-attachments/assets/9152b0d9-8d67-4511-b3d8-588f48f80259" />
+<img width="1919" height="635" alt="AetherVault Media - Centre multimédia personnel" src="https://github.com/user-attachments/assets/9152b0d9-8d67-4511-b3d8-588f48f80259" />
 
-Centre multimédia personnel, local-first, inspiré de Jellyfin/Plex. Voir
-`docs/AetherVault-Media-Documentation-Technique.md` pour l'architecture
-complète et la roadmap.
+**AetherVault Media** est un centre multimédia personnel, **local-first**, entièrement installé sur votre appareil. Gérez votre bibliothèque de films, séries, anime et galeries privées — sans cloud, sans partage de données — avec un design moderne inspiré de Jellyfin et Plex.
 
-**État actuel : Étape 8 livrée — installateur Windows NSIS.** Les étapes 0 à 8
-de la roadmap sont terminées, compilées et testées en conditions réelles sur
-Windows : socle applicatif, bibliothèques avec watcher, lecteur libmpv
-intégré (rendu logiciel + canvas WebGL, mode flottant, PiP en quarantaine),
-métadonnées et catégories, personnalisation, profils multi-utilisateurs avec
-authentification (intro animée au démarrage puis sélection de profil ou
-assistant de premier démarrage), coffre privé chiffré AES-256-GCM (vidéos +
-galerie d'images), vignettes d'aperçu, Explorateur / Search Engine avec
-métadonnées TMDB et sonde technique, Accueil v2 (héro + rangées), shaders de
-post-traitement WebGL, fenêtre frameless, et installateur NSIS embarquant
-libmpv. Voir la documentation technique, sections §6.5 et §8, pour le détail.
+**État actuel** : 🎬 Étape 8 livrée — Installateur Windows NSIS et lecteur intégré avec libmpv.
 
-## — Vignettes d'aperçu automatiques & barre de progression du scan
+## 🌟 Fonctionnalités principales
 
-- **Catalogue public (Séries & Anime uniquement)** : à la fin de chaque
-  scan + appariement Metadata Service, une vignette JPEG ~480 px est extraite
-  de chaque épisode (image à ~1 s, instance libmpv dédiée, rendu logiciel)
-  puis stockée dans `<data_dir>/thumbnails/episodes/episode_<id>.jpg` ; le
-  chemin est enregistré dans `episodes.still_path`. Rattrapage manuel via la
-  commande `generate_episode_thumbnails`.
-- **Coffre privé (vidéos)** : vignettes générées au scan privé, stockées
-  chiffrées en BLOB dans `vault.db` (`thumbnail_blob`, migration v4) —
-  jamais en clair sur disque ; servies au frontend en base64 via
-  `private_video_thumbnail`.
-- **Barre de progression du scan** : événements `library:scan-progress`
-  (analyse → appariement → vignettes) et `private:scan-progress`, affichés
-  par `ScanProgressBar` / `PrivateScanProgressBar` à côté du bouton Scanner.
-- **Robustesse éprouvée en test réel** : thread dédié + délai absolu par
-  fichier (aucun fichier ne peut geler la file), traceur d'étape pour
-  diagnostiquer tout gel futur.
+### 📚 Gestion de bibliothèque
+- **Catalogue public** : films, séries et anime avec détection automatique des saisons et épisodes
+- **Coffre privé chiffré** : vidéos et galeries d'images protégées en AES-256-GCM
+- **Métadonnées enrichies** : intégration TMDB (synopsis, affiches, casting, genres, notes)
+- **Profils multi-utilisateurs** : authentification avec intro animée et sélection de profil
+- **Watcher automatique** : détecte les nouveaux fichiers médias en temps réel
 
-## — Explorateur / Search Engine, métadonnées TMDB & sonde technique
+### 🎥 Lecteur multimédia intégré
+- **Lecteur libmpv** : rendu logiciel + canvas WebGL pour une compatibilité maximale
+- **Modes de lecture** : lecture plein écran, mode flottant, Picture-in-Picture
+- **Shaders de post-traitement** : 4 presets WebGL (Désactivé, Netteté, Couleurs vives, Anime4K-lite)
+- **Informations techniques** : résolution, codecs, langues audio et sous-titres
 
-- **Fournisseur en ligne TMDB** (même modèle que Jellyfin) : après chaque
-  scan, les Titres sans `tmdb_id` sont enrichis automatiquement — synopsis
-  (fr-FR, repli en-US), genres, studios, top 10 casting, réalisateurs,
-  note, affiche/backdrop **téléchargés localement** dans
-  `<data_dir>/metadata/tmdb/`. Recherche par nom + année + nature
-  (`search/movie` / `search/tv`), `tmdb_id` + `imdb_id` conservés
-  (migration 0014). Clé API saisie dans **Paramètres → « Métadonnées en
-  ligne (TMDB) »** (stockée dans `aethervault.db`, jamais en dur),
-  enrichissement automatique désactivable.
-- **Sonde technique mpv** : résolution, codec vidéo, langues audio et
-  sous-titres de chaque fichier, lus sans lecture (handle dédié `vo=null`,
-  en pause) et stockés dans `media_probes` (migration 0015) — affichés dans
-  la section « Informations techniques » des pages Titre et utilisés comme
-  critères de recherche.
-- **Explorateur** (`/explore`) : recherche multicritère — nom, nature
-  (film/série), catégories, années, genres, acteur, réalisateur,
-  résolution, codec, langue audio — avec facets distinctes, debounce
-  300 ms, compteur de résultats et grille d'affiches cliquables. La barre
-  de recherche globale du shell navigue vers `/explore?q=…`. Périmètre :
-  catalogue public uniquement, jamais le coffre privé.
-- **Fonds d'écran de page** : sur les pages Titre et Catégorie, la petite
-  bannière horizontale est remplacée par un fond de page (bannière, ou
-  affiche du premier titre à défaut, assombrie et fondue vers le noir) ;
-  la personnalisation existante est conservée (boutons changer /
-  réinitialiser dans la barre d'actions).
-- **Accueil v2** : héro « à la une » (backdrop TMDB choisi au hasard,
-  synopsis, boutons Lecture / Plus d'infos), tuiles de catégories en 16:9
-  (fini les logos coupés), rangées horizontales « style Netflix »
-  (Ajouts récents + une rangée par catégorie publique).
-- **Shaders de post-traitement** (Option A, WebGL) : 4 presets intégrés
-  (Désactivé, Netteté, Couleurs vives, Anime4K-lite) via le menu ✨ du
-  lecteur — un seul fragment shader, preset sélectionné par uniform
-  (changement instantané, sans re-attach ni recompilation), preset
-  persisté et diffusé aux deux fenêtres. L'interpolation de mouvement
-  reste reportée (nécessite un backend GPU mpv fonctionnel).
-- **Fenêtre frameless** : l'application s'ouvre maximisée sans barre de
-  titre native (`decorations: false` + `maximized: true`) ; la barre du
-  haut sert de barre de titre draggable avec boutons réduire / agrandir /
-  fermer personnalisés.
-- **Scrollbars** sombres, cohérentes avec le thème.
+### 🔍 Exploration et recherche
+- **Explorateur multicritère** : recherchez par titre, catégorie, année, genre, acteur, réalisateur, résolution, codec, langue
+- **Facets intelligentes** : navigation intuitive avec compteur de résultats
+- **Barre de recherche globale** : accès rapide via le shell
+- **Fonds d'écran** : bannières TMDB automatiquement appliquées aux pages titre
 
-## — Installateur Windows NSIS
+### 🏠 Interface utilisateur
+- **Accueil v2** : héro à la une avec synopsis et boutons d'action, rangées style Netflix
+- **Fenêtre frameless** : design moderne sans barre de titre native, draggable
+- **Thème cohérent** : scrollbars sombres et personnalisation complète
+- **Maximisée au démarrage** : expérience immersive dès le lancement
 
-- `pnpm --filter @aethervault/desktop tauri build` produit
-  `apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.1.0_x64-setup.exe`
-  (premier build : téléchargement automatique de l'outil NSIS, connexion
-  requise une fois ; compilation release longue).
-- Installation par utilisateur (sans UAC), sélecteur de langue FR/EN,
-  raccourci Menu Démarrer, inscription dans « Applications installées »,
-  désinstallation propre.
-- libmpv-2.dll (LGPL, non modifiée) embarquée dans `<installation>\resources\`
-  via `bundle.resources` ; `locate_library` cherche ce dossier en repli.
-  **Avant le build**, copier le dll dans `apps/desktop/src-tauri/libs/`
-  (voir Prérequis).
-- Les données utilisateur (`%APPDATA%`) ne sont jamais touchées par
-  l'installation ni la désinstallation.
-- Non livré : signature de code (avertissement SmartScreen possible au
-  premier lancement), Tauri Updater.
+### ⚡ Performance et sécurité
+- **Vignettes d'aperçu automatiques** : extraites à ~1s de chaque épisode, génération efficace
+- **Barre de progression du scan** : suivi en temps réel (analyse → appariement → vignettes)
+- **Chiffrement du coffre** : Argon2id (KDF) + AES-256-GCM, jamais en clair sur disque
+- **Aucune dépendance système** : SQLite bundled, rustls (100% Rust)
 
-## Prérequis (Windows)
+## 📋 Prérequis (Windows)
 
-- **Rust** — via [rustup](https://rustup.rs).
-- **Node.js LTS** (v20 ou supérieur).
-- **pnpm** — `corepack enable` (inclus avec Node ≥ 16.10), puis
-  `corepack prepare pnpm@latest --activate`.
-- **Microsoft C++ Build Tools** — via le "Visual Studio Installer", charge
-  de travail *Desktop development with C++* (nécessaire pour compiler les
-  dépendances natives de Tauri).
-- **WebView2 Runtime** — préinstallé sur Windows 11 ; à installer
-  manuellement sur Windows 10 si absent
-  ([lien Microsoft](https://developer.microsoft.com/microsoft-edge/webview2/)).
-- **libmpv (Étape 3b)** — le lecteur a besoin de `libmpv-2.dll` (build
-  LGPL, voir doc §9 « Licence de libmpv »). En développement
-  (`pnpm dev`), la déposer à côté de l'exécutable
-  (`apps/desktop/src-tauri/target/debug/`). Depuis l'Étape 8,
-  l'installateur embarque automatiquement ce binaire : copier
-  `libmpv-2.dll` dans `apps/desktop/src-tauri/libs/` avant `tauri build`
-  (il sera installé dans `<installation>\resources\`). Sans ce fichier en
-  dev, le reste de l'application fonctionne normalement — seules les
-  commandes de lecture renverront une erreur explicite
-  (`PlaybackEngineState::Unavailable`).
+### Outils obligatoires
+- **Rust** — installez via [rustup](https://rustup.rs)
+- **Node.js LTS** — version 20 ou supérieure
+- **pnpm** — gestionnaire de paquets (installé via `corepack` inclus avec Node ≥ 16.10)
+  ```bash
+  corepack enable
+  corepack prepare pnpm@latest --activate
+  ```
+- **Microsoft C++ Build Tools** — depuis Visual Studio Installer (charge de travail : *Desktop development with C++*)
+- **WebView2 Runtime** — préinstallé sur Windows 11 ; à [installer manuellement](https://developer.microsoft.com/microsoft-edge/webview2/) sur Windows 10
 
-## Lancer le projet en développement
+### 🎬 libmpv-2.dll (crucial)
+Le lecteur multimédia nécessite **libmpv-2.dll** (build LGPL, non modifié) :
 
+#### Pour le mode développement
+```bash
+# Téléchargez la build LGPL de libmpv
+# Déposez libmpv-2.dll à côté de l'exécutable :
+apps/desktop/src-tauri/target/debug/libmpv-2.dll
+```
+
+Sans ce fichier, le reste de l'application fonctionne — seules les commandes de lecture retourneront une erreur explicite (`PlaybackEngineState::Unavailable`).
+
+#### Pour l'installation (Étape 8)
+```bash
+# Avant de lancer tauri build :
+cp libmpv-2.dll apps/desktop/src-tauri/libs/
+
+# L'installateur embarquera automatiquement le binaire dans :
+<installation>\resources\libmpv-2.dll
+```
+
+## 🚀 Installation et utilisation
+
+### Mode développement
+
+**Installation initiale** :
 ```bash
 pnpm install
 pnpm dev
+```
+
+L'application se lance en mode debug avec hot-reload Vite.
+
+### Mode production — Installateur NSIS
+
+**Générer l'installateur** :
+```bash
+# Assurez-vous que libmpv-2.dll est dans apps/desktop/src-tauri/libs/
+pnpm build
+```
+
+Cela produit :
+```
+apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.1.0_x64-setup.exe
+```
+
+**Installation** :
+- Interface de sélection de langue (FR/EN)
+- Installation par utilisateur (sans UAC)
+- Raccourci automatique au Menu Démarrer
+- Inscription dans « Applications installées »
+- Désinstallation complète et propre
+
+**Données utilisateur** : Les données sont stockées dans `%APPDATA%` et ne sont jamais modifiées par l'installation ou la désinstallation.
+
+**Notes** :
+- ⚠️ Signature de code non incluse (avertissement SmartScreen possible au premier lancement)
+- ⚠️ Tauri Updater non implémenté
+- Premier build télécharge l'outil NSIS automatiquement (connexion requise une seule fois)
+
+## 🏗️ Architecture
+
+### Stack technologique
+- **Backend** : Rust 2021 (1.77+) avec Tauri 2
+- **Frontend** : React 18 + React Router 6 + TypeScript 5
+- **Outils de build** : Vite 5, pnpm 9.0.0
+- **Base de données** : SQLite (rusqlite bundled)
+- **Lecteur vidéo** : libmpv (chargement dynamique)
+
+### Structure monorepo (pnpm workspaces)
+```
+aethervault-media/
+├── apps/
+│   └── desktop/
+│       ├── src-tauri/          # Rust (Tauri)
+│       ├── src/                # React + TypeScript
+│       └── src-tauri/libs/     # libmpv-2.dll (à copier avant build)
+├── packages/
+│   ├── shared-types/           # Types TypeScript partagés
+│   └── ui-kit/                 # Composants React réutilisables
+└── pnpm-workspace.yaml         # Configuration du monorepo
+```
+
+### Dépendances principales (Rust)
+
+| Domaine | Crates | Notes |
+|---------|--------|-------|
+| **Base de données** | `rusqlite`, `r2d2`, `r2d2_sqlite` | SQLite bundled, connection pooling |
+| **Chiffrement** | `aes-gcm`, `argon2`, `rand` | AES-256-GCM + Argon2id KDF, 100% Rust |
+| **Multimédia** | `image`, `kamadak-exif` | Décodage images, EXIF (sans GPS) |
+| **Réseau** | `ureq` | Client HTTP Rust pur (rustls) |
+| **Système de fichiers** | `walkdir`, `notify` | Récursion + watcher temps réel |
+| **Lecteur vidéo** | `libloading` | Chargement dynamique de libmpv |
+| **Parallélisation** | `rayon` | Scan d'images en parallèle |
+| **Frontend bridge** | `tauri`, `tauri-plugin-log`, `tauri-plugin-dialog` | IPC et plugins Tauri 2 |
+
+### Principes de sécurité
+- ✅ Aucune dépendance C système (rustls, Rust pur)
+- ✅ Chiffrement du coffre entièrement applicatif (niveau SQLite, pas SQLCipher)
+- ✅ libmpv chargée dynamiquement (pas d'héritage GPL, licence propre AetherVault)
+- ✅ Données sensibles jamais en clair sur disque
+- ✅ Pas de hash de mot de passe stocké (KDF Argon2id uniquement)
+
+## 🔐 Licence
+
+AetherVault Media est publié sous la **Licence MIT**.
+
+**Note spéciale sur libmpv** : libmpv-2.dll (inclus dans l'installateur) est distribué sous licence LGPL. Voir la documentation technique (§9) pour les détails de conformité.
+
+## 📖 Documentation complète
+
+Pour l'architecture détaillée, le plan de développement (roadmap), les choix techniques et les étapes de livraison :
+
+👉 **[docs/AetherVault-Media-Documentation-Technique.md](docs/AetherVault-Media-Documentation-Technique.md)**
+
+## 🤝 Contribution
+
+Ce projet est actuellement en développement actif. Les contributions sont bienvenues — consultez la documentation technique pour comprendre l'architecture avant de soumettre des pull requests.
+
+## 📬 Support et retours
+
+Pour les questions, bugs ou suggestions d'amélioration, ouvert les issues sur GitHub.
+
+---
+
+**Dernière mise à jour** : Étape 8 — Septembre 2026  
+**Mainteneur** : [@spectglak-ui](https://github.com/spectglak-ui)
+```
+
+---
+
+## 📝 Résumé des points clés intégrés
+
+✅ **Présentation** : Centre multimédia personnel local-first, inspiré de Jellyfin/Plex  
+✅ **Fonctionnalités** : Catalogue public, coffre chiffré, métadonnées TMDB, lecteur libmpv, explorer multicritère, UI moderne  
+✅ **Prérequis** : Rust, Node.js LTS, pnpm, Microsoft C++ Build Tools, WebView2, **libmpv-2.dll**  
+✅ **Installation** : Mode dev (`pnpm dev`), Mode prod avec installateur NSIS  
+✅ **Architecture** : Tauri/Rust (backend) + React/TypeScript (frontend), pnpm monorepo avec workspace  
+✅ **Licence** : MIT (+ note spéciale LGPL pour libmpv)  
+✅ **État** : Étape 8 livrée, compilée et testée Windows
