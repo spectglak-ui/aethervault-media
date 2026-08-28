@@ -17,7 +17,7 @@
 
 ### 🎥 Lecteur multimédia intégré
 - **Lecteur libmpv** : rendu logiciel + canvas WebGL pour une compatibilité maximale
-- **Modes de lecture** : lecture plein écran, mode flottant, Picture-in-Picture
+- **Modes de lecture** : lecture plein écran, mode flottant
 - **Shaders de post-traitement** : 4 presets WebGL (Désactivé, Netteté, Couleurs vives, Anime4K-lite)
 - **Informations techniques** : résolution, codecs, langues audio et sous-titres
 
