@@ -2,9 +2,9 @@
 
 <img width="1919" height="635" alt="AetherVault Media - Centre multimédia personnel" src="https://github.com/user-attachments/assets/9152b0d9-8d67-4511-b3d8-588f48f80259" />
 
-**AetherVault Media** est un centre multimédia personnel, **local-first**, entièrement installé sur votre appareil. Gérez votre bibliothèque de films, séries, anime et galeries privées — sans cloud, sans partage de données — avec un design moderne inspiré de Jellyfin et Plex.
+**AetherVault Media** est un centre multimédia personnel, **local-first**, entièrement installé sur votre appareil. Gérez votre bibliothèque de films, séries, anime et galeries privées — sans serveurs, sans surveillance, que du chiffrement.
 
-**État actuel** : 🎬 Étape 8 livrée — Installateur Windows NSIS et lecteur intégré avec libmpv.
+**État actuel** : 🎬 Étape 8 livrée — Installateur Windows NSIS, lecteur libmpv intégré et partage via code (chiffré).
 
 ## 🌟 Fonctionnalités principales
 
@@ -33,6 +33,11 @@
 - **Thème cohérent** : scrollbars sombres et personnalisation complète
 - **Maximisée au démarrage** : expérience immersive dès le lancement
 
+### 🔗 Partage sécurisé
+- **Partage via code** : générez un code partageable pour inviter d'autres utilisateurs
+- **Chiffrement bout-à-bout** : SHA-256 + AES-256-GCM pour les données partagées
+- **Ouverture de port UPnP** : support optionnel pour le LAN (configurable)
+
 ### ⚡ Performance et sécurité
 - **Vignettes d'aperçu automatiques** : extraites à ~1s de chaque épisode, génération efficace
 - **Barre de progression du scan** : suivi en temps réel (analyse → appariement → vignettes)
@@ -42,9 +47,9 @@
 ## 📋 Prérequis (Windows)
 
 ### Outils obligatoires
-- **Rust** — installez via [rustup](https://rustup.rs)
+- **Rust** — installez via [rustup](https://rustup.rs) (1.77+)
 - **Node.js LTS** — version 20 ou supérieure
-- **pnpm** — gestionnaire de paquets (installé via `corepack` inclus avec Node ≥ 16.10)
+- **pnpm** — gestionnaire de paquets 9.0.0+ (installé via `corepack` inclus avec Node ≥ 16.10)
   ```bash
   corepack enable
   corepack prepare pnpm@latest --activate
@@ -95,7 +100,7 @@ pnpm build
 
 Cela produit :
 ```
-apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.1.0_x64-setup.exe
+apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.2.0_x64-setup.exe
 ```
 
 **Installation** :
@@ -115,8 +120,9 @@ apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.1.0_x64-se
 ## 🏗️ Architecture
 
 ### Stack technologique
-- **Backend** : Rust 2021 (1.77+) avec Tauri 2
-- **Frontend** : React 18 + React Router 6 + TypeScript 5
+- **Backend** : Rust 2021 (1.77+) avec Tauri 2 — **56.3% du code**
+- **Frontend** : React 18 + React Router 6 + TypeScript 5 — **37.1% du code**
+- **Styles** : CSS 3 — **6.6% du code**
 - **Outils de build** : Vite 5, pnpm 9.0.0
 - **Base de données** : SQLite (rusqlite bundled)
 - **Lecteur vidéo** : libmpv (chargement dynamique)
@@ -126,27 +132,28 @@ apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.1.0_x64-se
 aethervault-media/
 ├── apps/
 │   └── desktop/
-│       ├── src-tauri/          # Rust (Tauri)
-│       ├── src/                # React + TypeScript
+│       ├── src-tauri/          # Rust (Tauri) v0.2.0
+│       ├── src/                # React + TypeScript v0.2.0
 │       └── src-tauri/libs/     # libmpv-2.dll (à copier avant build)
 ├── packages/
-│   ├── shared-types/           # Types TypeScript partagés
+│   ├── shared-types/           # Types TypeScript partagés v0.1.0
 │   └── ui-kit/                 # Composants React réutilisables
 └── pnpm-workspace.yaml         # Configuration du monorepo
 ```
 
-### Dépendances principales (Rust)
+### Dépendances principales (Rust v0.2.0)
 
 | Domaine | Crates | Notes |
 |---------|--------|-------|
-| **Base de données** | `rusqlite`, `r2d2`, `r2d2_sqlite` | SQLite bundled, connection pooling |
-| **Chiffrement** | `aes-gcm`, `argon2`, `rand` | AES-256-GCM + Argon2id KDF, 100% Rust |
-| **Multimédia** | `image`, `kamadak-exif` | Décodage images, EXIF (sans GPS) |
-| **Réseau** | `ureq` | Client HTTP Rust pur (rustls) |
-| **Système de fichiers** | `walkdir`, `notify` | Récursion + watcher temps réel |
-| **Lecteur vidéo** | `libloading` | Chargement dynamique de libmpv |
-| **Parallélisation** | `rayon` | Scan d'images en parallèle |
-| **Frontend bridge** | `tauri`, `tauri-plugin-log`, `tauri-plugin-dialog` | IPC et plugins Tauri 2 |
+| **Base de données** | `rusqlite 0.31`, `r2d2 0.8`, `r2d2_sqlite 0.24` | SQLite bundled, connection pooling |
+| **Chiffrement** | `aes-gcm 0.10`, `argon2 0.5`, `rand 0.8` | AES-256-GCM + Argon2id KDF, 100% Rust |
+| **Chiffrement de partage** | `sha2 0.10`, `igd 0.12` | SHA-256 + UPnP pour partage via code |
+| **Multimédia** | `image 0.25.8`, `kamadak-exif 0.6`, `base64 0.22` | Décodage images, EXIF (sans GPS), encodage des vignettes |
+| **Réseau** | `ureq 2` | Client HTTP Rust pur (rustls) |
+| **Système de fichiers** | `walkdir 2`, `notify 6` | Récursion + watcher temps réel |
+| **Lecteur vidéo** | `libloading 0.8` | Chargement dynamique de libmpv |
+| **Parallélisation** | `rayon 1` | Scan d'images en parallèle |
+| **Frontend bridge** | `tauri 2`, `tauri-plugin-log 2`, `tauri-plugin-dialog 2` | IPC et plugins Tauri 2 |
 
 ### Principes de sécurité
 - ✅ Aucune dépendance C système (rustls, Rust pur)
@@ -154,6 +161,7 @@ aethervault-media/
 - ✅ libmpv chargée dynamiquement (pas d'héritage GPL, licence propre AetherVault)
 - ✅ Données sensibles jamais en clair sur disque
 - ✅ Pas de hash de mot de passe stocké (KDF Argon2id uniquement)
+- ✅ Partage chiffré avec dérivation SHA-256 (Étape 8)
 
 ## 🔐 Licence
 
@@ -173,22 +181,11 @@ Ce projet est actuellement en développement actif. Les contributions sont bienv
 
 ## 📬 Support et retours
 
-Pour les questions, bugs ou suggestions d'amélioration, ouvert les issues sur GitHub.
+Pour les questions, bugs ou suggestions d'amélioration, ouvrez les issues sur GitHub.
 
 ---
 
 **Dernière mise à jour** : Étape 8 — Septembre 2026  
+**Version** : 0.2.0 (Rust/Tauri) + 0.1.0 (TypeScript)  
+**Composition** : Rust 56.3% — TypeScript 37.1% — CSS 6.6%  
 **Mainteneur** : [@spectglak-ui](https://github.com/spectglak-ui)
-```
-
----
-
-## 📝 Résumé des points clés intégrés
-
-✅ **Présentation** : Centre multimédia personnel local-first, inspiré de Jellyfin/Plex  
-✅ **Fonctionnalités** : Catalogue public, coffre chiffré, métadonnées TMDB, lecteur libmpv, explorer multicritère, UI moderne  
-✅ **Prérequis** : Rust, Node.js LTS, pnpm, Microsoft C++ Build Tools, WebView2, **libmpv-2.dll**  
-✅ **Installation** : Mode dev (`pnpm dev`), Mode prod avec installateur NSIS  
-✅ **Architecture** : Tauri/Rust (backend) + React/TypeScript (frontend), pnpm monorepo avec workspace  
-✅ **Licence** : MIT (+ note spéciale LGPL pour libmpv)  
-✅ **État** : Étape 8 livrée, compilée et testée Windows
