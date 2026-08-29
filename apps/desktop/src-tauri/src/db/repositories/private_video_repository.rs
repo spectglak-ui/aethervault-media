@@ -283,3 +283,21 @@ pub fn get_thumbnail(conn: &Connection, file_id: i64) -> rusqlite::Result<Option
         |row| row.get(0),
     )
 }
+
+// ---- Arborescence (Étape 8, scanner arborescent) ----------------------
+
+/// Id d'un dossier-reregistrement par son chemin exact (dans une
+/// bibliothèque) — le scanner s'en sert pour créer les enregistrements
+/// de sous-dossiers manquants.
+pub fn folder_id_by_path(
+    conn: &Connection,
+    private_library_id: i64,
+    path: &str,
+) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT id FROM private_video_folders WHERE private_library_id = ?1 AND path = ?2",
+        rusqlite::params![private_library_id, path],
+        |row| row.get(0),
+    )
+    .optional()
+}

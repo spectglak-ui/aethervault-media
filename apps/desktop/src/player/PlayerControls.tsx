@@ -12,10 +12,11 @@ import {
   Crop,
   X,
   Camera,
-  Sparkles,
   Volume2,
   VolumeX,
   Pin,
+  Repeat1,
+  ListVideo,
 } from "lucide-react";
 import { Menu, CheckMenuItem } from "@tauri-apps/api/menu";
 import { listen } from "@tauri-apps/api/event";
@@ -32,14 +33,6 @@ interface PlayerControlsProps {
 }
 
 const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
-
-const SHADER_LABELS: Record<string, string> = {
-  off: "Désactivé",
-  sharp: "Netteté",
-  vivid: "Couleurs vives",
-  anime: "Anime4K-lite",
-};
-
 const DISPLAY_MODE_LABELS: Record<"contain" | "cover" | "stretch" | "original", string> = {
   contain: "Ajuster",
   cover: "Remplir",
@@ -71,6 +64,8 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
     hasPrevious,
     lastError,
     dismissError,
+    loopEnabled,
+    autoNextEnabled,
     togglePlay,
     seek,
     setVolumeLevel,
@@ -78,6 +73,8 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
     setRate,
     toggleFullscreen,
     toggleDetached,
+    toggleLoop,
+    toggleAutoNext,
     stop,
     captureScreenshot,
     playNext,
@@ -95,8 +92,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
     return () => window.clearTimeout(timeout);
   }, [screenshotFeedback]);
 
-  /** Mode flottant actif (fenêtre sans bordure, toujours au-dessus) —
-   * signalé par le Rust via l'événement `floating-changed`. */
   const [floating, setFloating] = useState(false);
 
   useEffect(() => {
@@ -111,9 +106,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
     return null;
   }
 
-  /** Redimensionnement natif via la commande interne du plugin window —
-   * les chaînes correspondent exactement aux variantes de l'enum Rust
-   * (`North`, `SouthEast`...). */
   const startResize = (direction: string) => {
     void invoke("plugin:window|start_resize_dragging", { direction });
   };
@@ -147,9 +139,7 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
       );
       const menu = await Menu.new({ items });
       await menu.popup();
-    } catch {
-      // best-effort
-    }
+    } catch {}
   };
 
   const openSubtitleMenu = async () => {
@@ -171,9 +161,7 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
       );
       const menu = await Menu.new({ items: [noneItem, ...trackItems] });
       await menu.popup();
-    } catch {
-      // best-effort
-    }
+    } catch {}
   };
 
   const openDisplayModeMenu = async () => {
@@ -190,28 +178,7 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
       );
       const menu = await Menu.new({ items });
       await menu.popup();
-    } catch {
-      // best-effort
-    }
-  };
-  
-    const openShaderMenu = async () => {
-    try {
-      const current = await playerApi.getPostShader();
-      const items = await Promise.all(
-        Object.entries(SHADER_LABELS).map(([id, label]) =>
-          CheckMenuItem.new({
-            text: label,
-            checked: current === id,
-            action: () => void playerApi.setPostShader(id),
-          })
-        )
-      );
-      const menu = await Menu.new({ items });
-      await menu.popup();
-    } catch {
-      // best-effort
-    }
+    } catch {}
   };
 
   return (
@@ -320,14 +287,26 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             <Crop size={16} />
           </IconButton>
         )}
-		        {variant === "normal" && (
+        {/*{variant === "normal" && (
           <IconButton
-            label="Shader d'image (post-traitement)"
-            onClick={() => void openShaderMenu()}
+            label={loopEnabled ? "Désactiver la lecture en boucle" : "Lire en boucle"}
+            onClick={toggleLoop}
           >
-            <Sparkles size={16} />
+            <Repeat1 size={16} style={loopEnabled ? { color: "var(--color-accent)" } : undefined} />
           </IconButton>
         )}
+        {variant === "normal" && (
+          <IconButton
+            label={
+              autoNextEnabled
+                ? "Désactiver l'enchaînement auto (binge)"
+                : "Activer l'enchaînement auto (binge)"
+            }
+            onClick={toggleAutoNext}
+          >
+            <ListVideo size={16} style={autoNextEnabled ? { color: "var(--color-accent)" } : undefined} />
+          </IconButton>
+        )}*/}
         {variant === "normal" && (
           <IconButton label="Capturer une image" onClick={() => void handleCaptureScreenshot()}>
             <Camera size={16} />
@@ -341,10 +320,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             <Pin size={16} />
           </IconButton>
         )}
-        {/* ⚠️ PiP EN QUARANTAINE : le bouton "Détacher dans une fenêtre"
-            (icône ExternalLink) est volontairement retiré de l'interface.
-            Le code Rust correspondant (open_player_window, etc.) est
-            conservé mais plus rien ne l'appelle. */}
         {variant === "normal" && !isDetached && (
           <IconButton
             label={isFullscreen ? "Quitter le plein écran" : "Plein écran"}
@@ -366,12 +341,10 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             zIndex: 9999,
           }}
         >
-          {/* Zone de déplacement en haut (remplace la barre de titre) */}
           <div
             data-tauri-drag-region=""
             style={{ ...edge, top: 0, left: 0, right: 0, height: 22, cursor: "move" }}
           />
-          {/* Poignées de redimensionnement (bords + coins) */}
           <div onMouseDown={() => startResize("North")} style={{ ...edge, top: 0, left: 22, right: 22, height: 6, cursor: "ns-resize" }} />
           <div onMouseDown={() => startResize("South")} style={{ ...edge, bottom: 0, left: 22, right: 22, height: 6, cursor: "ns-resize" }} />
           <div onMouseDown={() => startResize("West")} style={{ ...edge, left: 0, top: 22, bottom: 22, width: 6, cursor: "ew-resize" }} />

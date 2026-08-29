@@ -552,3 +552,84 @@ pub fn random_with_banner(conn: &Connection) -> rusqlite::Result<Option<i64>> {
     )
     .optional()
 }
+
+// ---- Collections utilisateur (Étape 8) -------------------------------
+
+#[derive(serde::Serialize)]
+pub struct CollectionRecord {
+    pub id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub count: i64,
+}
+
+pub fn create_collection(conn: &Connection, name: &str) -> rusqlite::Result<i64> {
+    conn.execute("INSERT INTO collections (name) VALUES (?1)", rusqlite::params![name])?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn list_collections(conn: &Connection) -> rusqlite::Result<Vec<CollectionRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.name, c.description, COUNT(ci.title_id)
+         FROM collections c
+         LEFT JOIN collection_items ci ON ci.collection_id = c.id
+         GROUP BY c.id, c.name, c.description, c.created_at
+         ORDER BY c.created_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(CollectionRecord {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            description: row.get(2)?,
+            count: row.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn delete_collection(conn: &Connection, id: i64) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM collections WHERE id = ?1", rusqlite::params![id])?;
+    Ok(())
+}
+
+pub fn add_to_collection(conn: &Connection, collection_id: i64, title_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO collection_items (collection_id, title_id) VALUES (?1, ?2)",
+        rusqlite::params![collection_id, title_id],
+    )?;
+    Ok(())
+}
+
+pub fn remove_from_collection(conn: &Connection, collection_id: i64, title_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM collection_items WHERE collection_id = ?1 AND title_id = ?2",
+        rusqlite::params![collection_id, title_id],
+    )?;
+    Ok(())
+}
+
+pub fn list_collections_for_title(conn: &Connection, title_id: i64) -> rusqlite::Result<Vec<i64>> {
+    let mut stmt = conn.prepare("SELECT collection_id FROM collection_items WHERE title_id = ?1")?;
+    let rows = stmt.query_map(rusqlite::params![title_id], |row| row.get(0))?;
+    rows.collect()
+}
+
+/// (id, category_id, kind, name, year, poster_path) des titres d'une
+/// collection — l'assemblage `TitleSummary` + poster personnalisé se fait
+/// dans `commands::title` (même pattern que `list_recent_titles`).
+pub fn list_collection_titles(
+    conn: &Connection,
+    collection_id: i64,
+) -> rusqlite::Result<Vec<(i64, i64, String, String, Option<i64>, Option<String>)>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.category_id, t.kind, t.name, t.year, t.poster_path
+         FROM collection_items ci
+         JOIN titles t ON t.id = ci.title_id
+         WHERE ci.collection_id = ?1
+         ORDER BY ci.added_at DESC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![collection_id], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+    })?;
+    rows.collect()
+}

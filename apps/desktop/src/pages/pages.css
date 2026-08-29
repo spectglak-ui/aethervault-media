@@ -1017,3 +1017,327 @@
   font-size: 0.7rem;
   color: rgba(255, 255, 255, 0.75);
 }
+/* ---- Roulette « quoi regarder » (Étape 8) ---------------------------- */
+.avm-roulette {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  padding: 2rem;
+}
+.avm-roulette__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: min(900px, 100%);
+}
+.avm-roulette__header h2 {
+  margin: 0;
+  font-size: 1.3rem;
+}
+.avm-roulette__viewport {
+  position: relative;
+  width: min(900px, 100%);
+  overflow: hidden;
+  padding: 1rem 0;
+}
+.avm-roulette__track {
+  display: flex;
+  gap: 12px;
+  will-change: transform;
+}
+.avm-roulette__card {
+  flex-shrink: 0;
+  width: 160px;
+  aspect-ratio: 2 / 3;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  opacity: 0.55;
+  transition: opacity 0.3s ease, transform 0.3s ease, border-color 0.3s ease;
+}
+.avm-roulette__card img,
+.avm-roulette__card .avm-card__placeholder {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.avm-roulette__card--winner {
+  opacity: 1;
+  transform: scale(1.08);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 24px color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+.avm-roulette__marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-1px);
+  background: var(--color-accent);
+  opacity: 0.6;
+  pointer-events: none;
+}
+.avm-roulette__footer {
+  min-height: 90px;
+  text-align: center;
+}
+.avm-roulette__winner-name {
+  font-size: 1.2rem;
+  font-weight: 700;
+  margin: 0 0 0.75rem;
+}
+.avm-roulette__actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+}
+.avm-roulette__sound {
+  font-size: 0.8rem;
+  background: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0.2rem 0.3rem;
+}
+/* ---- Rangée « Continuer à regarder » (Étape 8) ----------------------- */
+.avm-home-poster__overlay--visible {
+  opacity: 1;
+}
+.avm-home-poster__progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.25);
+}
+.avm-home-poster__progress span {
+  display: block;
+  height: 100%;
+  background: var(--color-accent);
+}
+
+/* ---- Collections (Étape 8) ------------------------------------------- */
+.avm-collections {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 1.5rem;
+}
+.avm-collections__side {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.avm-collections__create {
+  display: flex;
+  gap: 0.5rem;
+}
+.avm-collections__input {
+  flex: 1;
+  background: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+}
+.avm-collections__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.avm-collections__list li {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.avm-collections__item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.avm-collections__item:hover {
+  background: var(--color-surface);
+}
+.avm-collections__active .avm-collections__item {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+.avm-collections__count {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+.avm-collections__cardwrap {
+  position: relative;
+}
+.avm-collections__cardwrap .avm-icon-button {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+}
+
+/* ---- Chips « envie du moment » (Étape 8) ----------------------------- */
+.avm-explore-moods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+/* ---- Time Capsule (Étape 8) ------------------------------------------ */
+.avm-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+.avm-stats-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 1.25rem;
+  text-align: center;
+}
+.avm-stats-card h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+.avm-stats-value {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--color-accent);
+}
+.avm-stats-section {
+  margin-bottom: 2rem;
+}
+.avm-stats-section h2 {
+  font-size: 1.2rem;
+  margin: 0 0 1rem;
+}
+.avm-stats-genres {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.avm-stats-genre {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.avm-stats-genre-count {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+/* ---- Rangée "Similaires" (Étape 8) ----------------------------------- */
+.avm-title-page__similar {
+  margin-top: 2rem;
+}
+.avm-title-page__similar h2 {
+  font-size: 1.2rem;
+  margin: 0 0 1rem;
+}
+/* ---- Fil d'Ariane privé (Étape 8) ------------------------------------ */
+.avm-private-breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+}
+.avm-private-breadcrumb__segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.avm-private-breadcrumb__crumb {
+  background: none;
+  border: none;
+  color: var(--color-accent);
+  cursor: pointer;
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.3rem;
+  border-radius: var(--radius-sm);
+}
+.avm-private-breadcrumb__crumb:hover {
+  background: var(--color-surface);
+}
+/* ---- Partage via code (Étape 8) -------------------------------------- */
+.avm-share-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+.avm-share-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 1.25rem;
+}
+.avm-share-panel h2 {
+  font-size: 1.1rem;
+  margin: 0 0 1rem;
+}
+.avm-share-lan {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+.avm-share-code {
+  width: 100%;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  background: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem;
+  resize: vertical;
+}
+.avm-share-progress {
+  height: 6px;
+  background: var(--color-border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 0.75rem 0;
+}
+.avm-share-progress div {
+  height: 100%;
+  background: var(--color-accent);
+  transition: width 0.15s linear;
+}

@@ -27,3 +27,4 @@ pub mod title;
 pub mod window;
 pub mod auth;
 pub mod settings;
+pub mod share;

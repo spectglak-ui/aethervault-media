@@ -1,13 +1,13 @@
-import { PrivateScanProgressBar } from "../components/PrivateScanProgressBar";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { FolderPlus, RefreshCw, Trash2 } from "lucide-react";
+import { ChevronRight, Folder, FolderOpen, FolderPlus, RefreshCw, Trash2 } from "lucide-react";
 import { Button, EmptyState, Modal, PageHeader } from "@aethervault/ui-kit";
 import type { PlayableMedia, PrivateVideoFile, PrivateVideoFolder } from "@aethervault/shared-types";
 import { libraryApi } from "../features/library/api";
 import { privacyApi } from "../features/privacy/api";
 import { privateVideoApi } from "../features/privateVideo/api";
 import { usePlayer } from "../player/PlayerContext";
+import { PrivateScanProgressBar } from "../components/PrivateScanProgressBar";
 import "./pages.css";
 
 function toPlayableMedia(file: PrivateVideoFile): PlayableMedia {
@@ -30,8 +30,11 @@ function describeSummary(summary: {
   return summary.failed > 0 ? `${base} ${summary.failed} fichier(s) ignoré(s) (erreur de lecture).` : base;
 }
 
-/** Étape 6d-privé : miniature chiffrée d'un fichier privé, chargée en
- * base64 via `private_video_thumbnail` ; placeholder sobre si absente. */
+function folderName(path: string): string {
+  const segments = path.replace(/[/\\]+$/, "").split(/[/\\]/);
+  return segments[segments.length - 1] || path;
+}
+
 function PrivateVideoThumb({ fileId }: { fileId: number }) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
@@ -52,13 +55,11 @@ function PrivateVideoThumb({ fileId }: { fileId: number }) {
 }
 
 /**
- * Détail d'une bibliothèque privée de type Vidéos (Étape 6b-i, doc §6.4
- * ter) — même principe que `LibraryDetailPage` (bibliothèques publiques),
- * mais scan manuel uniquement (pas d'écoute d'événements de progression :
- * la commande de scan est synchrone et renvoie directement son résumé,
- * voir `privateVideoApi.scan`) et aucune surveillance continue des
- * dossiers. Étape 6d-privé : chaque fichier affiche sa miniature
- * (stockée chiffrée dans vault.db, servie en base64).
+ * Détail d'une bibliothèque privée Vidéos. Étape 8 : navigation
+ * arborescente — l'arbre est reconstruit côté frontend à partir des
+ * chemins des enregistrements de dossiers (parent = ancêtre le plus
+ * proche), exactement l'organisation du disque au moment du scan.
+ * Fil d'Ariane + dossiers cliquables + fichiers du répertoire courant.
  */
 export function PrivateVideoLibraryPage() {
   const { id } = useParams<{ id: string }>();
@@ -68,6 +69,7 @@ export function PrivateVideoLibraryPage() {
   const [libraryName, setLibraryName] = useState<string | null>(null);
   const [folders, setFolders] = useState<PrivateVideoFolder[]>([]);
   const [files, setFiles] = useState<PrivateVideoFile[]>([]);
+  const [currentFolderId, setCurrentFolderId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastSummary, setLastSummary] = useState<string | null>(null);
@@ -100,6 +102,55 @@ export function PrivateVideoLibraryPage() {
     refresh();
   }, [refresh]);
 
+  /** Arbre reconstruit depuis les chemins (Étape 8) : parent d'un
+   * dossier = l'ancêtre le plus proche parmi les enregistrements. */
+  const { childrenOf, parentOf } = useMemo(() => {
+    const sorted = [...folders].sort((a, b) => a.path.length - b.path.length);
+    const parentMap = new Map<number, number | null>();
+    for (const folder of sorted) {
+      const fp = folder.path.replace(/[/\\]+$/, "").toLowerCase();
+      let parent: number | null = null;
+      for (const candidate of sorted) {
+        if (candidate.id === folder.id) continue;
+        const cp = candidate.path.replace(/[/\\]+$/, "").toLowerCase();
+        if (fp.startsWith(cp + "\\") || fp.startsWith(cp + "/")) {
+          parent = candidate.id;
+        }
+      }
+      parentMap.set(folder.id, parent);
+    }
+    const children = new Map<number | null, PrivateVideoFolder[]>();
+    for (const folder of sorted) {
+      const key = parentMap.get(folder.id) ?? null;
+      const list = children.get(key) ?? [];
+      list.push(folder);
+      children.set(key, list);
+    }
+    return { childrenOf: children, parentOf: parentMap };
+  }, [folders]);
+
+  const rootIds = useMemo(
+    () => new Set(folders.filter((f) => (parentOf.get(f.id) ?? null) === null).map((f) => f.id)),
+    [folders, parentOf]
+  );
+
+  const childFolders = childrenOf.get(currentFolderId) ?? [];
+  const visibleFiles = files.filter((file) =>
+    currentFolderId === null ? rootIds.has(file.folder_id) : file.folder_id === currentFolderId
+  );
+
+  const breadcrumbs = useMemo(() => {
+    const chain: PrivateVideoFolder[] = [];
+    let node: number | null = currentFolderId;
+    while (node !== null) {
+      const folder = folders.find((f) => f.id === node);
+      if (!folder) break;
+      chain.unshift(folder);
+      node = parentOf.get(folder.id) ?? null;
+    }
+    return chain;
+  }, [currentFolderId, folders, parentOf]);
+
   const handleAddFolder = async () => {
     const path = await libraryApi.pickFolder();
     if (!path) return;
@@ -121,6 +172,7 @@ export function PrivateVideoLibraryPage() {
     setError(null);
     try {
       await privateVideoApi.removeFolder(folderId);
+      if (currentFolderId === folderId) setCurrentFolderId(null);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Suppression du dossier impossible.");
@@ -155,6 +207,14 @@ export function PrivateVideoLibraryPage() {
     }
   };
 
+  const playVisible = (file: PrivateVideoFile) => {
+    if (!file.is_available) return;
+    const playable = visibleFiles.filter((candidate) => candidate.is_available);
+    const startIndex = playable.findIndex((candidate) => candidate.id === file.id);
+    if (startIndex === -1) return;
+    playQueue(playable.map(toPlayableMedia), startIndex);
+  };
+
   if (libraryName === null && !error) {
     return <p>Chargement…</p>;
   }
@@ -180,15 +240,15 @@ export function PrivateVideoLibraryPage() {
           ) : undefined
         }
       />
-	        <PrivateScanProgressBar privateLibraryId={privateLibraryId} />
+      <PrivateScanProgressBar privateLibraryId={privateLibraryId} />
       <Modal
         open={deleteModalOpen}
         onClose={() => setDeleteModalOpen(false)}
         title={`Supprimer « ${libraryName} » ?`}
       >
         <p>
-          Cette bibliothèque privée sera retirée du coffre. <strong>Les fichiers présents sur le
-          disque ne seront jamais supprimés.</strong>
+          Cette bibliothèque privée sera retirée du coffre.{" "}
+          <strong>Les fichiers présents sur le disque ne seront jamais supprimés.</strong>
         </p>
         <p>Cette action est irréversible.</p>
         <div className="avm-form-actions">
@@ -206,33 +266,74 @@ export function PrivateVideoLibraryPage() {
         <EmptyState
           icon={<FolderPlus size={32} />}
           title="Aucun dossier associé"
-          description="Ajoutez un dossier de votre disque pour qu'AetherVault Media y recherche des vidéos."
+          description="Ajoutez un dossier de votre disque : le scan reproduira son arborescence."
         />
       ) : (
         <>
-          <ul className="avm-folder-list">
-            {folders.map((folder) => (
-              <li key={folder.id} className="avm-folder-list__item">
-                <span className="avm-mono">{folder.path}</span>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  {!folder.is_available && (
-                    <span className="avm-badge avm-badge--warning">Indisponible</span>
-                  )}
-                  <Button variant="ghost" onClick={() => handleRemoveFolder(folder.id)} disabled={busy}>
-                    Retirer
-                  </Button>
-                </div>
-              </li>
+          <div className="avm-private-breadcrumb">
+            <button
+              className="avm-private-breadcrumb__crumb"
+              onClick={() => setCurrentFolderId(null)}
+            >
+              <FolderOpen size={14} /> {libraryName ?? "Racine"}
+            </button>
+            {breadcrumbs.map((crumb) => (
+              <span key={crumb.id} className="avm-private-breadcrumb__segment">
+                <ChevronRight size={14} />
+                <button
+                  className="avm-private-breadcrumb__crumb"
+                  onClick={() => setCurrentFolderId(crumb.id)}
+                >
+                  {folderName(crumb.path)}
+                </button>
+              </span>
             ))}
-          </ul>
-          {files.length === 0 ? (
+          </div>
+          {childFolders.length > 0 && (
+            <ul className="avm-media-list" style={{ marginBottom: 16 }}>
+              {childFolders.map((folder) => (
+                <li
+                  key={folder.id}
+                  className="avm-media-list__item avm-media-list__item--playable"
+                  onClick={() => setCurrentFolderId(folder.id)}
+                >
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0 }}>
+                    <Folder size={18} />
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {folderName(folder.path)}
+                    </span>
+                  </div>
+                  <div
+                    style={{ display: "flex", gap: 8, alignItems: "center" }}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <span className="avm-card__subtitle">
+                      {files.filter((f) => f.folder_id === folder.id).length} fichier(s)
+                    </span>
+                    {currentFolderId === null && (
+                      <Button
+                        variant="ghost"
+                        onClick={() => void handleRemoveFolder(folder.id)}
+                        disabled={busy}
+                      >
+                        Retirer
+                      </Button>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          {visibleFiles.length === 0 && childFolders.length === 0 ? (
             <EmptyState
-              title="Aucun fichier détecté pour l'instant"
+              title="Aucun contenu ici pour l'instant"
               description="Lancez un scan si vous venez d'ajouter des fichiers dans ce dossier."
             />
+          ) : visibleFiles.length === 0 ? (
+            <p className="avm-settings-muted">Aucun fichier directement dans ce dossier.</p>
           ) : (
             <ul className="avm-media-list">
-              {files.map((file) => (
+              {visibleFiles.map((file) => (
                 <li
                   key={file.id}
                   className={[
@@ -241,13 +342,7 @@ export function PrivateVideoLibraryPage() {
                   ]
                     .filter(Boolean)
                     .join(" ")}
-                  onClick={() => {
-                    if (!file.is_available) return;
-                    const playableFiles = files.filter((candidate) => candidate.is_available);
-                    const startIndex = playableFiles.findIndex((candidate) => candidate.id === file.id);
-                    if (startIndex === -1) return;
-                    playQueue(playableFiles.map(toPlayableMedia), startIndex);
-                  }}
+                  onClick={() => playVisible(file)}
                 >
                   <div style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0 }}>
                     <PrivateVideoThumb fileId={file.id} />

@@ -100,3 +100,88 @@ pub fn list_recent_titles(state: tauri::State<AppState>) -> Result<Vec<TitleSumm
 pub fn get_home_hero(state: tauri::State<AppState>) -> Result<Option<TitleDetails>, String> {
     title::home_hero(&state.db_pool)
 }
+
+// ---- Collections utilisateur (Étape 8) -------------------------------
+
+#[tauri::command]
+pub fn create_collection(state: tauri::State<AppState>, name: String) -> Result<i64, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Le nom de la collection ne peut pas être vide.".to_string());
+    }
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    crate::db::repositories::title_repository::create_collection(&conn, trimmed)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_collections(
+    state: tauri::State<AppState>,
+) -> Result<Vec<crate::db::repositories::title_repository::CollectionRecord>, String> {
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    crate::db::repositories::title_repository::list_collections(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_collection(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    crate::db::repositories::title_repository::delete_collection(&conn, id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn add_to_collection(
+    state: tauri::State<AppState>,
+    collection_id: i64,
+    title_id: i64,
+) -> Result<(), String> {
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    crate::db::repositories::title_repository::add_to_collection(&conn, collection_id, title_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn remove_from_collection(
+    state: tauri::State<AppState>,
+    collection_id: i64,
+    title_id: i64,
+) -> Result<(), String> {
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    crate::db::repositories::title_repository::remove_from_collection(&conn, collection_id, title_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_collections_for_title(
+    state: tauri::State<AppState>,
+    title_id: i64,
+) -> Result<Vec<i64>, String> {
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    crate::db::repositories::title_repository::list_collections_for_title(&conn, title_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_collection_titles(
+    state: tauri::State<AppState>,
+    collection_id: i64,
+) -> Result<Vec<TitleSummary>, String> {
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let rows =
+        crate::db::repositories::title_repository::list_collection_titles(&conn, collection_id)
+            .map_err(|e| e.to_string())?;
+    let mut summaries = Vec::with_capacity(rows.len());
+    for (id, category_id, kind, name, year, poster_path) in rows {
+        let custom_poster =
+            crate::db::repositories::custom_image_repository::get(&conn, "title", id, "poster")
+                .map_err(|e| e.to_string())?;
+        summaries.push(TitleSummary {
+            id,
+            category_id,
+            kind,
+            name,
+            year,
+            poster: custom_poster.or(poster_path),
+        });
+    }
+    Ok(summaries)
+}
