@@ -25,6 +25,7 @@ use crate::domain::playback;
 use crate::services::playback_engine::TrackList;
 use crate::state::AppState;
 use tauri::{AppHandle, Manager};
+use crate::domain::title::TitleSummary;
 
 #[tauri::command]
 pub fn get_playback_progress(
@@ -215,4 +216,176 @@ pub fn player_capture_screenshot(
         .handle()?
         .capture_screenshot(&target_path.to_string_lossy())?;
     Ok(target_path.to_string_lossy().to_string())
+}
+
+// ---- Rangée « Continuer à regarder » (Étape 8) -----------------------
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinueWatchingItem {
+    pub media_file_id: i64,
+    pub path: String,
+    pub library_id: i64,
+    pub title_id: i64,
+    pub title_name: String,
+    pub kind: String,
+    pub category_key: String,
+    pub poster: Option<String>,
+    pub label: String,
+    pub position_seconds: f64,
+    pub duration_seconds: f64,
+}
+
+/// Accueil : médias publics en cours (1 %–95 %), du plus récent au plus
+/// ancien ; le clic frontend relance directement la lecture (la reprise
+/// de position est déjà gérée par `loadAndBroadcast`).
+#[tauri::command]
+pub fn list_continue_watching(
+    state: tauri::State<AppState>,
+) -> Result<Vec<ContinueWatchingItem>, String> {
+    let active_profile_id = state.read_active_profile_id()?;
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let rows =
+        crate::db::repositories::playback_repository::list_continue_watching(&conn, active_profile_id)
+            .map_err(|e| e.to_string())?;
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows {
+        let custom_poster =
+            crate::db::repositories::custom_image_repository::get(&conn, "title", row.title_id, "poster")
+                .map_err(|e| e.to_string())?;
+        let label = match (row.season_number, row.episode_number) {
+            (Some(season), Some(episode)) => {
+                format!("{} S{:02}E{:02}", row.title_name, season, episode)
+            }
+            _ => row.title_name.clone(),
+        };
+        items.push(ContinueWatchingItem {
+            media_file_id: row.media_file_id,
+            path: row.path,
+            library_id: row.library_id,
+            title_id: row.title_id,
+            title_name: row.title_name,
+            kind: row.kind,
+            category_key: row.category_key,
+            poster: custom_poster.or(row.poster_path),
+            label,
+            position_seconds: row.position_seconds,
+            duration_seconds: row.duration_seconds,
+        });
+    }
+    Ok(items)
+}
+
+// ---- Time Capsule & Similaires (Étape 8) -------------------------------
+
+/// Enregistre une session dans `watch_history` (appelé par le frontend
+/// à la fin d'un média ≥ 30 s vus — évite les faux positifs).
+#[tauri::command]
+pub fn record_watch(
+    state: tauri::State<AppState>,
+    media_file_id: i64,
+    position_seconds: f64,
+    duration_seconds: f64,
+) -> Result<(), String> {
+    let active_profile_id = state.read_active_profile_id()?;
+    crate::domain::playback::record_watch_session(
+        &state.db_pool,
+        active_profile_id,
+        media_file_id,
+        position_seconds,
+        duration_seconds,
+    )
+}
+
+/// Statistiques agrégées pour la page Time Capsule.
+#[tauri::command]
+pub fn get_watch_stats(
+    state: tauri::State<AppState>,
+) -> Result<crate::db::repositories::playback_repository::WatchStats, String> {
+    let active_profile_id = state.read_active_profile_id()?;
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    crate::db::repositories::playback_repository::watch_stats(&conn, active_profile_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Top genres de la page Time Capsule.
+#[tauri::command]
+pub fn get_top_genres(
+    state: tauri::State<AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<(String, i64)>, String> {
+    let active_profile_id = state.read_active_profile_id()?;
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    crate::db::repositories::playback_repository::top_genres(&conn, active_profile_id, limit.unwrap_or(6))
+        .map_err(|e| e.to_string())
+}
+
+/// Top titres (Time Capsule + "Parce que vous avez regardé…").
+#[tauri::command]
+pub fn get_top_titles(
+    state: tauri::State<AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<TitleSummary>, String> {
+    let active_profile_id = state.read_active_profile_id()?;
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let rows = crate::db::repositories::playback_repository::top_titles(&conn, active_profile_id, limit.unwrap_or(12))
+        .map_err(|e| e.to_string())?;
+    let mut summaries = Vec::with_capacity(rows.len());
+    for (id, category_key, kind, name, poster_path, year, _count) in rows {
+        let custom_poster =
+            crate::db::repositories::custom_image_repository::get(&conn, "title", id, "poster")
+                .map_err(|e| e.to_string())?;
+        let category = crate::db::repositories::category_repository::get_by_key(&conn, &category_key)
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| format!("Catégorie {} introuvable", category_key))?;
+summaries.push(TitleSummary {
+    id,
+    category_id: category.id,
+    kind,
+    name,
+    year,
+    poster: custom_poster.or(poster_path),
+});
+    }
+    Ok(summaries)
+}
+
+/// Sessions de la période [from, to) — "il y a 1 an" + top annuel.
+#[tauri::command]
+pub fn get_watch_sessions(
+    state: tauri::State<AppState>,
+    from: String,
+    to: String,
+) -> Result<Vec<crate::db::repositories::playback_repository::WatchSession>, String> {
+    let active_profile_id = state.read_active_profile_id()?;
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    crate::db::repositories::playback_repository::watch_sessions_in(&conn, active_profile_id, &from, &to)
+        .map_err(|e| e.to_string())
+}
+
+/// Titres similaires (page Titre).
+#[tauri::command]
+pub fn list_similar_titles(
+    state: tauri::State<AppState>,
+    title_id: i64,
+    limit: Option<i64>,
+) -> Result<Vec<TitleSummary>, String> {
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let rows = crate::db::repositories::playback_repository::similar_titles(&conn, title_id, limit.unwrap_or(12))
+        .map_err(|e| e.to_string())?;
+    let mut summaries = Vec::with_capacity(rows.len());
+    for (id, category_id, kind, name, poster_path, year, _score) in rows {
+        let custom_poster =
+            crate::db::repositories::custom_image_repository::get(&conn, "title", id, "poster")
+                .map_err(|e| e.to_string())?;
+        summaries.push(TitleSummary {
+            id,
+            category_id,
+            kind,
+            name,
+            year,
+            poster: custom_poster.or(poster_path),
+        });
+    }
+    Ok(summaries)
 }

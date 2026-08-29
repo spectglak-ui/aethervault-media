@@ -12,6 +12,8 @@ import { LibraryPage } from "./pages/LibraryPage";
 import { LibraryDetailPage } from "./pages/LibraryDetailPage";
 import { ExplorePage } from "./pages/ExplorePage";
 import { CollectionsPage } from "./pages/CollectionsPage";
+import { SharePage } from "./pages/SharePage";
+import { StatsPage } from "./pages/StatsPage";
 import { ProfilesPage } from "./pages/ProfilesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ExperimentalPlayerPage } from "./pages/ExperimentalPlayerPage";
@@ -43,6 +45,8 @@ export const router = createHashRouter([
       { path: "/libraries/:id", element: <LibraryDetailPage /> },
       { path: "/explore", element: <ExplorePage /> },
       { path: "/collections", element: <CollectionsPage /> },
+	  { path: "/share", element: <SharePage /> },
+	  { path: "/stats", element: <StatsPage /> },
       { path: "/profiles", element: <ProfilesPage /> },
       { path: "/settings", element: <SettingsPage /> },
       {

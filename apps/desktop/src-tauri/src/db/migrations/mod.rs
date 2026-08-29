@@ -108,6 +108,16 @@ pub const MIGRATIONS: &[Migration] = &[
         description: "Sonde technique des fichiers média (résolution, codec vidéo, langues audio/sous-titres) pour l'Explorateur — Étape 7",
         sql: include_str!("0015_technical_probe.sql"),
     },
+	    Migration {
+        version: 16,
+        description: "Collections utilisateur (Étape 8)",
+        sql: include_str!("0016_collections.sql"),
+    },
+	    Migration {
+        version: 17,
+        description: "Historique de visionnage (Time Capsule, Étape 8)",
+        sql: include_str!("0017_watch_history.sql"),
+    },
 ];
 
 /// Applique, dans l'ordre, toutes les migrations dont la version est

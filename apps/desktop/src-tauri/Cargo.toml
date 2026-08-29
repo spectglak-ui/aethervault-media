@@ -88,6 +88,14 @@ rayon = "1"
 # threads d'arrière-plan (scan/enrichissement), jamais sur le thread UI.
 ureq = "2"
 
+# --- Partage via code (Étape 8, version durcie) ------------------------
+# `igd` : ouverture de port UPnP best-effort (désactivable par la case
+# « LAN uniquement »). `sha2` : somme SHA-256 de vérification + dérivation
+# de la clé de chiffrement. Le chiffrement lui-même réutilise `aes-gcm`,
+# déjà présent au projet pour le coffre privé.
+igd = "0.12"
+sha2 = "0.10"
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

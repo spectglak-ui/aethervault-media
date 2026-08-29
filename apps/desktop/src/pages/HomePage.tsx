@@ -4,7 +4,7 @@ import { Info, Play } from "lucide-react";
 import { Button, PageHeader } from "@aethervault/ui-kit";
 import type { Category, TitleDetails, TitleSummary } from "@aethervault/shared-types";
 import { categoryApi } from "../features/category/api";
-import { titleApi } from "../features/title/api";
+import { titleApi, type ContinueWatchingItem } from "../features/title/api";
 import { libraryApi } from "../features/library/api";
 import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
@@ -25,6 +25,7 @@ export function HomePage() {
   const [categories, setCategories] = useState<Category[] | null>(null);
   const [rows, setRows] = useState<Record<number, TitleSummary[]>>({});
   const [recent, setRecent] = useState<TitleSummary[] | null>(null);
+  const [continueItems, setContinueItems] = useState<ContinueWatchingItem[] | null>(null);
   const [hero, setHero] = useState<TitleDetails | null>(null);
   const [starting, setStarting] = useState(false);
 
@@ -32,6 +33,8 @@ export function HomePage() {
     categoryApi.list().then(setCategories).catch(() => setCategories([]));
     titleApi.hero().then(setHero).catch(() => setHero(null));
     titleApi.recent().then(setRecent).catch(() => setRecent([]));
+	titleApi.continueWatching().then(setContinueItems).catch(() => setContinueItems([]));
+	titleApi.continueWatching().then(setContinueItems).catch(() => setContinueItems([]));
   }, []);
 
   useEffect(() => {
@@ -47,6 +50,12 @@ export function HomePage() {
 
   const heroCategory =
     hero && categories ? categories.find((c) => c.id === hero.category_id) : undefined;
+
+    /** Rangée « Continuer à regarder » : le clic relance la lecture, la
+   * reprise de position est déjà gérée par le lecteur. */
+  const handleContinuePlay = (item: ContinueWatchingItem) => {
+    play({ id: item.mediaFileId, title: item.label, path: item.path, libraryId: item.libraryId });
+  };
 
   const handleHeroPlay = async () => {
     if (!hero || hero.media_file_id === null) return;
@@ -139,6 +148,37 @@ export function HomePage() {
             </button>
           ))}
         </div>
+      )}
+
+      {continueItems !== null && continueItems.length > 0 && (
+        <PosterRow title="Continuer à regarder">
+          {continueItems.map((item) => {
+            const percent = Math.min(
+              100,
+              Math.max(1, Math.round((item.positionSeconds / item.durationSeconds) * 100))
+            );
+            return (
+              <button
+                key={`continue-${item.mediaFileId}`}
+                className="avm-home-poster"
+                onClick={() => handleContinuePlay(item)}
+              >
+                {assetUrl(item.poster) ? (
+                  <img src={assetUrl(item.poster)} alt="" loading="lazy" />
+                ) : (
+                  <div className="avm-card__placeholder" aria-hidden="true" />
+                )}
+                <span className="avm-home-poster__overlay avm-home-poster__overlay--visible">
+                  <span className="avm-home-poster__name">{item.label}</span>
+                  <span className="avm-home-poster__meta">{percent}% vu</span>
+                </span>
+                <span className="avm-home-poster__progress" aria-hidden="true">
+                  <span style={{ width: `${percent}%` }} />
+                </span>
+              </button>
+            );
+          })}
+        </PosterRow>
       )}
 
       {recent !== null && recent.length > 0 && (

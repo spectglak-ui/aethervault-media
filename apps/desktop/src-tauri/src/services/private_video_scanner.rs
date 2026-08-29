@@ -136,81 +136,94 @@ impl<'a> ScanProgressEmitter<'a> {
     }
 }
 
-/// Parcourt l'ensemble des dossiers d'une bibliothèque vidéo privée.
-/// Contrairement à `services::scanner::scan_library` (bibliothèques
-/// publiques, qui persiste au fil de l'eau sur `aethervault.db`, non
-/// chiffrée), ne persiste jamais rien lui-même : le coffre (architecture
-/// A2, doc §6.4 bis) n'est ré-écrit chiffré sur disque qu'une seule fois,
-/// à la fin du scan complet, par l'appelant (`domain::private_video`) —
-/// jamais fichier par fichier.
+/// Scan arborescent (Étape 8) : chaque répertoire contenant au moins une
+/// vidéo reçoit son propre enregistrement de dossier (créé à la volée s'il
+/// manque), et les fichiers sont rattachés à leur répertoire EXACT — la
+/// page privée reconstruit l'arbre du disque à partir de ces chemins.
+/// Les fichiers directement sous la racine restent rattachés à
+/// l'enregistrement racine ; `remove_missing` nettoie les anciens
+/// rattachements récursifs des bibliothèques scannées avant l'Étape 8.
 pub fn scan_library(
     conn: &Connection,
     private_library_id: i64,
     app_handle: &AppHandle,
 ) -> Result<PrivateScanSummary, String> {
-    let folders = private_video_repository::list_folders_by_library(conn, private_library_id)
+    let roots = private_video_repository::list_folders_by_library(conn, private_library_id)
         .map_err(|e| e.to_string())?;
 
-    // Premier parcours léger : compte les fichiers candidats pour une
-    // barre déterminée (traités / total), comme le scanner public.
+    // Passe 1 : compte les fichiers candidats (barre déterminée) et
+    // crée les enregistrements de sous-dossiers manquants.
     let mut total_files: u64 = 0;
-    for folder in &folders {
-        let root = Path::new(&folder.path);
-        if !root.exists() {
+    for root in &roots {
+        let root_path = Path::new(&root.path);
+        if !root_path.exists() {
             continue;
         }
-        for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+        let mut dirs_with_videos: HashSet<std::path::PathBuf> = HashSet::new();
+        for entry in WalkDir::new(root_path).into_iter().filter_map(|e| e.ok()) {
             if entry.file_type().is_file() && is_video_file(entry.path()) {
                 total_files += 1;
+                if let Some(parent) = entry.path().parent() {
+                    dirs_with_videos.insert(parent.to_path_buf());
+                }
+            }
+        }
+        for dir in dirs_with_videos {
+            let dir_string = dir.to_string_lossy().to_string();
+            let exists =
+                private_video_repository::folder_id_by_path(conn, private_library_id, &dir_string)
+                    .map_err(|e| e.to_string())?;
+            if exists.is_none() {
+                private_video_repository::create_folder(conn, private_library_id, &dir_string)
+                    .map_err(|e| e.to_string())?;
             }
         }
     }
-    let mut progress = ScanProgressEmitter::new(app_handle, private_library_id, total_files);
 
+    // Passe 2 : rattache les fichiers de chaque répertoire à son
+    // enregistrement exact (parcours NON récursif).
+    let folders = private_video_repository::list_folders_by_library(conn, private_library_id)
+        .map_err(|e| e.to_string())?;
+    let mut progress = ScanProgressEmitter::new(app_handle, private_library_id, total_files);
     let mut added = 0u64;
     let mut updated = 0u64;
     let mut removed = 0u64;
     let mut unavailable_folders = 0u64;
     let mut failed = 0u64;
     let mut processed: u64 = 0;
-
     for folder in folders {
-        let root = Path::new(&folder.path);
-        if !root.exists() {
+        let dir = Path::new(&folder.path);
+        if !dir.exists() {
             unavailable_folders += 1;
             private_video_repository::mark_folder_unavailable(conn, folder.id)
                 .map_err(|e| e.to_string())?;
             progress.tick("scan", processed, &folder.path, true);
             continue;
         }
-        // Tick forcé au début de chaque dossier (« sous-bibliothèque ») :
-        // son chemin s'affiche dans la barre pendant son parcours.
         progress.tick("scan", processed, &folder.path, true);
         let mut seen_paths: HashSet<String> = HashSet::new();
-        for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-            if !entry.file_type().is_file() || !is_video_file(entry.path()) {
+        let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_file() || !is_video_file(&path) {
                 continue;
             }
-            let path_string = entry.path().to_string_lossy().to_string();
-            seen_paths.insert(path_string);
-            let file_name = entry
-                .path()
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_default();
-            match upsert_one_file(conn, private_library_id, folder.id, entry.path()) {
+            seen_paths.insert(path.to_string_lossy().to_string());
+            match upsert_one_file(conn, private_library_id, folder.id, &path) {
                 Ok(UpsertOutcome::Added) => added += 1,
                 Ok(UpsertOutcome::Updated) => updated += 1,
                 Err(_) => failed += 1,
             }
             processed += 1;
-            progress.tick("scan", processed, &file_name, false);
+            progress.tick("scan", processed, &folder.path, false);
         }
         removed += private_video_repository::remove_missing(conn, folder.id, &seen_paths)
             .map_err(|e| e.to_string())?;
     }
     progress.tick("scan", processed, "", true);
-
     Ok(PrivateScanSummary {
         private_library_id,
         added,

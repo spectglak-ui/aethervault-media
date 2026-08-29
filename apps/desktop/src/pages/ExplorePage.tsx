@@ -10,6 +10,19 @@ import "./pages.css";
 
 const PUBLIC_KEYS = ["movies", "series", "anime", "documentaries"];
 
+const CURRENT_YEAR = new Date().getFullYear();
+
+/** Étape 8 : presets « envie du moment » en un clic (construits sur les
+ * critères existants du Search Engine — les filtres durée/note
+ * arriveront avec l'extension backend dédiée). */
+const MOOD_CHIPS: Array<{ label: string; patch: Partial<TitleSearchQuery> }> = [
+  { label: "🍿 Sorties récentes", patch: { year_from: CURRENT_YEAR - 2, year_to: null } },
+  { label: "🕰️ Années 2000", patch: { year_from: 2000, year_to: 2009 } },
+  { label: "📼 Années 90", patch: { year_from: 1990, year_to: 1999 } },
+  { label: "🎬 Un film", patch: { kinds: ["movie"] } },
+  { label: "📺 Une série", patch: { kinds: ["series"] } },
+];
+
 function emptyQuery(q: string): TitleSearchQuery {
   return {
     q,
@@ -63,6 +76,7 @@ export function ExplorePage() {
   const [results, setResults] = useState<TitleSearchResult[] | null>(null);
   const [facets, setFacets] = useState<SearchFacets | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [mood, setMood] = useState<number | null>(null);
 
   // La barre de recherche du haut arrive ici via /explore?q=…
   useEffect(() => {
@@ -94,6 +108,16 @@ export function ExplorePage() {
     return () => window.clearTimeout(handle);
   }, [query, active]);
 
+  const applyMood = (index: number) => {
+    if (mood === index) {
+      setMood(null);
+      setQuery(emptyQuery(q));
+      return;
+    }
+    setMood(index);
+    setQuery({ ...emptyQuery(q), ...MOOD_CHIPS[index].patch });
+  };
+
   const patch = (partial: Partial<TitleSearchQuery>) =>
     setQuery((prev) => ({ ...prev, ...partial }));
 
@@ -103,6 +127,17 @@ export function ExplorePage() {
         title="Explorer"
         description="Recherche multicritères dans Films, Séries, Anime et Documentaires."
       />
+	        <div className="avm-explore-moods">
+        {MOOD_CHIPS.map((chip, index) => (
+          <button
+            key={chip.label}
+            className={mood === index ? "avm-chip avm-chip--active" : "avm-chip"}
+            onClick={() => applyMood(index)}
+          >
+            {chip.label}
+          </button>
+        ))}
+      </div>
       <div className="avm-explore-bar">
         <input
           type="search"

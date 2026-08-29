@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ImageUp, Play, RotateCcw } from "lucide-react";
+import { ImageUp, ListPlus, Play, RotateCcw } from "lucide-react";
+import { Menu, CheckMenuItem } from "@tauri-apps/api/menu";
 import { Button, EmptyState, IconButton, PageHeader } from "@aethervault/ui-kit";
-import type { TitleDetails } from "@aethervault/shared-types";
+import type { Category, TitleDetails, TitleSummary } from "@aethervault/shared-types";
 import { titleApi } from "../features/title/api";
 import { libraryApi } from "../features/library/api";
 import { categoryApi } from "../features/category/api";
@@ -22,17 +23,17 @@ function formatDuration(totalSeconds: number): string {
 }
 
 /**
- * Page d'un Titre (doc §6.3). Étape 7 (lot 4) : la bannière horizontale
- * est remplacée par un fond d'écran de page (bannière — ou affiche à
- * défaut — floutée + assombrie), personnalisé via les deux boutons en
- * haut à droite (même logique `custom_images` qu'avant, seul le rendu
- * change).
+ * Page d'un Titre (doc §6.3). Étape 7 (lot 4) : fond d'écran de page
+ * personnalisable. Étape 8 : menu « Ajouter à une collection » (ListPlus)
+ * + rangée « Titres similaires » (genres/acteurs/studios communs).
  */
 export function TitleDetailPage() {
   const { key, titleId } = useParams<{ key: string; titleId: string }>();
   const navigate = useNavigate();
   const { play } = usePlayer();
   const [title, setTitle] = useState<TitleDetails | null | undefined>(undefined);
+  const [similarTitles, setSimilarTitles] = useState<TitleSummary[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [starting, setStarting] = useState(false);
 
   const refresh = useCallback(() => {
@@ -45,7 +46,14 @@ export function TitleDetailPage() {
 
   useEffect(() => {
     refresh();
-  }, [refresh]);
+    categoryApi.list().then(setCategories).catch(() => {});
+    if (titleId) {
+      titleApi
+        .similar(Number(titleId), 12)
+        .then(setSimilarTitles)
+        .catch(() => setSimilarTitles([]));
+    }
+  }, [refresh, titleId]);
 
   const handlePlay = async () => {
     if (!title || title.media_file_id === null) return;
@@ -75,9 +83,53 @@ export function TitleDetailPage() {
     await titleApi.setBanner(title.id, sourcePath);
     refresh();
   };
+
   const handleResetWallpaper = async () => {
     await titleApi.setBanner(title.id, null);
     refresh();
+  };
+
+  /** Étape 8 : menu natif « Ajouter à une collection » — coche/décoche
+   * chaque collection existante pour ce Titre ; si aucune collection
+   * n'existe encore, propose d'en créer une directement. */
+  const openCollectionsMenu = async () => {
+    try {
+      const [all, mine] = await Promise.all([
+        titleApi.listCollections(),
+        titleApi.listCollectionsForTitle(title.id),
+      ]);
+      if (all.length === 0) {
+        const name = window.prompt("Première collection — nom :");
+        if (name && name.trim().length > 0) {
+          await titleApi.createCollection(name.trim());
+        }
+        return;
+      }
+      const items = await Promise.all(
+        all.map((collection) =>
+          CheckMenuItem.new({
+            text: collection.name,
+            checked: mine.includes(collection.id),
+            action: () => {
+              const call = mine.includes(collection.id)
+                ? titleApi.removeFromCollection(collection.id, title.id)
+                : titleApi.addToCollection(collection.id, title.id);
+              void call;
+            },
+          })
+        )
+      );
+      const menu = await Menu.new({ items });
+      await menu.popup();
+    } catch {
+      // best-effort
+    }
+  };
+
+  /** Étape 8 : navigation vers un titre similaire (bonne catégorie). */
+  const openSimilar = (similar: TitleSummary) => {
+    const category = categories.find((c) => c.id === similar.category_id);
+    if (category) navigate(`/category/${category.key}/title/${similar.id}`);
   };
 
   return (
@@ -89,6 +141,9 @@ export function TitleDetailPage() {
         </div>
       )}
       <div className="avm-title-page__wallpaper-actions">
+        <IconButton label="Ajouter à une collection" onClick={() => void openCollectionsMenu()}>
+          <ListPlus size={16} />
+        </IconButton>
         <IconButton label="Changer le fond de page" onClick={() => void handlePickWallpaper()}>
           <ImageUp size={16} />
         </IconButton>
@@ -101,7 +156,6 @@ export function TitleDetailPage() {
           </IconButton>
         )}
       </div>
-
       <div className="avm-title-page__header">
         <div className="avm-title-page__poster">
           <PersonalizableImage
@@ -172,7 +226,6 @@ export function TitleDetailPage() {
           )}
         </div>
       </div>
-
       {title.technical &&
         (title.technical.resolutions.length > 0 ||
           title.technical.codecs.length > 0 ||
@@ -221,18 +274,18 @@ export function TitleDetailPage() {
                 <div>
                   <span className="avm-technical-label">Sous-titres</span>
                   <div className="avm-technical-chips">
-                    {title.technical.subtitle_langs.map((lang) => (
-                      <span key={lang} className="avm-badge">
-                        {lang.toUpperCase()}
-                      </span>
-                    ))}
+                    {title.technical.subtitle_langs.length > 0 &&
+                      title.technical.subtitle_langs.map((lang) => (
+                        <span key={lang} className="avm-badge">
+                          {lang.toUpperCase()}
+                        </span>
+                      ))}
                   </div>
                 </div>
               )}
             </div>
           </div>
         )}
-
       {title.kind === "series" && (
         <section className="avm-title-page__seasons">
           <h2>Saisons</h2>
@@ -255,6 +308,27 @@ export function TitleDetailPage() {
               ))}
             </ul>
           )}
+        </section>
+      )}
+      {similarTitles.length > 0 && (
+        <section className="avm-title-page__similar">
+          <h2>Titres similaires</h2>
+          <div className="avm-category-grid avm-category-grid--posters">
+            {similarTitles.map((similar) => (
+              <button
+                key={similar.id}
+                className="avm-explore-card"
+                onClick={() => openSimilar(similar)}
+              >
+                {assetUrl(similar.poster) ? (
+                  <img src={assetUrl(similar.poster)} alt="" />
+                ) : (
+                  <div className="avm-card__placeholder" aria-hidden="true" />
+                )}
+                <span className="avm-explore-card__name">{similar.name}</span>
+              </button>
+            ))}
+          </div>
         </section>
       )}
     </div>

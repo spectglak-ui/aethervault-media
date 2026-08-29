@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Home, Compass, Layers, Users, Settings, PanelLeftClose, PanelLeft } from "lucide-react";
+import { Home, Compass, Layers, Users, Settings, Share2, BarChart3, PanelLeftClose, PanelLeft } from "lucide-react";
 import { NavItem, IconButton } from "@aethervault/ui-kit";
 import type { Category } from "@aethervault/shared-types";
 import { categoryApi } from "../features/category/api";
@@ -9,6 +9,8 @@ import { categoryRoute } from "../lib/categoryRoute";
 const SECONDARY_NAV_ITEMS = [
   { path: "/explore", label: "Explorer", icon: Compass },
   { path: "/collections", label: "Collections", icon: Layers },
+  { path: "/share", label: "Partage", icon: Share2 },
+  { path: "/stats", label: "Time Capsule", icon: BarChart3 },
   { path: "/profiles", label: "Profils", icon: Users },
   { path: "/settings", label: "Paramètres", icon: Settings },
 ] as const;

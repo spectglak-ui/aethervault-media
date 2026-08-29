@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
-import { CheckSquare, FolderPlus, ImageUp, RefreshCw, RotateCcw, Square, Trash2, X } from "lucide-react";
+import {
+  CheckSquare,
+  Dices,
+  FolderPlus,
+  ImageUp,
+  RefreshCw,
+  RotateCcw,
+  Square,
+  Trash2,
+  X,
+} from "lucide-react";
 import { Button, Card, EmptyState, IconButton, Modal, PageHeader } from "@aethervault/ui-kit";
 import type { Category, Library, TitleSummary } from "@aethervault/shared-types";
 import { categoryApi } from "../features/category/api";
@@ -9,6 +19,8 @@ import { titleApi } from "../features/title/api";
 import { libraryApi } from "../features/library/api";
 import { CreateLibraryModal } from "../features/library/CreateLibraryModal";
 import { ScanProgressBar } from "../components/ScanProgressBar";
+import { TitleRoulette } from "../components/TitleRoulette";
+import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
 import "./pages.css";
 
@@ -25,11 +37,16 @@ import "./pages.css";
  * progression (`ScanProgressBar`) à côté du bouton « Scanner » de chaque
  * bibliothèque — pilotée par `library:scan-progress`, invisible au repos.
  *
- * Étape 7 (lot 4) : même traitement que la page Titre — la petite
- * bannière horizontale est remplacée par un fond d'écran de page
- * (bannière de la catégorie personnalisée, ou à défaut affiche du premier
- * titre, assombrie), changé/réinitialisé via les deux boutons de la barre
- * d'actions (même logique `custom_images` qu'avant, seul le rendu change).
+ * Étape 7 (lot 4) : la petite bannière horizontale est remplacée par un
+ * fond d'écran de page (bannière de la catégorie personnalisée, ou à
+ * défaut affiche du premier titre, assombrie), changé/réinitialisé via
+ * les deux boutons de la barre d'actions (même logique `custom_images`
+ * qu'avant, seul le rendu change).
+ *
+ * Étape 8 : bouton « Roulette » (🎰) — tire un titre au hasard dans la
+ * catégorie avec une animation de défilement de 5 s (voir
+ * `TitleRoulette`), puis propose « Lecture » / « Rejouer » sans jamais
+ * lancer la lecture automatiquement.
  */
 export function CategoryPage() {
   const { key } = useParams<{ key: string }>();
@@ -46,6 +63,8 @@ export function CategoryPage() {
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [bulkError, setBulkError] = useState<string | null>(null);
+  const [rouletteOpen, setRouletteOpen] = useState(false);
+  const { play } = usePlayer();
 
   const refresh = useCallback(() => {
     categoryApi.list().then((categories) => {
@@ -173,6 +192,23 @@ export function CategoryPage() {
     refresh();
   };
 
+  /** Roulette (Étape 8) : « Lecture » — film : lecture directe ; série :
+   * ouvre la page du Titre pour choisir saison/épisode. */
+  const handleRoulettePlay = async (title: TitleSummary) => {
+    setRouletteOpen(false);
+    try {
+      const details = await titleApi.getDetails(title.id);
+      if (details.kind === "movie" && details.media_file_id !== null) {
+        const file = await libraryApi.getMediaFile(details.media_file_id);
+        play({ id: file.id, title: details.name, path: file.path, libraryId: file.library_id });
+        return;
+      }
+    } catch {
+      // best-effort : repli sur la navigation classique
+    }
+    navigate(`/category/${category.key}/title/${title.id}`);
+  };
+
   return (
     <div className="avm-category-page">
       {wallpaper && (
@@ -191,6 +227,14 @@ export function CategoryPage() {
           }
           actions={
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {titles !== null && titles.length > 0 && (
+                <IconButton
+                  label="Roulette : un titre au hasard"
+                  onClick={() => setRouletteOpen(true)}
+                >
+                  <Dices size={16} />
+                </IconButton>
+              )}
               <IconButton label="Changer le fond de page" onClick={() => void handlePickWallpaper()}>
                 <ImageUp size={16} />
               </IconButton>
@@ -352,6 +396,14 @@ export function CategoryPage() {
           onClose={() => setModalOpen(false)}
           onCreated={refresh}
         />
+        {rouletteOpen && titles !== null && titles.length > 0 && (
+          <TitleRoulette
+            titles={titles}
+            categoryName={category.name}
+            onClose={() => setRouletteOpen(false)}
+            onPlay={(title) => void handleRoulettePlay(title)}
+          />
+        )}
       </div>
     </div>
   );
