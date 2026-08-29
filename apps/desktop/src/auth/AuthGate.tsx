@@ -11,6 +11,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, Check, Copy, Lock, UserPlus } from "lucide-react";
 import logoUrl from "../assets/logo.png";
+import { metadataApi } from "../features/settings/api";
 import "./auth.css";
 
 interface LoginProfile {
@@ -61,6 +62,10 @@ const AVATAR_GRADIENTS: [string, string][] = [
   ["#facc15", "#84cc16"],
 ];
 
+/** Lien vers la création de clé API TMDB (v3) — affiché avec bouton
+copier dans le tuto de bienvenue (Étape 8). */
+const TMDB_API_URL = "https://www.themoviedb.org/settings/api";
+
 function avatarStyle(name: string): CSSProperties {
   let h = 0;
   for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
@@ -77,9 +82,9 @@ function initials(name: string): string {
 }
 
 /** Intro : fond sombre, halo discret, logo centré, nom en dessous.
- * ~2,6 s, skippable d'un clic ou d'une touche. Les animations sont des
- * composants framer-motion : `MotionConfig reducedMotion="user"` (App)
- * les désactive automatiquement si l'OS le demande. */
+~2,6 s, skippable d'un clic ou d'une touche. Les animations sont des
+composants framer-motion : `MotionConfig reducedMotion="user"` (App)
+les désactive automatiquement si l'OS le demande. */
 function Intro({ onDone }: { onDone: () => void }) {
   useEffect(() => {
     const timer = window.setTimeout(onDone, 2600);
@@ -125,7 +130,6 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
   const [newPassword, setNewPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!selected || busy) return;
@@ -147,7 +151,6 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
       setBusy(false);
     }
   };
-
   return (
     <div className="avm-auth__card">
       {!selected ? (
@@ -270,7 +273,6 @@ function Onboarding({ onDone }: { onDone: () => void }) {
   const [extraPassword, setExtraPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
   const submitAdmin = async (e: FormEvent) => {
     e.preventDefault();
     if (busy || !name.trim()) return;
@@ -294,7 +296,6 @@ function Onboarding({ onDone }: { onDone: () => void }) {
       setBusy(false);
     }
   };
-
   const addExtra = async (e: FormEvent) => {
     e.preventDefault();
     if (busy || !extraName.trim()) return;
@@ -314,7 +315,6 @@ function Onboarding({ onDone }: { onDone: () => void }) {
       setBusy(false);
     }
   };
-
   const copyCode = async () => {
     if (!recoveryCode) return;
     try {
@@ -325,7 +325,6 @@ function Onboarding({ onDone }: { onDone: () => void }) {
       // best-effort
     }
   };
-
   return (
     <div className="avm-auth__card">
       {step === "admin" && (
@@ -448,12 +447,149 @@ function Onboarding({ onDone }: { onDone: () => void }) {
   );
 }
 
+/** Tuto de bienvenue TMDB (Étape 8) : affiché une seule fois (flag
+localStorage) si aucune clé API n'est configurée — nouveaux comptes
+comme installations existantes. Explique pourquoi une clé, comment
+l'obtenir (lien copiable), saisie directe ou « Passer ». */
+function TmdbWelcomeModal() {
+  const [visible, setVisible] = useState(false);
+  const [apiKey, setApiKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const markDone = () => {
+    try {
+      localStorage.setItem("avm-tmdb-welcome-done", "1");
+    } catch {
+      // best-effort
+    }
+  };
+
+  useEffect(() => {
+    try {
+      if (localStorage.getItem("avm-tmdb-welcome-done") === "1") return;
+    } catch {
+      // best-effort
+    }
+    metadataApi
+      .getSettings()
+      .then((settings) => {
+        if (!settings.api_key) setVisible(true);
+        else markDone();
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const close = () => {
+    markDone();
+    setVisible(false);
+  };
+
+  const copyUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(TMDB_API_URL);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // best-effort
+    }
+  };
+
+  const saveAndClose = async () => {
+    if (!apiKey.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await metadataApi.saveSettings({
+        api_key: apiKey.trim(),
+        language: "fr-FR",
+        auto_enrich: true,
+      });
+      markDone();
+      setVisible(false);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!visible) return null;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "rgba(0, 0, 0, 0.6)",
+        backdropFilter: "blur(4px)",
+      }}
+    >
+        <div
+        className="avm-tmdb-welcome-card"
+        style={{ maxHeight: "90vh", overflowY: "auto", maxWidth: 640 }}
+      >
+        <h1>Bienvenue ! Activez les métadonnées automatiques</h1>
+        <p className="avm-auth__hint">
+          AetherVault Media peut enrichir automatiquement vos fiches (synopsis, genres,
+          casting, affiches) grâce à TMDB, la base communautaire des films et séries.
+          Une clé API gratuite est nécessaire — elle reste sur cette machine. Sans clé,
+          l'application fonctionne quand même (fiches locales).
+        </p>
+        <ol
+          className="avm-auth__hint"
+          style={{ textAlign: "left", margin: "0 0 12px", paddingLeft: 18 }}
+        >
+          <li>Créez un compte gratuit sur themoviedb.org ;</li>
+          <li>Puis : Profil → Paramètres → API → « Request an API Key » (clé v3) ;</li>
+          <li>Validez votre e-mail, puis collez la clé ci-dessous.</li>
+        </ol>
+        <div className="avm-auth__code">
+          <code>{TMDB_API_URL}</code>
+          <button className="avm-btn avm-btn--ghost" type="button" onClick={() => void copyUrl()}>
+            {copied ? <Check size={14} /> : <Copy size={14} />}
+          </button>
+        </div>
+        <label className="avm-auth__label">
+          Clé API TMDB (v3)
+          <input
+            className="avm-auth__input"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="Collez votre clé API (optionnel)"
+          />
+        </label>
+        {error && <p className="avm-auth__error">{error}</p>}
+        <div className="avm-auth__actions">
+          <button
+            className="avm-btn avm-btn--primary"
+            type="button"
+            disabled={saving || !apiKey.trim()}
+            onClick={() => void saveAndClose()}
+          >
+            {saving ? "Enregistrement…" : "Enregistrer et fermer"}
+          </button>
+          <button className="avm-btn avm-btn--ghost" type="button" onClick={close}>
+            Passer cette étape
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AuthGate({ children }: { children: ReactNode }) {
   const [stage, setStage] = useState<"intro" | "gate">("intro");
   const [ready, setReady] = useState(false);
   const [loginState, setLoginState] = useState<LoginState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-
   useEffect(() => {
     let cancelled = false;
     authApi
@@ -468,12 +604,15 @@ export function AuthGate({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, []);
-
   const finishIntro = useCallback(() => setStage("gate"), []);
   const authenticated = useCallback(() => setReady(true), []);
-
-  if (ready) return <>{children}</>;
-
+  if (ready)
+    return (
+      <>
+        <TmdbWelcomeModal />
+        {children}
+      </>
+    );
   return (
     <AnimatePresence mode="wait">
       {stage === "intro" ? (

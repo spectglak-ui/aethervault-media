@@ -283,3 +283,58 @@
   color: var(--color-text);
   border: 1px solid var(--color-border);
 }
+
+/* ---- Modale de bienvenue TMDB (Étape 8) ------------------------------
+   Styles volontairement autonomes : la modale est rendue hors du
+   conteneur .avm-auth (une fois connecté) — police, couleurs et tailles
+   sont donc fixées explicitement ici, avec replis si les variables de
+   thème manquent. */
+.avm-tmdb-welcome-card {
+  background: var(--color-surface, #17171c);
+  color: var(--color-text, #f2f2f5);
+  border: 1px solid var(--color-border, #2c2c33);
+  border-radius: 16px;
+  padding: 28px 34px;
+  font-family: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 1rem;
+  line-height: 1.6;
+  text-align: center;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+}
+.avm-tmdb-welcome-card h1 {
+  color: var(--color-text, #f2f2f5);
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0 0 14px;
+}
+.avm-tmdb-welcome-card p {
+  color: var(--color-text-muted, #b4b4c0);
+  font-size: 0.98rem;
+  text-align: center;
+}
+.avm-tmdb-welcome-card ol,
+.avm-tmdb-welcome-card li {
+  color: var(--color-text-muted, #b4b4c0);
+  font-size: 0.98rem;
+  text-align: left;
+}
+.avm-tmdb-welcome-card label {
+  color: var(--color-text, #f2f2f5);
+  font-size: 0.95rem;
+  text-align: left;
+}
+/* Correctif centrage tuto TMDB : écrase max-width/alignement de
+.avm-auth__hint (sélecteur plus spécifique + placé après). */
+.avm-tmdb-welcome-card p.avm-auth__hint,
+.avm-tmdb-welcome-card p {
+  text-align: center;
+  max-width: none;
+  width: auto;
+  margin: 0 auto 14px;
+}
+.avm-tmdb-welcome-card ol.avm-auth__hint,
+.avm-tmdb-welcome-card ol {
+  width: fit-content;
+  margin: 0 auto 12px;
+  text-align: left;
+}
