@@ -4,30 +4,30 @@
 
 **AetherVault Media** est un centre multimédia personnel, **local-first**, entièrement installé sur votre appareil. Gérez votre bibliothèque de films, séries, anime et galeries privées — sans compte cloud, sans surveillance.
 
-**État actuel** : 🎬 Étape 8+ — Installateur Windows NSIS, lecteur libmpv intégré, partage via code (chiffré), scan d'images parallélisé.
+**État actuel** :  Étape 8+ — Installateur Windows NSIS, lecteur libmpv intégré, partage via code (chiffré), scan d'images parallélisé.
 
-## 🌟 Fonctionnalités principales
+##  Fonctionnalités principales
 
-### 📚 Gestion de bibliothèque
+###  Gestion de bibliothèque
 - **Catalogue public** : films, séries et anime avec détection automatique des saisons et épisodes
 - **Coffre privé chiffré** : vidéos et galeries d'images protégées en AES-256-GCM
 - **Métadonnées enrichies** : intégration TMDB (synopsis, affiches, casting, genres, notes)
 - **Profils multi-utilisateurs** : authentification avec intro animée et sélection de profil
 - **Watcher automatique** : détecte les nouveaux fichiers médias en temps réel
 
-### 🎥 Lecteur multimédia intégré
+###  Lecteur multimédia intégré
 - **Lecteur libmpv** : rendu logiciel + canvas WebGL pour une compatibilité maximale
 - **Modes de lecture** : lecture plein écran, mode flottant
 - **Shaders de post-traitement** : 4 presets WebGL (Désactivé, Netteté, Couleurs vives, Anime4K-lite)
 - **Informations techniques** : résolution, codecs, langues audio et sous-titres
 
-### 🔍 Exploration et recherche
+###  Exploration et recherche
 - **Explorateur multicritère** : recherchez par titre, catégorie, année, genre, acteur, réalisateur, résolution, codec, langue
 - **Facets intelligentes** : navigation intuitive avec compteur de résultats
 - **Barre de recherche globale** : accès rapide via le shell
 - **Fonds d'écran** : bannières TMDB automatiquement appliquées aux pages titre
 
-### 🏠 Interface utilisateur
+###  Interface utilisateur
 - **Accueil v2** : héro à la une avec synopsis et boutons d'action, rangées style Netflix
 - **Fenêtre frameless** : design moderne sans barre de titre native, draggable
 - **Thème cohérent** : scrollbars sombres et personnalisation complète
@@ -38,20 +38,20 @@
 - **Chiffrement bout-à-bout** : SHA-256 + AES-256-GCM pour les données partagées
 - **Ouverture de port UPnP** : support optionnel pour le LAN (configurable)
 
-### 🎨 Galeries d'images privées
+###  Galeries d'images privées
 - **Stockage chiffré** : images protégées en AES-256-GCM, jamais en clair sur disque
 - **Formats supportés** : JPEG, PNG, WebP, GIF, BMP, TIFF
 - **Métadonnées EXIF** : date de prise de vue et modèle d'appareil préservés (GPS volontairement exclu)
 - **Scan parallélisé** : analyse rapide et efficace avec Rayon
 
-### ⚡ Performance et sécurité
+###  Performance et sécurité
 - **Vignettes d'aperçu automatiques** : extraites à ~1s de chaque épisode, génération efficace
 - **Scan parallélisé d'images** : performance optimale sur multi-cœurs
 - **Barre de progression du scan** : suivi en temps réel (analyse → appariement → vignettes)
 - **Chiffrement du coffre** : Argon2id (KDF) + AES-256-GCM, jamais en clair sur disque
 - **Aucune dépendance système** : SQLite bundled, rustls (100% Rust)
 
-## 📋 Prérequis (Windows)
+##  Prérequis (Windows)
 
 ### Outils obligatoires
 - **Rust** — installez via [rustup](https://rustup.rs) (1.77+)
@@ -64,7 +64,7 @@
 - **Microsoft C++ Build Tools** — depuis Visual Studio Installer (charge de travail : *Desktop development with C++*)
 - **WebView2 Runtime** — préinstallé sur Windows 11 ; à [installer manuellement](https://developer.microsoft.com/microsoft-edge/webview2/) sur Windows 10
 
-### 🎬 libmpv-2.dll (crucial)
+###  libmpv-2.dll (crucial)
 Le lecteur multimédia nécessite **libmpv-2.dll** (build LGPL, non modifié) :
 
 #### Pour le mode développement
@@ -85,7 +85,7 @@ cp libmpv-2.dll apps/desktop/src-tauri/libs/
 <installation>\resources\libmpv-2.dll
 ```
 
-## 🚀 Installation et utilisation
+##  Installation et utilisation
 
 ### Mode développement
 
@@ -124,7 +124,7 @@ apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.3.0_x64-se
 - ⚠️ Tauri Updater non implémenté
 - Premier build télécharge l'outil NSIS automatiquement (connexion requise une seule fois)
 
-## 🏗️ Architecture
+##  Architecture
 
 ### Stack technologique
 - **Backend** : Rust 2021 (1.77+) avec Tauri 2 — **55.9% du code**
