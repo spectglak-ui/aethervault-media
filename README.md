@@ -1,5 +1,4 @@
 # AetherVault Media
-le lecteur multimédia avancé
 
 <img width="1919" height="635" alt="AetherVault Media - Centre multimédia personnel" src="https://github.com/user-attachments/assets/9152b0d9-8d67-4511-b3d8-588f48f80259" />
 
