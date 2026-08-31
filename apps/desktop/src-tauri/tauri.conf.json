@@ -57,7 +57,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["fpcalc.exe"],
+    "resources": ["fpcalc.exe", "libmpv-2.dll"],
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",

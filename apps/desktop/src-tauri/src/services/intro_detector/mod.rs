@@ -11,6 +11,7 @@
 //! → non détectables automatiquement → marquage manuel uniquement.
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
@@ -26,7 +27,7 @@ const HOP: usize = 1024;
 const TARGET_RATE: u32 = 11025;
 const BANDS: usize = 33;
 const ZONE_SECONDS: f64 = 360.0;
-const MIN_RUN_SECONDS: f64 = 45.0;  // ← était 15.0
+const MIN_RUN_SECONDS: f64 = 15.0;
 const MAX_RUN_SECONDS: f64 = 240.0;
 const MAX_BER_BITS: u32 = 12;
 
@@ -42,7 +43,7 @@ pub struct ZoneFingerprint {
 }
 
 /// Résout l'emplacement de fpcalc : FPCALC_PATH → à côté de l'exe →
-/// répertoire courant (dev : src-tauri).
+/// sous-dossier resources → répertoire courant (dev : src-tauri).
 fn fpcalc_path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("FPCALC_PATH") {
         let pb = PathBuf::from(p);
@@ -51,7 +52,7 @@ fn fpcalc_path() -> Option<PathBuf> {
         }
     }
     let mut dirs: Vec<PathBuf> = Vec::new();
-        if let Ok(exe) = std::env::current_exe() {
+    if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             dirs.push(dir.to_path_buf());
             dirs.push(dir.join("resources"));
@@ -76,9 +77,10 @@ fn fpcalc_path() -> Option<PathBuf> {
 /// les codecs/conteneurs, bien plus robuste que Symphonia.
 fn fingerprint_with_fpcalc(path: &Path, fpcalc: &Path) -> Option<ZoneFingerprint> {
     log::info!("[fingerprint] fpcalc sur {}", path.display());
-        let output = std::process::Command::new(fpcalc)
+    let output = std::process::Command::new(fpcalc)
         .args(["-json", "-raw", "-length", "0"])
         .arg(path)
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW : pas de flash console
         .output()
         .ok()?;
     if !output.status.success() {
@@ -231,12 +233,6 @@ fn fingerprint_with_symphonia(path: &Path) -> Option<ZoneFingerprint> {
         log::warn!("[fingerprint] {} : aucune trame audio décodée", path.display());
         return None;
     }
-    log::info!(
-        "[fingerprint] symphonia {} : {} trames décodées, durée {:.1}s",
-        path.display(),
-        total,
-        total as f64 / real_rate as f64
-    );
     let head_f32: Vec<f32> = resample(&head, real_rate, TARGET_RATE)
         .into_iter()
         .map(|v| v as f32 / 32767.0)
@@ -343,8 +339,8 @@ fn fingerprint(mono: &[f32]) -> (Vec<u32>, Vec<bool>) {
 }
 
 /// Meilleure zone commune entre deux empreintes — tolère des trous
-/// jusqu'à ~2 s consécutives (intros d'anime avec variations locales).
-/// Segment valide si durée ≥ MIN_RUN_SECONDS et densité ≥ 50 %.
+/// jusqu'à ~2 s consécutives. Segment valide si durée ≥ MIN_RUN_SECONDS
+/// et densité ≥ 50 %.
 fn best_run(
     a: &[u32],
     a_act: &[bool],
@@ -365,10 +361,10 @@ fn best_run(
         } else {
             ((-off) as usize, 0usize)
         };
-        let mut run_start = 0usize;
-        let mut run_len = 0usize;
-        let mut run_matched = 0usize;
-        let mut gap = 0usize;
+        let mut run_start: usize = 0;
+        let mut run_len: usize = 0;
+        let mut run_matched: usize = 0;
+        let mut gap: usize = 0;
         let mut in_run = false;
         while ai < a.len() && bi < b.len() {
             let ok = a_act[ai] && b_act[bi] && (a[ai] ^ b[bi]).count_ones() <= MAX_BER_BITS;
@@ -472,7 +468,6 @@ pub fn detect_series(
         let fps = fa.fps;
         let zone_frames = (ZONE_SECONDS * fps) as i64;
         let (ida, idb) = (episodes[i].0, episodes[j].0);
-        // Intro : zones de tête alignées, décalage large (cold open).
         if let Some((sa, sb, len)) = best_run(
             &fa.head,
             &fa.head_active,
@@ -489,7 +484,6 @@ pub fn detect_series(
             intro.entry(ida).and_modify(|e| e.0 += 1).or_insert((1, la, la + l));
             intro.entry(idb).and_modify(|e| e.0 += 1).or_insert((1, lb, lb + l));
         }
-        // Outro : zones de queue (ancrées à la fin du fichier).
         if let Some((sa, sb, len)) = best_run(
             &fa.tail,
             &fa.tail_active,

@@ -26,3 +26,5 @@ aethervault-frame-dumps/
 # ----- OS -----
 .DS_Store
 Thumbs.db
+# Binaires volumineux (à télécharger séparément)
+libmpv-2.dll
