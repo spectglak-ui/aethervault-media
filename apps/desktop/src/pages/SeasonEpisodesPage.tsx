@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Play } from "lucide-react";
-import { EmptyState, PageHeader } from "@aethervault/ui-kit";
+import { Play, ScanLine } from "lucide-react";
+import { Button, EmptyState, PageHeader } from "@aethervault/ui-kit";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { EpisodeSummary, PlayableMedia, TitleDetails } from "@aethervault/shared-types";
 import { titleApi } from "../features/title/api";
 import { libraryApi } from "../features/library/api";
@@ -26,6 +28,58 @@ export function SeasonEpisodesPage() {
   const [title, setTitle] = useState<TitleDetails | null>(null);
   const [episodes, setEpisodes] = useState<EpisodeSummary[] | null>(null);
   const [starting, setStarting] = useState<number | null>(null);
+  const [detecting, setDetecting] = useState(false);
+  const [detectStatus, setDetectStatus] = useState<string | null>(null);
+  const [detectProgress, setDetectProgress] = useState<{ done: number; total: number } | null>(null);
+  useEffect(() => {
+    let u1: (() => void) | undefined;
+    let u2: (() => void) | undefined;
+        void listen<{ processed: number; total: number; current: string }>("credits:progress", (e) => {
+      setDetectProgress({ done: e.payload.processed, total: e.payload.total });
+      setDetectStatus(
+        `Analyse ${Math.min(e.payload.processed + 1, e.payload.total)}/${e.payload.total} : ${e.payload.current}`
+      );
+    }).then((fn) => (u1 = fn));
+    void listen<{ found: number }>("credits:done", (e) => {
+      setDetecting(false);
+      setDetectProgress(null);
+      setDetectStatus(`${e.payload.found} segment(s) enregistré(s).`);
+    }).then((fn) => (u2 = fn));
+    return () => {
+      u1?.();
+      u2?.();
+    };
+  }, []);
+  const handleDetect = () => {
+    if (!titleId) return;
+    setDetecting(true);
+    setDetectStatus("Lancement de l'analyse audio…");
+    void invoke("detect_credits", { titleId: Number(titleId) }).catch(() => {
+      setDetecting(false);
+      setDetectStatus("Échec de l'analyse.");
+    });
+  };
+      // 0.3.0 (finition) : détection automatique une seule fois par série,
+  // à la première ouverture de sa page saison (drapeau localStorage) —
+  // ensuite tout est lu depuis la base, sans rescan.
+  useEffect(() => {
+    if (!titleId || !episodes || episodes.length < 2 || detecting) return;
+    const key = `avm-credits-analyzed-${titleId}`;
+    try {
+      if (localStorage.getItem(key)) return;
+      localStorage.setItem(key, "1");
+    } catch {
+      return;
+    }
+    if (episodes.filter((e) => e.media_file_id !== null).length < 2) return;
+    setDetecting(true);
+    setDetectStatus("Analyse automatique des génériques…");
+    void invoke("detect_credits", { titleId: Number(titleId) }).catch(() => {
+      setDetecting(false);
+      setDetectStatus("Échec de l'analyse.");
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [titleId, episodes]);
 
   const refresh = useCallback(() => {
     if (!titleId || !seasonId) return;
@@ -91,6 +145,37 @@ export function SeasonEpisodesPage() {
       <PageHeader
         title={title ? `${title.name}${seasonLabel ? ` — ${seasonLabel}` : ""}` : "Épisodes"}
       />
+	        <div style={{ display: "flex", gap: 10, alignItems: "center", margin: "0 0 12px" }}>
+        <Button variant="secondary" onClick={handleDetect} disabled={detecting}>
+          <ScanLine size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
+          {detecting ? "Analyse en cours…" : "Détecter les génériques"}
+        </Button>
+                {detectStatus && <span className="avm-settings-muted">{detectStatus}</span>}
+      </div>
+      {detecting && detectProgress && detectProgress.total > 0 && (
+        <div
+          style={{
+            height: 6,
+            borderRadius: 3,
+            background: "var(--color-surface-hover, #26262d)",
+            overflow: "hidden",
+            margin: "0 0 12px",
+          }}
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round((detectProgress.done / detectProgress.total) * 100)}
+        >
+          <div
+            style={{
+              width: `${Math.min(100, Math.round((detectProgress.done / detectProgress.total) * 100))}%`,
+              height: "100%",
+              background: "var(--color-accent, #7c5cff)",
+              transition: "width 0.25s ease",
+            }}
+          />
+        </div>
+      )}
 
       {episodes === null && <p>Chargement…</p>}
 

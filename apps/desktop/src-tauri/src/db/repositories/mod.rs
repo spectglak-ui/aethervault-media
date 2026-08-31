@@ -20,3 +20,4 @@ pub mod vault_security_repository;
 pub mod window_state_repository;
 pub mod settings_repository;
 pub mod media_probe_repository;
+pub mod segment_repository;

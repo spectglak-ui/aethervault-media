@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { useNavigate } from "react-router-dom";
 import { Download, Upload } from "lucide-react";
 import { Button, IconButton, PageHeader, useTheme } from "@aethervault/ui-kit";
 import type { AppStatus, SecretKind, VaultStatus } from "@aethervault/shared-types";
+import { THEME_FORMAT_VERSION } from "@aethervault/shared-types";
 import { useActiveProfile } from "../profile/ActiveProfileContext";
 import { privacyApi } from "../features/privacy/api";
 import "./pages.css";
@@ -21,6 +22,200 @@ type DiagnosticsState =
  * versionné et l'import/export local — est la fondation nécessaire à ce
  * partage, pas le partage lui-même.
  */
+/** Image de profil (0.3.0) : choisit / retire l'avatar du profil actif.
+L'image part en bytes vers le backend qui la copie dans le dossier
+applicatif — aucun plugin de sélection de fichier requis. */
+function ProfileAvatarSection() {
+  const { activeProfile } = useActiveProfile();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [avatar, setAvatar] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!activeProfile) return;
+    invoke<string | null>("get_profile_avatar", { profileId: activeProfile.id })
+      .then(setAvatar)
+      .catch(() => {});
+  }, [activeProfile]);
+  const handleFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !activeProfile) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const buffer = await file.arrayBuffer();
+      await invoke("set_profile_avatar", {
+        fileName: file.name,
+        bytes: Array.from(new Uint8Array(buffer)),
+      });
+      setAvatar(
+        await invoke<string | null>("get_profile_avatar", { profileId: activeProfile.id })
+      );
+      window.dispatchEvent(new Event("avm-avatar-changed"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Enregistrement impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const handleClear = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("clear_profile_avatar");
+      setAvatar(null);
+      window.dispatchEvent(new Event("avm-avatar-changed"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Suppression impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="avm-settings-section">
+      <h2>Image de profil</h2>
+      <p className="avm-settings-muted">
+        Personnalise l'avatar du compte actif (écran de connexion et barre du haut).
+      </p>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        className="avm-visually-hidden"
+        onChange={(e) => void handleFile(e)}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        {avatar && (
+          <img
+            src={convertFileSrc(avatar)}
+            alt="Avatar actuel"
+            style={{ width: 56, height: 56, borderRadius: "50%", objectFit: "cover" }}
+          />
+        )}
+        <Button variant="secondary" onClick={() => fileInputRef.current?.click()} disabled={busy}>
+          Choisir une image
+        </Button>
+        {avatar && (
+          <Button variant="ghost" onClick={() => void handleClear()} disabled={busy}>
+            Retirer
+          </Button>
+        )}
+      </div>
+      {error && <p className="avm-settings-error">{error}</p>}
+    </section>
+  );
+}
+/** Fond d'Accueil personnalisé (0.3.0) : choisit / retire une image
+appliquée en arrière-plan de l'Accueil (voile de lisibilité inclus). */
+function HomeBackdropSection() {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [backdrop, setBackdrop] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    invoke<string | null>("get_home_backdrop").then(setBackdrop).catch(() => {});
+  }, []);
+  const handleFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const buffer = await file.arrayBuffer();
+      await invoke("set_home_backdrop", {
+        fileName: file.name,
+        bytes: Array.from(new Uint8Array(buffer)),
+      });
+      setBackdrop(await invoke<string | null>("get_home_backdrop"));
+      window.dispatchEvent(new Event("avm-home-backdrop-changed"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Enregistrement impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const handleClear = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("clear_home_backdrop");
+      setBackdrop(null);
+      window.dispatchEvent(new Event("avm-home-backdrop-changed"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Suppression impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="avm-settings-section">
+      <h2>Fond de la page d'accueil</h2>
+      <p className="avm-settings-muted">
+        Image personnelle en arrière-plan de l'Accueil, assombrie pour garder les cartes lisibles.
+      </p>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        className="avm-visually-hidden"
+        onChange={(e) => void handleFile(e)}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        {backdrop && (
+          <img
+            src={convertFileSrc(backdrop)}
+            alt="Fond actuel"
+            style={{ width: 96, height: 54, objectFit: "cover", borderRadius: 6 }}
+          />
+        )}
+        <Button variant="secondary" onClick={() => fileInputRef.current?.click()} disabled={busy}>
+          Choisir une image
+        </Button>
+        {backdrop && (
+          <Button variant="ghost" onClick={() => void handleClear()} disabled={busy}>
+            Retirer
+          </Button>
+        )}
+      </div>
+      {error && <p className="avm-settings-error">{error}</p>}
+    </section>
+  );
+}
+/** Auto-skip des génériques (0.3.0) : désactivé par défaut — sinon un
+bouton « Passer » s'affiche pendant chaque segment détecté/marqué. */
+function SkipSettingsSection() {
+  const [autoSkip, setAutoSkip] = useState(() => {
+    try {
+      return localStorage.getItem("avm-autoskip") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggle = (value: boolean) => {
+    setAutoSkip(value);
+    try {
+      localStorage.setItem("avm-autoskip", value ? "1" : "0");
+    } catch {
+      // best-effort
+    }
+    window.dispatchEvent(new Event("avm-autoskip-changed"));
+  };
+  return (
+    <section className="avm-settings-section">
+      <h2>Lecture — génériques</h2>
+      <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input type="checkbox" checked={autoSkip} onChange={(e) => toggle(e.target.checked)} />
+        Sauter automatiquement intros, génériques et résumés détectés
+      </label>
+      <p className="avm-settings-muted">
+        Désactivé par défaut : un bouton « Passer l'intro / le générique » s'affiche
+        pendant le segment. Marquage manuel via l'icône ciseaux du lecteur.
+      </p>
+    </section>
+  );
+}
 function AppearanceSection() {
   const { themes, activeTheme, setActiveThemeId, importTheme, exportTheme, removeCustomTheme, isBuiltinTheme } =
     useTheme();
@@ -370,7 +565,93 @@ function TmdbSection() {
     </section>
   );
 }
+/** Convertit une couleur CSS (#rgb, #rrggbb, rgb()) en #rrggbb pour
+<input type="color"> ; repli neutre si format exotique. */
+function toHex(color: string): string {
+  const value = color.trim();
+  if (/^#[0-9a-f]{6}$/i.test(value)) return value;
+  if (/^#[0-9a-f]{3}$/i.test(value)) {
+    return `#${value[1]}${value[1]}${value[2]}${value[2]}${value[3]}${value[3]}`.toLowerCase();
+  }
+  const rgbMatch = /^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i.exec(value);
+  if (rgbMatch) {
+    const [, r, g, b] = rgbMatch;
+    return `#${[r, g, b].map((n) => Number(n).toString(16).padStart(2, "0")).join("")}`;
+  }
+  return "#888888";
+}
 
+/** Couleurs du thème (0.3.0) : édite chaque variable de couleur du
+thème actif puis enregistre le résultat comme thème personnalisé
+(réutilise importTheme avec un File en mémoire — aucun nouveau
+mécanisme, export/partage compatibles). */
+function ThemeColorsSection() {
+  const { activeTheme, importTheme } = useTheme();
+  const [edited, setEdited] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Repart des couleurs du thème actif à chaque changement de thème.
+  useEffect(() => {
+    setEdited({ ...activeTheme.colors });
+  }, [activeTheme]);
+  const apply = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const definition = {
+        version: THEME_FORMAT_VERSION,
+        id: "custom-picker",
+        name: "Mon thème personnalisé",
+        colors: edited,
+      };
+      const file = new File([JSON.stringify(definition, null, 2)], "mon-theme.aethervault-theme.json", {
+        type: "application/json",
+      });
+      await importTheme(file);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Application impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="avm-settings-section">
+      <h2>Couleurs du thème</h2>
+      <p className="avm-settings-muted">
+        Personnalise chaque couleur du thème actif, puis enregistre le résultat comme
+        thème personnalisé « Mon thème personnalisé ».
+      </p>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+          gap: 10,
+        }}
+      >
+        {Object.entries(edited).map(([key, value]) => (
+          <label key={key} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="color"
+              value={toHex(value)}
+              onChange={(e) => setEdited((cur) => ({ ...cur, [key]: e.target.value }))}
+              style={{ width: 34, height: 26, border: "none", background: "none", cursor: "pointer" }}
+            />
+            <span style={{ fontSize: "0.85rem" }}>{key}</span>
+          </label>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+        <Button variant="primary" onClick={() => void apply()} disabled={busy}>
+          Appliquer comme thème personnalisé
+        </Button>
+        <Button variant="ghost" onClick={() => setEdited({ ...activeTheme.colors })} disabled={busy}>
+          Réinitialiser
+        </Button>
+      </div>
+      {error && <p className="avm-settings-error">{error}</p>}
+    </section>
+  );
+}
 export function SettingsPage() {
   return (
     <div>
@@ -378,7 +659,11 @@ export function SettingsPage() {
         title="Paramètres"
         description="Apparence, sécurité du coffre privé et informations système."
       />
+	  <ProfileAvatarSection />
+	  <HomeBackdropSection />
+	  <SkipSettingsSection />
       <AppearanceSection />
+	  <ThemeColorsSection />
       <TmdbSection />
       <SecuritySection />
       <ExperimentalPlayerSection />

@@ -81,6 +81,25 @@ pub fn run() {
                 "AetherVault Media démarre — base de données : {:?}",
                 database_path
             );
+			// 0.3.0 : fenêtre « quasi-max » dès le démarrage — inset de 4 px de
+// la zone de travail : jamais l'état « maximisé » (artefacts DWM
+// après les transitions plein écran), jamais en contact avec les
+// bords de l'écran ni la barre des tâches.
+if let Some(window) = app.get_webview_window("main") {
+    let _ = window.unmaximize();
+    if let Ok(Some(monitor)) = window.primary_monitor() {
+    let work_area = monitor.work_area();
+    let margin = 4i32;
+        let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+        width: (work_area.size.width as i32 - 2 * margin).max(800) as u32,
+        height: (work_area.size.height as i32 - 2 * margin).max(600) as u32,
+    }));
+            // 0.3.0 : centrage explicite — garantit des marges symétriques
+        // (le positionnement manuel pouvait être contredit par Windows
+        // juste après un unmaximize).
+        let _ = window.center();
+}
+}
 
             let scanning_libraries = std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
@@ -146,6 +165,18 @@ pub fn run() {
             commands::profile::rename_profile,
             commands::profile::update_profile_permissions,
             commands::profile::delete_profile,
+			commands::profile::set_profile_avatar,
+            commands::profile::get_profile_avatar,
+            commands::profile::clear_profile_avatar,
+			commands::settings::set_home_backdrop,
+            commands::settings::get_home_backdrop,
+            commands::settings::clear_home_backdrop,
+            commands::settings::get_title_trailer,
+			commands::segments::get_episode_segments,
+            commands::segments::set_episode_segment,
+            commands::segments::delete_episode_segment,
+            commands::segments::detect_credits,
+			commands::segments::get_media_segment_context,
 			// Authentification des profils (Étape 6c)
             commands::auth::get_login_state,
             commands::auth::login_profile,
@@ -221,6 +252,7 @@ pub fn run() {
             commands::playback::get_top_genres,
             commands::playback::get_top_titles,
             commands::playback::get_watch_sessions,
+			commands::playback::reset_watch_stats,
             commands::playback::list_similar_titles,
             commands::playback::player_load,
             commands::playback::player_set_paused,

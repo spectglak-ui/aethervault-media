@@ -362,7 +362,19 @@ pub fn get_watch_sessions(
     crate::db::repositories::playback_repository::watch_sessions_in(&conn, active_profile_id, &from, &to)
         .map_err(|e| e.to_string())
 }
-
+/// Bouton reset Time Capsule (0.3.0) : efface tout l'historique de
+/// visionnage du profil actif — les compteurs repartent de zéro.
+#[tauri::command]
+pub fn reset_watch_stats(state: tauri::State<AppState>) -> Result<(), String> {
+    let active_profile_id = state.read_active_profile_id()?;
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM watch_history WHERE profile_id = ?1",
+        rusqlite::params![active_profile_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
 /// Titres similaires (page Titre).
 #[tauri::command]
 pub fn list_similar_titles(

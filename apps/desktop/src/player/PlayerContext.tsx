@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type {
   PlayableMedia,
   PlaybackQueueState,
@@ -19,6 +20,7 @@ import { titleApi } from "../features/title/api";
 import { windowApi } from "../features/window/api";
 import { playerSettingsApi } from "../features/playerSettings/api";
 import { getWindowLabel } from "../window/getWindowLabel";
+import { applyNearMax } from "../window/nearMax";
 
 interface PlayerContextValue {
   currentMedia: PlayableMedia | null;
@@ -83,15 +85,27 @@ function loadAndBroadcast(items: PlayableMedia[], index: number): void {
 
 function syncFullscreen(shouldBeFullscreen: boolean): void {
   if (typeof document === "undefined") return;
+  const win = getCurrentWindow();
   if (shouldBeFullscreen) {
     if (document.fullscreenElement) return;
+    // 0.3.0 : fenêtre au premier plan pour que rien (barre des tâches,
+    // liseré) ne se dessine par-dessus le plein écran.
+    void win.setAlwaysOnTop(true);
     const target = document.getElementById(FULLSCREEN_TARGET_ID);
     target?.requestFullscreen().catch(() => {});
     return;
   }
+  const settle = () => {
+    void win.setAlwaysOnTop(false);
+    // 0.3.0 : on ne revient JAMAIS en « maximisé » (artefact DWM) :
+    // fenêtre inset d'environ 1 mm de chaque bord.
+    void applyNearMax();
+  };
   if (document.fullscreenElement) {
-    document.exitFullscreen().catch(() => {});
+    document.exitFullscreen().then(settle).catch(settle);
+    return;
   }
+  settle();
 }
 
 export function PlayerProvider({ children }: { children: ReactNode }) {
@@ -136,6 +150,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   positionRef.current = position;
   const durationRef = useRef(0);
   durationRef.current = duration;
+  const endedHandledRef = useRef<number | null>(null);
 
   const seekDebounceRef = useRef<number | null>(null);
   const volumeDebounceRef = useRef<number | null>(null);
@@ -154,7 +169,29 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       })
       .catch(() => {});
   }, []);
-
+  /** Fin de session (événement réel OU repli position≈durée) :
+  historique Time Capsule + boucle + enchaînement — une seule fois par
+  média (endedHandledRef). */
+  const handleEnded = () => {
+    const media = currentMediaRef.current;
+    if (!media || endedHandledRef.current === media.id) return;
+    endedHandledRef.current = media.id;
+    if (positionRef.current >= 30 && durationRef.current > 0) {
+      void titleApi
+        .recordWatch(media.id, positionRef.current, durationRef.current)
+        .catch(() => {});
+    }
+    if (loopRef.current) {
+      setPosition(0);
+      endedHandledRef.current = null;
+      void playerApi.load(media.path);
+    } else if (autoNextRef.current) {
+      const { items, currentIndex } = queueRef.current;
+      if (currentIndex !== null && currentIndex < items.length - 1) {
+        loadAndBroadcast(items, currentIndex + 1);
+      }
+    }
+  };
   useEffect(() => {
     const unlistenState = listen<PlayerStateEvent>("player-state", (event) => {
       const { position_seconds, duration_seconds, playing, ended, error } = event.payload;
@@ -170,23 +207,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       if (error) {
         setLastError(`Lecture impossible : ${error}`);
       }
-      if (ended) {
-        // Étape 8 : enregistre la session dans watch_history si ≥ 30 s vus
-        if (currentMediaRef.current && positionRef.current >= 30 && durationRef.current > 0) {
-          void titleApi
-            .recordWatch(currentMediaRef.current.id, positionRef.current, durationRef.current)
-            .catch(() => {});
-        }
-        if (loopRef.current && currentMediaRef.current) {
-          console.info("[Boucle] Fin de fichier — rechargement du média.");
-          setPosition(0);
-          void playerApi.load(currentMediaRef.current.path);
-        } else if (autoNextRef.current) {
-          const { items, currentIndex } = queueRef.current;
-          if (currentIndex !== null && currentIndex < items.length - 1) {
-            loadAndBroadcast(items, currentIndex + 1);
-          }
-        }
+            if (ended) {
+        handleEnded();
+      } else if (
+        playing === false &&
+        durationRef.current > 0 &&
+        positionRef.current >= durationRef.current - 1
+      ) {
+        // 0.3.0 : repli si l'événement « fin de fichier » n'arrive pas
+        // (mpv keep-open) : position collée à la durée = fin détectée.
+        handleEnded();
       }
     });
 
@@ -201,6 +231,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         setIsPlaying(media !== null);
         setPosition(0);
         setDuration(0);
+		endedHandledRef.current = null;
         if (media === null) {
           syncFullscreen(false);
         }
@@ -389,7 +420,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             setLastError("Impossible d'ouvrir le mode Picture-in-Picture. Réessayez.");
           });
       },
-      stop: () => {
+            stop: () => {
+        // 0.3.0 : fermer le lecteur compte comme une session (Time
+        // Capsule) si on n'a pas déjà enregistré la fin.
+        const media = currentMediaRef.current;
+        if (
+          media &&
+          endedHandledRef.current !== media.id &&
+          durationRef.current > 0 &&
+          positionRef.current >= 30
+        ) {
+          void titleApi
+            .recordWatch(media.id, positionRef.current, durationRef.current)
+            .catch(() => {});
+        }
+        endedHandledRef.current = null;
         void playerApi.stop();
         windowApi
           .closePlayerWindow()

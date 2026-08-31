@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
   Play,
@@ -17,8 +17,8 @@ import {
   Pin,
   Repeat1,
   ListVideo,
+  Scissors,
 } from "lucide-react";
-import { Menu, CheckMenuItem } from "@tauri-apps/api/menu";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { IconButton, Slider } from "@aethervault/ui-kit";
@@ -32,13 +32,71 @@ interface PlayerControlsProps {
   variant: "normal" | "detached";
 }
 
+interface LocalTrackList {
+  audio: PlayerTrack[];
+  subtitles: PlayerTrack[];
+}
+
+interface SegmentInfo {
+  episode_id: number;
+  segment_type: string;
+  start_seconds: number;
+  end_seconds: number;
+  source: string;
+}
+
+interface SegmentContext {
+  episode_id: number | null;
+  segments: SegmentInfo[];
+}
+
+const SEGMENT_LABELS: Record<string, string> = {
+  intro: "Passer l'intro",
+  outro: "Passer le générique",
+  recap: "Passer le résumé",
+};
+
 const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
 const DISPLAY_MODE_LABELS: Record<"contain" | "cover" | "stretch" | "original", string> = {
   contain: "Ajuster",
   cover: "Remplir",
   stretch: "Étirer",
   original: "Taille originale",
 };
+
+const MENU_PANEL_STYLE: CSSProperties = {
+  position: "fixed",
+  bottom: 96,
+  left: "50%",
+  transform: "translateX(-50%)",
+  zIndex: 60,
+  background: "var(--color-surface, #1b1b21)",
+  border: "1px solid var(--color-border, #2c2c33)",
+  borderRadius: 10,
+  padding: 6,
+  minWidth: 230,
+  maxHeight: 280,
+  overflowY: "auto",
+  boxShadow: "0 12px 32px rgba(0,0,0,0.55)",
+};
+
+function menuItemStyle(active: boolean): CSSProperties {
+  return {
+    display: "flex",
+    width: "100%",
+    padding: "6px 10px",
+    border: "none",
+    borderRadius: 6,
+    background: active
+      ? "color-mix(in srgb, var(--color-accent, #7c5cff) 18%, transparent)"
+      : "none",
+    color: active ? "var(--color-accent, #7c5cff)" : "var(--color-text, #f2f2f5)",
+    cursor: "pointer",
+    font: "inherit",
+    textAlign: "left",
+  };
+}
 
 function trackLabel(track: PlayerTrack, index: number): string {
   if (track.title && track.lang) {
@@ -85,7 +143,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
     kind: "success" | "error";
     message: string;
   } | null>(null);
-
   useEffect(() => {
     if (!screenshotFeedback) return;
     const timeout = window.setTimeout(() => setScreenshotFeedback(null), 4000);
@@ -93,7 +150,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
   }, [screenshotFeedback]);
 
   const [floating, setFloating] = useState(false);
-
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listen<boolean>("floating-changed", (event) => setFloating(event.payload)).then((fn) => {
@@ -102,6 +158,79 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
     return () => unlisten?.();
   }, []);
 
+  const [openMenu, setOpenMenu] = useState<null | "audio" | "subtitles" | "display" | "segments">(
+    null
+  );
+  const [tracks, setTracks] = useState<LocalTrackList>({ audio: [], subtitles: [] });
+  const toggleMenu = async (kind: "audio" | "subtitles" | "display" | "segments") => {
+    if (openMenu === kind) {
+      setOpenMenu(null);
+      return;
+    }
+    if (kind !== "display" && kind !== "segments") {
+      try {
+        setTracks(await playerApi.listTracks());
+      } catch {
+        setTracks({ audio: [], subtitles: [] });
+      }
+    }
+    setOpenMenu(kind);
+  };
+
+  // 0.3.0 : segments de saut (intro/outro/recap) du média courant.
+  const [segmentCtx, setSegmentCtx] = useState<SegmentContext | null>(null);
+  const [autoSkip, setAutoSkip] = useState(() => {
+    try {
+      return localStorage.getItem("avm-autoskip") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [pendingMark, setPendingMark] = useState<{ type: string; start: number } | null>(null);
+  const autoSkippedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const read = () => {
+      try {
+        setAutoSkip(localStorage.getItem("avm-autoskip") === "1");
+      } catch {
+        // best-effort
+      }
+    };
+    window.addEventListener("avm-autoskip-changed", read);
+    return () => window.removeEventListener("avm-autoskip-changed", read);
+  }, []);
+
+  useEffect(() => {
+    if (!currentMedia) return;
+        invoke<SegmentContext>("get_media_segment_context", { mediaFileId: currentMedia.id })
+      .then(setSegmentCtx)
+      .catch(() => setSegmentCtx(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMedia?.id]);
+
+  const activeSegment =
+    segmentCtx?.segments.find(
+      (s) => position >= s.start_seconds && position < s.end_seconds - 1
+    ) ?? null;
+
+  // Auto-skip (désactivé par défaut) : saute silencieusement le segment.
+  useEffect(() => {
+    if (!autoSkip || !activeSegment) return;
+    const key = `${activeSegment.segment_type}-${activeSegment.start_seconds}`;
+    if (autoSkippedRef.current === key) return;
+    autoSkippedRef.current = key;
+    seek(activeSegment.end_seconds + 0.5);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSkip, activeSegment]);
+
+  const reloadSegments = () => {
+    if (!currentMedia) return;
+    invoke<SegmentContext>("get_media_segment_context", { mediaFileId: currentMedia.id })
+      .then(setSegmentCtx)
+      .catch(() => {});
+  };
+
   if (!currentMedia) {
     return null;
   }
@@ -109,7 +238,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
   const startResize = (direction: string) => {
     void invoke("plugin:window|start_resize_dragging", { direction });
   };
-
   const edge: CSSProperties = { position: "absolute", pointerEvents: "auto" };
 
   const handleCaptureScreenshot = async () => {
@@ -124,63 +252,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
     }
   };
 
-  const openAudioMenu = async () => {
-    try {
-      const { audio } = await playerApi.listTracks();
-      if (audio.length === 0) return;
-      const items = await Promise.all(
-        audio.map((track, index) =>
-          CheckMenuItem.new({
-            text: trackLabel(track, index),
-            checked: track.selected,
-            action: () => void playerApi.setAudioTrack(track.id),
-          })
-        )
-      );
-      const menu = await Menu.new({ items });
-      await menu.popup();
-    } catch {}
-  };
-
-  const openSubtitleMenu = async () => {
-    try {
-      const { subtitles } = await playerApi.listTracks();
-      const noneItem = await CheckMenuItem.new({
-        text: "Aucun",
-        checked: !subtitles.some((track) => track.selected),
-        action: () => void playerApi.setSubtitleTrack(null),
-      });
-      const trackItems = await Promise.all(
-        subtitles.map((track, index) =>
-          CheckMenuItem.new({
-            text: trackLabel(track, index),
-            checked: track.selected,
-            action: () => void playerApi.setSubtitleTrack(track.id),
-          })
-        )
-      );
-      const menu = await Menu.new({ items: [noneItem, ...trackItems] });
-      await menu.popup();
-    } catch {}
-  };
-
-  const openDisplayModeMenu = async () => {
-    try {
-      const modes: (typeof displayMode)[] = ["contain", "cover", "stretch", "original"];
-      const items = await Promise.all(
-        modes.map((mode) =>
-          CheckMenuItem.new({
-            text: DISPLAY_MODE_LABELS[mode],
-            checked: displayMode === mode,
-            action: () => setDisplayMode(mode),
-          })
-        )
-      );
-      const menu = await Menu.new({ items });
-      await menu.popup();
-    } catch {}
-  };
-
   return (
     <div className="avm-player__controls">
       {variant === "normal" && (
@@ -192,6 +263,7 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
           {currentMedia.title}
         </div>
       )}
+
       {lastError && (
         <div className="avm-player__error" role="alert">
           <span>{lastError}</span>
@@ -200,6 +272,7 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
           </IconButton>
         </div>
       )}
+
       {screenshotFeedback && (
         <div
           className={
@@ -215,6 +288,162 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
           </IconButton>
         </div>
       )}
+
+      {/* 0.3.0 : bouton flottant « Passer » pendant un segment. */}
+      {activeSegment && !autoSkip && (
+        <button
+          style={{
+            position: "fixed",
+            right: 24,
+            bottom: 96,
+            zIndex: 58,
+            padding: "10px 18px",
+            border: "1px solid var(--color-border, #2c2c33)",
+            borderRadius: 8,
+            background: "rgba(20,20,26,0.85)",
+            color: "var(--color-text, #f2f2f5)",
+            cursor: "pointer",
+            font: "inherit",
+            fontWeight: 600,
+          }}
+          onClick={() => seek(activeSegment.end_seconds + 0.5)}
+        >
+          {SEGMENT_LABELS[activeSegment.segment_type] ?? "Passer"}
+        </button>
+      )}
+
+      {/* 0.3.0 : menus intégrés — panneau flottant + voile de fermeture. */}
+      {openMenu && (
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 55 }}
+          onClick={() => setOpenMenu(null)}
+        />
+      )}
+      {openMenu && (
+        <div style={MENU_PANEL_STYLE}>
+          {openMenu === "audio" &&
+            (tracks.audio.length === 0 ? (
+              <span style={{ padding: "6px 10px", opacity: 0.7 }}>Aucune piste audio</span>
+            ) : (
+              tracks.audio.map((track, index) => (
+                <button
+                  key={`audio-${track.id}`}
+                  style={menuItemStyle(track.selected)}
+                  onClick={() => {
+                    void playerApi.setAudioTrack(track.id);
+                    setOpenMenu(null);
+                  }}
+                >
+                  {trackLabel(track, index)}
+                </button>
+              ))
+            ))}
+
+          {openMenu === "subtitles" && (
+            <>
+              <button
+                style={menuItemStyle(!tracks.subtitles.some((t) => t.selected))}
+                onClick={() => {
+                  void playerApi.setSubtitleTrack(null);
+                  setOpenMenu(null);
+                }}
+              >
+                Aucun
+              </button>
+              {tracks.subtitles.map((track, index) => (
+                <button
+                  key={`sub-${track.id}`}
+                  style={menuItemStyle(track.selected)}
+                  onClick={() => {
+                    void playerApi.setSubtitleTrack(track.id);
+                    setOpenMenu(null);
+                  }}
+                >
+                  {trackLabel(track, index)}
+                </button>
+              ))}
+            </>
+          )}
+
+          {openMenu === "display" &&
+            (Object.keys(DISPLAY_MODE_LABELS) as Array<keyof typeof DISPLAY_MODE_LABELS>).map(
+              (mode) => (
+                <button
+                  key={mode}
+                  style={menuItemStyle(displayMode === mode)}
+                  onClick={() => {
+                    setDisplayMode(mode);
+                    setOpenMenu(null);
+                  }}
+                >
+                  {DISPLAY_MODE_LABELS[mode]}
+                </button>
+              )
+            )}
+
+          {openMenu === "segments" && (
+            <>
+              {(segmentCtx?.segments ?? []).map((s) => (
+                <button
+                  key={`del-${s.segment_type}`}
+                  style={menuItemStyle(false)}
+                  onClick={() => {
+                    if (segmentCtx?.episode_id != null) {
+                      void invoke("delete_episode_segment", {
+                        episodeId: segmentCtx.episode_id,
+                        segmentType: s.segment_type,
+                      }).then(reloadSegments);
+                    }
+                    setOpenMenu(null);
+                  }}
+                >
+                  Supprimer {s.segment_type} ({Math.round(s.start_seconds)}–
+                  {Math.round(s.end_seconds)} s{s.source === "auto" ? ", auto" : ""})
+                </button>
+              ))}
+              {(["intro", "outro", "recap"] as const).map((type) =>
+                pendingMark?.type === type ? (
+                  <button
+                    key={type}
+                    style={menuItemStyle(true)}
+                    onClick={() => {
+                      if (segmentCtx?.episode_id != null && position > pendingMark.start + 3) {
+                        void invoke("set_episode_segment", {
+                          episodeId: segmentCtx.episode_id,
+                          segmentType: type,
+                          startSeconds: pendingMark.start,
+                          endSeconds: position,
+                        }).then(reloadSegments);
+                      }
+                      setPendingMark(null);
+                      setOpenMenu(null);
+                    }}
+                  >
+                    ✔ Fin {type} ici ({formatTime(position)})
+                  </button>
+                ) : (
+                  <button
+                    key={type}
+                    style={menuItemStyle(false)}
+                    onClick={() => {
+                      setPendingMark({ type, start: position });
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Début {type} ici ({formatTime(position)})
+                  </button>
+                )
+              )}
+              {pendingMark && (
+                <button style={menuItemStyle(false)} onClick={() => setPendingMark(null)}>
+                  Annuler le marquage
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       <div className="avm-player__row">
         {variant === "normal" && (
           <IconButton label="Piste précédente" onClick={playPrevious} disabled={!hasPrevious}>
@@ -234,15 +463,43 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             <SkipForward size={16} />
           </IconButton>
         )}
+
         <span className="avm-player__time">{formatTime(position)}</span>
-        <Slider
-          value={position}
-          max={duration || 1}
-          step={0.5}
-          onChange={seek}
-          ariaLabel="Progression de la lecture"
-        />
+        <div style={{ position: "relative", flex: 1 }}>
+          <Slider
+            value={position}
+            max={duration || 1}
+            step={0.5}
+            onChange={seek}
+            ariaLabel="Progression de la lecture"
+          />
+          {/* 0.3.0 : marqueurs de segments sur la barre de progression. */}
+          {segmentCtx?.segments.map((s) => (
+            <div
+              key={`mark-${s.segment_type}`}
+              style={{
+                position: "absolute",
+                left: `${(s.start_seconds / (duration || 1)) * 100}%`,
+                width: `${Math.max(((s.end_seconds - s.start_seconds) / (duration || 1)) * 100, 0.5)}%`,
+                top: "50%",
+                height: 4,
+                transform: "translateY(-50%)",
+                background:
+                  s.segment_type === "intro"
+                    ? "rgba(124,92,255,0.6)"
+                    : s.segment_type === "outro"
+                      ? "rgba(255,160,60,0.6)"
+                      : "rgba(80,200,120,0.6)",
+                borderRadius: 2,
+                pointerEvents: "none",
+              }}
+              title={SEGMENT_LABELS[s.segment_type] ?? s.segment_type}
+            />
+          ))}
+        </div>
         <span className="avm-player__time">{formatTime(duration)}</span>
+        <EndsAtLabel position={position} duration={duration} />
+
         {variant === "normal" && (
           <>
             <IconButton label={muted ? "Réactiver le son" : "Couper le son"} onClick={toggleMuted}>
@@ -257,14 +514,21 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
                 ariaLabel="Volume"
               />
             </div>
-            <IconButton label="Piste audio" onClick={() => void openAudioMenu()}>
+            <IconButton label="Piste audio" onClick={() => void toggleMenu("audio")}>
               <AudioLines size={16} />
             </IconButton>
-            <IconButton label="Sous-titres" onClick={() => void openSubtitleMenu()}>
+            <IconButton label="Sous-titres" onClick={() => void toggleMenu("subtitles")}>
               <Captions size={16} />
+            </IconButton>
+            <IconButton
+              label="Segments (intro / générique / résumé)"
+              onClick={() => void toggleMenu("segments")}
+            >
+              <Scissors size={16} />
             </IconButton>
           </>
         )}
+
         {variant === "normal" && (
           <select
             className="avm-player__rate"
@@ -279,15 +543,17 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             ))}
           </select>
         )}
+
         {variant === "normal" && (
           <IconButton
             label={`Mode d'affichage (${DISPLAY_MODE_LABELS[displayMode]})`}
-            onClick={() => void openDisplayModeMenu()}
+            onClick={() => void toggleMenu("display")}
           >
             <Crop size={16} />
           </IconButton>
         )}
-        {/*{variant === "normal" && (
+
+        {variant === "normal" && (
           <IconButton
             label={loopEnabled ? "Désactiver la lecture en boucle" : "Lire en boucle"}
             onClick={toggleLoop}
@@ -295,6 +561,7 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             <Repeat1 size={16} style={loopEnabled ? { color: "var(--color-accent)" } : undefined} />
           </IconButton>
         )}
+
         {variant === "normal" && (
           <IconButton
             label={
@@ -304,14 +571,19 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             }
             onClick={toggleAutoNext}
           >
-            <ListVideo size={16} style={autoNextEnabled ? { color: "var(--color-accent)" } : undefined} />
+            <ListVideo
+              size={16}
+              style={autoNextEnabled ? { color: "var(--color-accent)" } : undefined}
+            />
           </IconButton>
-        )}*/}
+        )}
+
         {variant === "normal" && (
           <IconButton label="Capturer une image" onClick={() => void handleCaptureScreenshot()}>
             <Camera size={16} />
           </IconButton>
         )}
+
         {variant === "normal" && !isDetached && (
           <IconButton
             label="Mode flottant (toujours au-dessus, sans bordure)"
@@ -320,6 +592,7 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             <Pin size={16} />
           </IconButton>
         )}
+
         {variant === "normal" && !isDetached && (
           <IconButton
             label={isFullscreen ? "Quitter le plein écran" : "Plein écran"}
@@ -328,10 +601,12 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
           </IconButton>
         )}
+
         <IconButton label="Fermer le lecteur" onClick={stop}>
           <X size={16} />
         </IconButton>
       </div>
+
       {floating && (
         <div
           style={{
@@ -345,16 +620,60 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             data-tauri-drag-region=""
             style={{ ...edge, top: 0, left: 0, right: 0, height: 22, cursor: "move" }}
           />
-          <div onMouseDown={() => startResize("North")} style={{ ...edge, top: 0, left: 22, right: 22, height: 6, cursor: "ns-resize" }} />
-          <div onMouseDown={() => startResize("South")} style={{ ...edge, bottom: 0, left: 22, right: 22, height: 6, cursor: "ns-resize" }} />
-          <div onMouseDown={() => startResize("West")} style={{ ...edge, left: 0, top: 22, bottom: 22, width: 6, cursor: "ew-resize" }} />
-          <div onMouseDown={() => startResize("East")} style={{ ...edge, right: 0, top: 22, bottom: 22, width: 6, cursor: "ew-resize" }} />
-          <div onMouseDown={() => startResize("NorthWest")} style={{ ...edge, top: 0, left: 0, width: 12, height: 12, cursor: "nwse-resize" }} />
-          <div onMouseDown={() => startResize("NorthEast")} style={{ ...edge, top: 0, right: 0, width: 12, height: 12, cursor: "nesw-resize" }} />
-          <div onMouseDown={() => startResize("SouthWest")} style={{ ...edge, bottom: 0, left: 0, width: 12, height: 12, cursor: "nesw-resize" }} />
-          <div onMouseDown={() => startResize("SouthEast")} style={{ ...edge, bottom: 0, right: 0, width: 12, height: 12, cursor: "nwse-resize" }} />
+          <div
+            onMouseDown={() => startResize("North")}
+            style={{ ...edge, top: 0, left: 22, right: 22, height: 6, cursor: "ns-resize" }}
+          />
+          <div
+            onMouseDown={() => startResize("South")}
+            style={{ ...edge, bottom: 0, left: 22, right: 22, height: 6, cursor: "ns-resize" }}
+          />
+          <div
+            onMouseDown={() => startResize("West")}
+            style={{ ...edge, left: 0, top: 22, bottom: 22, width: 6, cursor: "ew-resize" }}
+          />
+          <div
+            onMouseDown={() => startResize("East")}
+            style={{ ...edge, right: 0, top: 22, bottom: 22, width: 6, cursor: "ew-resize" }}
+          />
+          <div
+            onMouseDown={() => startResize("NorthWest")}
+            style={{ ...edge, top: 0, left: 0, width: 12, height: 12, cursor: "nwse-resize" }}
+          />
+          <div
+            onMouseDown={() => startResize("NorthEast")}
+            style={{ ...edge, top: 0, right: 0, width: 12, height: 12, cursor: "nesw-resize" }}
+          />
+          <div
+            onMouseDown={() => startResize("SouthWest")}
+            style={{ ...edge, bottom: 0, left: 0, width: 12, height: 12, cursor: "nesw-resize" }}
+          />
+          <div
+            onMouseDown={() => startResize("SouthEast")}
+            style={{ ...edge, bottom: 0, right: 0, width: 12, height: 12, cursor: "nwse-resize" }}
+          />
         </div>
       )}
     </div>
+  );
+}
+
+function EndsAtLabel({ position, duration }: { position: number; duration: number }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const interval = window.setInterval(() => setTick((t) => t + 1), 30000);
+    return () => window.clearInterval(interval);
+  }, []);
+  if (!duration || duration <= 0) return null;
+  const remaining = Math.max(0, duration - position);
+  const end = new Date(Date.now() + remaining * 1000);
+  return (
+    <span
+      className="avm-player__time"
+      style={{ fontSize: "0.72rem", opacity: 0.75, whiteSpace: "nowrap" }}
+      title="Heure de fin estimée"
+    >
+      · fin à {end.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+    </span>
   );
 }

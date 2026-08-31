@@ -13,6 +13,7 @@
 //! stockés en base — jamais d'URL morte hors-ligne, cohérent doc §9).
 //! Best-effort + throttle 250 ms/titre : une erreur réseau ou un titre
 //! introuvable ne bloque jamais la chaîne de scan.
+
 use crate::db::repositories::{library_repository, settings_repository, title_repository};
 use crate::db::DbPool;
 use serde::{Deserialize, Serialize};
@@ -51,11 +52,19 @@ pub fn load_settings(conn: &rusqlite::Connection) -> MetadataSettings {
     }
 }
 
-pub fn save_settings(conn: &rusqlite::Connection, settings: &MetadataSettings) -> Result<(), String> {
+pub fn save_settings(
+    conn: &rusqlite::Connection,
+    settings: &MetadataSettings,
+) -> Result<(), String> {
     settings_repository::set(conn, "tmdb_api_key", &settings.api_key).map_err(|e| e.to_string())?;
-    settings_repository::set(conn, "tmdb_language", &settings.language).map_err(|e| e.to_string())?;
-    settings_repository::set(conn, "tmdb_auto_enrich", if settings.auto_enrich { "1" } else { "0" })
-        .map_err(|e| e.to_string())
+    settings_repository::set(conn, "tmdb_language", &settings.language)
+        .map_err(|e| e.to_string())?;
+    settings_repository::set(
+        conn,
+        "tmdb_auto_enrich",
+        if settings.auto_enrich { "1" } else { "0" },
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Encodage percent minimal (requêtes de recherche) — évite d'ajouter un
@@ -75,10 +84,35 @@ fn url_encode(s: &str) -> String {
 }
 
 fn get_json(url: &str) -> Option<serde_json::Value> {
-    let resp = ureq::get(url).timeout(Duration::from_secs(10)).call().ok()?;
+    log::debug!("[tmdb] GET {}", url);
+    let resp = match ureq::get(url).timeout(Duration::from_secs(10)).call() {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("[tmdb] erreur réseau pour {} : {:?}", url, e);
+            return None;
+        }
+    };
+    if resp.status() != 200 {
+        log::warn!("[tmdb] statut HTTP {} pour {}", resp.status(), url);
+        return None;
+    }
     let mut body = String::new();
-    resp.into_reader().read_to_string(&mut body).ok()?;
-    serde_json::from_str(&body).ok()
+    if let Err(e) = resp.into_reader().read_to_string(&mut body) {
+        log::warn!("[tmdb] lecture corps impossible pour {} : {:?}", url, e);
+        return None;
+    }
+    match serde_json::from_str(&body) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            log::warn!(
+                "[tmdb] JSON invalide pour {} : {:?} — corps : {}",
+                url,
+                e,
+                &body[..body.len().min(200)]
+            );
+            None
+        }
+    }
 }
 
 fn download_image(url: &str, dest: &std::path::Path) -> Option<()> {
@@ -95,8 +129,8 @@ fn download_image(url: &str, dest: &std::path::Path) -> Option<()> {
 }
 
 pub struct TmdbClient {
-    api_key: String,
-    lang: String,
+    pub api_key: String,
+    pub lang: String,
 }
 
 pub struct TmdbDetails {
@@ -122,7 +156,11 @@ impl TmdbClient {
     /// meilleur candidat (nom exact insensible à la casse sinon premier
     /// résultat).
     pub fn search_title(&self, kind: &str, query: &str, year: Option<i32>) -> Option<i64> {
-        let path = if kind == "movie" { "/search/movie" } else { "/search/tv" };
+        let path = if kind == "movie" {
+            "/search/movie"
+        } else {
+            "/search/tv"
+        };
         let year_param = match year {
             Some(y) => {
                 if kind == "movie" {
@@ -133,7 +171,11 @@ impl TmdbClient {
             }
             None => String::new(),
         };
-        let v = get_json(&self.url(path, &format!("&query={}{}", url_encode(query), year_param), &self.lang))?;
+        let v = get_json(&self.url(
+            path,
+            &format!("&query={}{}", url_encode(query), year_param),
+            &self.lang,
+        ))?;
         let results = v.get("results")?.as_array()?;
         let pick = results
             .iter()
@@ -157,7 +199,11 @@ impl TmdbClient {
         } else {
             format!("/tv/{tmdb_id}")
         };
-        let v = get_json(&self.url(&path, "&append_to_response=credits,external_ids", &self.lang))?;
+        let v = get_json(&self.url(
+            &path,
+            "&append_to_response=credits,external_ids",
+            &self.lang,
+        ))?;
         let name = v
             .get("title")
             .or_else(|| v.get("name"))
@@ -197,7 +243,11 @@ impl TmdbClient {
                 .unwrap_or_default()
         };
         let genres = names("genres");
-        let studios = names(if kind == "movie" { "production_companies" } else { "networks" });
+        let studios = names(if kind == "movie" {
+            "production_companies"
+        } else {
+            "networks"
+        });
         let (cast, directors) = v
             .get("credits")
             .map(|credits| {
@@ -249,7 +299,11 @@ impl TmdbClient {
         });
         Some(TmdbDetails {
             name,
-            description: if overview.is_empty() { None } else { Some(overview) },
+            description: if overview.is_empty() {
+                None
+            } else {
+                Some(overview)
+            },
             year,
             rating,
             genres,
@@ -260,6 +314,62 @@ impl TmdbClient {
             banner_path,
             imdb_id,
         })
+    }
+
+    /// Bande-annonce officielle (0.3.0) : endpoint TMDB « videos » —
+    /// retourne TOUTES les vidéos YouTube disponibles (triées par priorité :
+    /// Trailer officiel > Trailer > autres vidéos) — le frontend essaiera
+    /// la première, puis la suivante en cas d'erreur (fallback automatique).
+    /// ⚠️ L'endpoint « videos » FILTRE par langue : repli en-US si aucun
+    /// résultat dans la langue du profil (catalogue le plus complet).
+    pub fn fetch_trailer_keys(&self, kind: &str, tmdb_id: i64) -> Vec<String> {
+        let path = if kind == "movie" {
+            format!("/movie/{tmdb_id}/videos")
+        } else {
+            format!("/tv/{tmdb_id}/videos")
+        };
+        fn extract_keys(v: &serde_json::Value) -> Vec<String> {
+            let Some(results) = v.get("results").and_then(|r| r.as_array()) else {
+                return Vec::new();
+            };
+            let is_youtube =
+                |r: &serde_json::Value| r.get("site").and_then(|s| s.as_str()) == Some("YouTube");
+            let mut official_trailers = Vec::new();
+            let mut trailers = Vec::new();
+            let mut others = Vec::new();
+            for r in results {
+                if !is_youtube(r) {
+                    continue;
+                }
+                let Some(key) = r.get("key").and_then(|k| k.as_str()).map(String::from) else {
+                    continue;
+                };
+                let is_trailer = r.get("type").and_then(|t| t.as_str()) == Some("Trailer");
+                let is_official = r.get("official").and_then(|o| o.as_bool()).unwrap_or(false);
+                if is_trailer && is_official {
+                    official_trailers.push(key);
+                } else if is_trailer {
+                    trailers.push(key);
+                } else {
+                    others.push(key);
+                }
+            }
+            let mut keys = Vec::new();
+            keys.extend(official_trailers);
+            keys.extend(trailers);
+            keys.extend(others);
+            keys
+        }
+        let first = get_json(&self.url(&path, "", &self.lang));
+        let keys = first.as_ref().map(extract_keys).unwrap_or_default();
+        if !keys.is_empty() {
+            return keys;
+        }
+        if self.lang != "en-US" {
+            let fallback = get_json(&self.url(&path, "", "en-US"));
+            return fallback.map(|v| extract_keys(&v)).unwrap_or_default();
+        }
+        Vec::new()
     }
 }
 
