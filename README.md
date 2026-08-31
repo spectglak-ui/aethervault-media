@@ -168,6 +168,20 @@ aethervault-media/
 | **Temps** | `chrono 0.4` | Gestion des timestamps et fuseaux horaires |
 | **Logging** | `log 0.4` | Système de logging unifié |
 
+## Dépendances requises
+
+### libmpv-2.dll (lecture vidéo)
+Téléchargez depuis [mpv-player releases](https://sourceforge.net/projects/mpv-player-windows/files/) :
+- `mpv-x86_64-xxxxxxxx-git-xxxxxxx.7z`
+- Extrayez `libmpv-2.dll` dans `apps/desktop/src-tauri/`
+
+### fpcalc.exe (détection de génériques)
+Téléchargez depuis [Chromaprint releases](https://github.com/acoustid/chromaprint/releases) :
+- `chromaprint-fpcalc-x.x.x-windows-x86_64.zip`
+- Extrayez `fpcalc.exe` dans `apps/desktop/src-tauri/`
+
+Les deux fichiers doivent être présents dans `apps/desktop/src-tauri/` avant de builder.
+
 ### Principes de sécurité
 - ✅ Aucune dépendance C système (rustls, Rust pur)
 - ✅ Chiffrement du coffre entièrement applicatif (niveau SQLite, pas SQLCipher)

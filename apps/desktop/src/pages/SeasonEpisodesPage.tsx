@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Play, ScanLine } from "lucide-react";
 import { Button, EmptyState, PageHeader } from "@aethervault/ui-kit";
@@ -15,32 +15,51 @@ import "./pages.css";
  * Liste des épisodes d'une Saison (doc §6.3, §6.7). Cliquer un épisode
  * construit la file de lecture (Queue, §4.2 bis) à partir de **tous les
  * épisodes de cette saison qui ont un fichier associé**, dans leur ordre
- * d'affichage — c'est ce qui permet à Précédent/Suivant (Étape 3e) de
- * parcourir les épisodes d'une série exactement comme VLC/MPC-HC le font
- * pour un dossier ouvert. Construite à la demande, au clic, plutôt que
- * précalculée à l'affichage de la page : les fichiers ne sont résolus
- * (`getMediaFile`) que si l'utilisateur lance vraiment la lecture.
+ * d'affichage — c'est ce qui permet à Précédent/Suivant de parcourir les
+ * épisodes d'une série exactement comme VLC/MPC-HC le font pour un dossier
+ * ouvert. Construite à la demande, au clic, plutôt que précalculée à
+ * l'affichage de la page : les fichiers ne sont résolus (`getMediaFile`)
+ * que si l'utilisateur lance vraiment la lecture.
  */
 export function SeasonEpisodesPage() {
   const { titleId, seasonId } = useParams<{ key: string; titleId: string; seasonId: string }>();
   const { playQueue } = usePlayer();
-
   const [title, setTitle] = useState<TitleDetails | null>(null);
   const [episodes, setEpisodes] = useState<EpisodeSummary[] | null>(null);
   const [starting, setStarting] = useState<number | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [detectStatus, setDetectStatus] = useState<string | null>(null);
-  const [detectProgress, setDetectProgress] = useState<{ done: number; total: number } | null>(null);
+  const [detectProgress, setDetectProgress] = useState<{ done: number; total: number } | null>(
+    null
+  );
+
+  // 0.3.0 (finition v2) : référence vers le titre courant, lisible depuis
+  // le listener credits:done (qui vit dans un useEffect à dépendances vides).
+  const titleIdRef = useRef<string | null>(null);
+  titleIdRef.current = titleId ?? null;
+
   useEffect(() => {
     let u1: (() => void) | undefined;
     let u2: (() => void) | undefined;
-        void listen<{ processed: number; total: number; current: string }>("credits:progress", (e) => {
-      setDetectProgress({ done: e.payload.processed, total: e.payload.total });
-      setDetectStatus(
-        `Analyse ${Math.min(e.payload.processed + 1, e.payload.total)}/${e.payload.total} : ${e.payload.current}`
-      );
-    }).then((fn) => (u1 = fn));
+    void listen<{ processed: number; total: number; current: string }>(
+      "credits:progress",
+      (e) => {
+        setDetectProgress({ done: e.payload.processed, total: e.payload.total });
+        setDetectStatus(
+          `Analyse ${Math.min(e.payload.processed + 1, e.payload.total)}/${e.payload.total} : ${e.payload.current}`
+        );
+      }
+    ).then((fn) => (u1 = fn));
     void listen<{ found: number }>("credits:done", (e) => {
+      // v2 : analyse terminée → on pose le drapeau « série déjà analysée »
+      // (l'auto-détection ne se relancera plus pour ce titre).
+      if (titleIdRef.current) {
+        try {
+          localStorage.setItem(`avm-credits-analyzed-${titleIdRef.current}`, "1");
+        } catch {
+          // ignore
+        }
+      }
       setDetecting(false);
       setDetectProgress(null);
       setDetectStatus(`${e.payload.found} segment(s) enregistré(s).`);
@@ -50,6 +69,7 @@ export function SeasonEpisodesPage() {
       u2?.();
     };
   }, []);
+
   const handleDetect = () => {
     if (!titleId) return;
     setDetecting(true);
@@ -59,25 +79,42 @@ export function SeasonEpisodesPage() {
       setDetectStatus("Échec de l'analyse.");
     });
   };
-      // 0.3.0 (finition) : détection automatique une seule fois par série,
-  // à la première ouverture de sa page saison (drapeau localStorage) —
-  // ensuite tout est lu depuis la base, sans rescan.
+
+  // 0.3.0 (finition v2) : détection automatique à l'ouverture d'une saison
+  // SANS segments. Le drapeau n'est posé qu'à la FIN d'une analyse terminée
+  // (listener credits:done) — une analyse interrompue/échouée sera retentée
+  // à la prochaine ouverture.
   useEffect(() => {
     if (!titleId || !episodes || episodes.length < 2 || detecting) return;
-    const key = `avm-credits-analyzed-${titleId}`;
     try {
-      if (localStorage.getItem(key)) return;
-      localStorage.setItem(key, "1");
+      if (localStorage.getItem(`avm-credits-analyzed-${titleId}`)) return;
     } catch {
       return;
     }
-    if (episodes.filter((e) => e.media_file_id !== null).length < 2) return;
-    setDetecting(true);
-    setDetectStatus("Analyse automatique des génériques…");
-    void invoke("detect_credits", { titleId: Number(titleId) }).catch(() => {
-      setDetecting(false);
-      setDetectStatus("Échec de l'analyse.");
-    });
+    const withFiles = episodes.filter((e) => e.media_file_id !== null);
+    if (withFiles.length < 2) return;
+    const firstId = withFiles[0].media_file_id as number;
+    // Des segments existent déjà en base ? → rien à analyser.
+    void invoke<{ segments: unknown[] }>("get_media_segment_context", {
+      mediaFileId: firstId,
+    })
+      .then((ctx) => {
+        if ((ctx?.segments?.length ?? 0) > 0) {
+          try {
+            localStorage.setItem(`avm-credits-analyzed-${titleId}`, "1");
+          } catch {
+            // ignore
+          }
+          return;
+        }
+        setDetecting(true);
+        setDetectStatus("Analyse automatique des génériques…");
+        void invoke("detect_credits", { titleId: Number(titleId) }).catch(() => {
+          setDetecting(false);
+          setDetectStatus("Échec de l'analyse.");
+        });
+      })
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [titleId, episodes]);
 
@@ -100,7 +137,6 @@ export function SeasonEpisodesPage() {
   const handlePlay = async (clickedEpisode: EpisodeSummary) => {
     if (!episodes || !title) return;
     setStarting(clickedEpisode.id);
-
     try {
       // Chaque entrée résolue porte l'id de son épisode d'origine plutôt
       // que de compter sur la position dans le tableau : après le filtre
@@ -123,12 +159,10 @@ export function SeasonEpisodesPage() {
           return { episodeId: episode.id, media };
         })
       );
-
       const items = resolved.filter(
         (entry): entry is { episodeId: number; media: PlayableMedia } => entry !== null
       );
       const startIndex = items.findIndex((entry) => entry.episodeId === clickedEpisode.id);
-
       if (startIndex !== -1) {
         playQueue(
           items.map((entry) => entry.media),
@@ -145,12 +179,12 @@ export function SeasonEpisodesPage() {
       <PageHeader
         title={title ? `${title.name}${seasonLabel ? ` — ${seasonLabel}` : ""}` : "Épisodes"}
       />
-	        <div style={{ display: "flex", gap: 10, alignItems: "center", margin: "0 0 12px" }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", margin: "0 0 12px" }}>
         <Button variant="secondary" onClick={handleDetect} disabled={detecting}>
           <ScanLine size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
           {detecting ? "Analyse en cours…" : "Détecter les génériques"}
         </Button>
-                {detectStatus && <span className="avm-settings-muted">{detectStatus}</span>}
+        {detectStatus && <span className="avm-settings-muted">{detectStatus}</span>}
       </div>
       {detecting && detectProgress && detectProgress.total > 0 && (
         <div
@@ -176,16 +210,13 @@ export function SeasonEpisodesPage() {
           />
         </div>
       )}
-
       {episodes === null && <p>Chargement…</p>}
-
       {episodes !== null && episodes.length === 0 && (
         <EmptyState
           title="Aucun épisode"
           description="Cette saison ne contient aucun épisode pour l'instant."
         />
       )}
-
       {episodes !== null && episodes.length > 0 && (
         <ul className="avm-media-list">
           {episodes.map((episode) => {
@@ -201,11 +232,11 @@ export function SeasonEpisodesPage() {
                   <span>
                     {episode.episode_number}. {episode.name ?? `Épisode ${episode.episode_number}`}
                   </span>
-				              {episode.media_file_id !== null && (
-  <span className="avm-badge avm-badge--info" style={{ marginLeft: 8 }}>
-    Disponible
-  </span>
-)}
+                  {episode.media_file_id !== null && (
+                    <span className="avm-badge avm-badge--info" style={{ marginLeft: 8 }}>
+                      Disponible
+                    </span>
+                  )}
                   {episode.description && (
                     <span className="avm-card__subtitle">{episode.description}</span>
                   )}
