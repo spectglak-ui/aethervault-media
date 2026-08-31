@@ -2,9 +2,9 @@
 
 <img width="1919" height="635" alt="AetherVault Media - Centre multimédia personnel" src="https://github.com/user-attachments/assets/9152b0d9-8d67-4511-b3d8-588f48f80259" />
 
-**AetherVault Media** est un centre multimédia personnel, **local-first**, entièrement installé sur votre appareil. Gérez votre bibliothèque de films, séries, anime et galeries privées — sans serveurs, sans surveillance, que du chiffrement.
+**AetherVault Media** est un centre multimédia personnel, **local-first**, entièrement installé sur votre appareil. Gérez votre bibliothèque de films, séries, anime et galeries privées — sans compte cloud, sans surveillance.
 
-**État actuel** : 🎬 Étape 8 livrée — Installateur Windows NSIS, lecteur libmpv intégré et partage via code (chiffré).
+**État actuel** : 🎬 Étape 8+ — Installateur Windows NSIS, lecteur libmpv intégré, partage via code (chiffré), scan d'images parallélisé.
 
 ## 🌟 Fonctionnalités principales
 
@@ -38,8 +38,15 @@
 - **Chiffrement bout-à-bout** : SHA-256 + AES-256-GCM pour les données partagées
 - **Ouverture de port UPnP** : support optionnel pour le LAN (configurable)
 
+### 🎨 Galeries d'images privées
+- **Stockage chiffré** : images protégées en AES-256-GCM, jamais en clair sur disque
+- **Formats supportés** : JPEG, PNG, WebP, GIF, BMP, TIFF
+- **Métadonnées EXIF** : date de prise de vue et modèle d'appareil préservés (GPS volontairement exclu)
+- **Scan parallélisé** : analyse rapide et efficace avec Rayon
+
 ### ⚡ Performance et sécurité
 - **Vignettes d'aperçu automatiques** : extraites à ~1s de chaque épisode, génération efficace
+- **Scan parallélisé d'images** : performance optimale sur multi-cœurs
 - **Barre de progression du scan** : suivi en temps réel (analyse → appariement → vignettes)
 - **Chiffrement du coffre** : Argon2id (KDF) + AES-256-GCM, jamais en clair sur disque
 - **Aucune dépendance système** : SQLite bundled, rustls (100% Rust)
@@ -100,7 +107,7 @@ pnpm build
 
 Cela produit :
 ```
-apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.2.0_x64-setup.exe
+apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.3.0_x64-setup.exe
 ```
 
 **Installation** :
@@ -120,19 +127,21 @@ apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.2.0_x64-se
 ## 🏗️ Architecture
 
 ### Stack technologique
-- **Backend** : Rust 2021 (1.77+) avec Tauri 2 — **56.3% du code**
-- **Frontend** : React 18 + React Router 6 + TypeScript 5 — **37.1% du code**
-- **Styles** : CSS 3 — **6.6% du code**
+- **Backend** : Rust 2021 (1.77+) avec Tauri 2 — **55.9% du code**
+- **Frontend** : React 18 + React Router 6 + TypeScript 5 — **37.3% du code**
+- **Styles** : CSS 3 — **6.8% du code**
 - **Outils de build** : Vite 5, pnpm 9.0.0
 - **Base de données** : SQLite (rusqlite bundled)
 - **Lecteur vidéo** : libmpv (chargement dynamique)
+- **Traitement audio** : Symphonia 0.5 (analyse spectrales)
+- **FFT** : RustFFT 6 (transformées de Fourier)
 
 ### Structure monorepo (pnpm workspaces)
 ```
 aethervault-media/
 ├── apps/
 │   └── desktop/
-│       ├── src-tauri/          # Rust (Tauri) v0.2.0
+│       ├── src-tauri/          # Rust (Tauri) v0.3.0
 │       ├── src/                # React + TypeScript v0.2.0
 │       └── src-tauri/libs/     # libmpv-2.dll (à copier avant build)
 ├── packages/
@@ -141,7 +150,7 @@ aethervault-media/
 └── pnpm-workspace.yaml         # Configuration du monorepo
 ```
 
-### Dépendances principales (Rust v0.2.0)
+### Dépendances principales (Rust v0.3.0)
 
 | Domaine | Crates | Notes |
 |---------|--------|-------|
@@ -149,11 +158,15 @@ aethervault-media/
 | **Chiffrement** | `aes-gcm 0.10`, `argon2 0.5`, `rand 0.8` | AES-256-GCM + Argon2id KDF, 100% Rust |
 | **Chiffrement de partage** | `sha2 0.10`, `igd 0.12` | SHA-256 + UPnP pour partage via code |
 | **Multimédia** | `image 0.25.8`, `kamadak-exif 0.6`, `base64 0.22` | Décodage images, EXIF (sans GPS), encodage des vignettes |
+| **Audio** | `symphonia 0.5`, `rustfft 6` | Décodage audio multi-format, analyse spectrales |
 | **Réseau** | `ureq 2` | Client HTTP Rust pur (rustls) |
 | **Système de fichiers** | `walkdir 2`, `notify 6` | Récursion + watcher temps réel |
 | **Lecteur vidéo** | `libloading 0.8` | Chargement dynamique de libmpv |
-| **Parallélisation** | `rayon 1` | Scan d'images en parallèle |
+| **Parallélisation** | `rayon 1` | Scan d'images en parallèle, traitement CPU multi-cœurs |
 | **Frontend bridge** | `tauri 2`, `tauri-plugin-log 2`, `tauri-plugin-dialog 2` | IPC et plugins Tauri 2 |
+| **Sérialisation** | `serde 1`, `serde_json 1` | Sérialisation des structures de données |
+| **Temps** | `chrono 0.4` | Gestion des timestamps et fuseaux horaires |
+| **Logging** | `log 0.4` | Système de logging unifié |
 
 ### Principes de sécurité
 - ✅ Aucune dépendance C système (rustls, Rust pur)
@@ -162,6 +175,8 @@ aethervault-media/
 - ✅ Données sensibles jamais en clair sur disque
 - ✅ Pas de hash de mot de passe stocké (KDF Argon2id uniquement)
 - ✅ Partage chiffré avec dérivation SHA-256 (Étape 8)
+- ✅ Coordonnées GPS volontairement exclues des métadonnées EXIF
+- ✅ Panic safety : configuration "unwind" pour isolation des panics (fichiers pathologiques)
 
 ## 🔐 Licence
 
@@ -185,7 +200,7 @@ Pour les questions, bugs ou suggestions d'amélioration, ouvrez les issues sur G
 
 ---
 
-**Dernière mise à jour** : Étape 8 — Septembre 2026  
-**Version** : 0.2.0 (Rust/Tauri) + 0.1.0 (TypeScript)  
-**Composition** : Rust 56.3% — TypeScript 37.1% — CSS 6.6%  
+**Dernière mise à jour** : Étape 8+ — Août 2026  
+**Version** : 0.3.0 (Rust/Tauri) + 0.2.0 (TypeScript)  
+**Composition** : Rust 55.9% — TypeScript 37.3% — CSS 6.8%  
 **Mainteneur** : [@spectglak-ui](https://github.com/spectglak-ui)
