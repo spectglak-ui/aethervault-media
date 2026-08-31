@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Info, Play } from "lucide-react";
 import { Button, PageHeader } from "@aethervault/ui-kit";
 import type { Category, TitleDetails, TitleSummary } from "@aethervault/shared-types";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { categoryApi } from "../features/category/api";
 import { titleApi, type ContinueWatchingItem } from "../features/title/api";
 import { libraryApi } from "../features/library/api";
@@ -28,6 +29,17 @@ export function HomePage() {
   const [continueItems, setContinueItems] = useState<ContinueWatchingItem[] | null>(null);
   const [hero, setHero] = useState<TitleDetails | null>(null);
   const [starting, setStarting] = useState(false);
+    const [homeBackdrop, setHomeBackdrop] = useState<string | null>(null);
+  useEffect(() => {
+    const load = () => {
+      invoke<string | null>("get_home_backdrop")
+        .then((path) => setHomeBackdrop(path ? convertFileSrc(path) : null))
+        .catch(() => {});
+    };
+    load();
+    window.addEventListener("avm-home-backdrop-changed", load);
+    return () => window.removeEventListener("avm-home-backdrop-changed", load);
+  }, []);
 
   useEffect(() => {
     categoryApi.list().then(setCategories).catch(() => setCategories([]));
@@ -73,8 +85,19 @@ export function HomePage() {
     if (category) navigate(`/category/${category.key}/title/${title.id}`);
   };
 
-  return (
-    <div>
+    return (
+    <div
+      style={
+        homeBackdrop
+          ? {
+              backgroundImage: `linear-gradient(rgba(12, 12, 16, 0.72), rgba(12, 12, 16, 0.9)), url(${homeBackdrop})`,
+              backgroundAttachment: "fixed",
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+            }
+          : undefined
+      }
+    >
       {hero && assetUrl(hero.banner) ? (
         <section className="avm-home-hero">
           <img src={assetUrl(hero.banner)} alt="" />

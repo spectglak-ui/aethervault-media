@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { Avatar, SearchInput } from "@aethervault/ui-kit";
 import { useActiveProfile } from "../profile/ActiveProfileContext";
 import { WindowControls } from "../components/WindowControls";
@@ -13,9 +14,28 @@ import { WindowControls } from "../components/WindowControls";
  * natifs réduire/agrandir/fermer.
  */
 export function TopBar() {
-  const [query, setQuery] = useState("");
+    const [query, setQuery] = useState(" ");
   const navigate = useNavigate();
+  const location = useLocation();
   const { activeProfile } = useActiveProfile();
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!activeProfile) return;
+    let cancelled = false;
+    const load = () => {
+      invoke<string | null>("get_profile_avatar", { profileId: activeProfile.id })
+        .then((path) => {
+          if (!cancelled) setAvatarUrl(path ? convertFileSrc(path) : null);
+        })
+        .catch(() => {});
+    };
+    load();
+    window.addEventListener("avm-avatar-changed", load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("avm-avatar-changed", load);
+    };
+  }, [activeProfile, location.pathname]);
   return (
     <header className="avm-topbar" data-tauri-drag-region>
       <SearchInput
@@ -37,7 +57,15 @@ export function TopBar() {
             onClick={() => navigate("/profiles")}
             title="Changer de profil"
           >
-            <Avatar name={activeProfile.name} size={28} />
+                        {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt=""
+                style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }}
+              />
+            ) : (
+              <Avatar name={activeProfile.name} size={28} />
+            )}
             <span>{activeProfile.name}</span>
           </button>
         )}

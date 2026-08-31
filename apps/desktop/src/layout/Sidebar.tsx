@@ -5,6 +5,7 @@ import { NavItem, IconButton } from "@aethervault/ui-kit";
 import type { Category } from "@aethervault/shared-types";
 import { categoryApi } from "../features/category/api";
 import { categoryRoute } from "../lib/categoryRoute";
+import { categoryIcon } from "../lib/categoryIcon";
 
 const SECONDARY_NAV_ITEMS = [
   { path: "/explore", label: "Explorer", icon: Compass },
@@ -79,7 +80,7 @@ export function Sidebar({ collapsed, canToggle, onToggleCollapsed }: SidebarProp
         {categories.map((category) => (
           <li key={category.id}>
             <NavItem
-              icon={<span aria-hidden="true">{category.icon}</span>}
+              icon={categoryIcon(category.key)}
               label={category.name}
               collapsed={collapsed}
               active={isActive(categoryRoute(category))}

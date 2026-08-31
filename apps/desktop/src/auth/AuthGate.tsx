@@ -8,9 +8,10 @@
 import { useCallback, useEffect, useState } from "react";
 import type { CSSProperties, FormEvent, ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, Check, Copy, Lock, UserPlus } from "lucide-react";
 import logoUrl from "../assets/logo.png";
+import { applyNearMax } from "../window/nearMax";
 import { metadataApi } from "../features/settings/api";
 import "./auth.css";
 
@@ -130,6 +131,25 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
   const [newPassword, setNewPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+    const [avatars, setAvatars] = useState<Record<number, string>>({});
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(
+      profiles.map((p) =>
+        invoke<string | null>("get_profile_avatar", { profileId: p.id })
+          .then((path) => ({ id: p.id, url: path ? convertFileSrc(path) : null }))
+          .catch(() => ({ id: p.id, url: null }))
+      )
+    ).then((entries) => {
+      if (cancelled) return;
+      const map: Record<number, string> = {};
+      for (const entry of entries) if (entry.url) map[entry.id] = entry.url;
+      setAvatars(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [profiles]);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!selected || busy) return;
@@ -168,8 +188,16 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
                   setRecovering(false);
                 }}
               >
-                <span className="avm-auth__avatar" style={avatarStyle(p.name)}>
-                  {initials(p.name)}
+                                <span className="avm-auth__avatar" style={avatarStyle(p.name)}>
+                  {avatars[p.id] ? (
+                    <img
+                      src={avatars[p.id]}
+                      alt=""
+                      style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }}
+                    />
+                  ) : (
+                    initials(p.name)
+                  )}
                   {p.password_hash && <Lock size={14} className="avm-auth__lock" />}
                 </span>
                 <span className="avm-auth__profile-name">{p.name}</span>
@@ -189,8 +217,16 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
           >
             <ArrowLeft size={14} /> Profils
           </button>
-          <span className="avm-auth__avatar avm-auth__avatar--big" style={avatarStyle(selected.name)}>
-            {initials(selected.name)}
+                    <span className="avm-auth__avatar avm-auth__avatar--big" style={avatarStyle(selected.name)}>
+            {avatars[selected.id] ? (
+              <img
+                src={avatars[selected.id]}
+                alt=""
+                style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }}
+              />
+            ) : (
+              initials(selected.name)
+            )}
           </span>
           <h2 className="avm-auth__subtitle">{selected.name}</h2>
           {recovering ? (
@@ -590,6 +626,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [loginState, setLoginState] = useState<LoginState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+    // 0.3.0 : fenêtre « quasi-max » dès le démarrage (l'écran de connexion
+  // s'affiche avant l'AppShell — l'effet doit donc vivre ici).
+  useEffect(() => {
+    void applyNearMax();
+  }, []);
   useEffect(() => {
     let cancelled = false;
     authApi

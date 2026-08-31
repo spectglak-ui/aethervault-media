@@ -90,3 +90,90 @@ pub fn delete_profile(state: tauri::State<AppState>, profile_id: i64) -> Result<
     let active_profile_id = state.read_active_profile_id()?;
     profile::delete_profile(&state.db_pool, active_profile_id, profile_id)
 }
+
+/// Image de profil (0.3.0) : l'image choisie arrive en bytes (input
+/// file), est copiée dans le dossier applicatif `avatars/`, et sa
+/// référence est stockée dans app_settings (clé `profile_avatar_{id}`)
+/// — volontairement PAS custom_images, dont le CHECK SQL est limité aux
+/// personnalisations de titres.
+#[tauri::command]
+pub fn set_profile_avatar(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    file_name: String,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let active_profile_id = state.read_active_profile_id()?;
+    if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+        return Err("Image invalide (taille attendue : entre 1 o et 8 Mo).".to_string());
+    }
+    let ext = std::path::Path::new(&file_name)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .filter(|e| matches!(e.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif"))
+        .unwrap_or_else(|| "png".to_string());
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("avatars");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let target = dir.join(format!("profile_{active_profile_id}.{ext}"));
+    std::fs::write(&target, bytes).map_err(|e| e.to_string())?;
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![format!("profile_avatar_{active_profile_id}"), target.to_string_lossy()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Image de profil (0.3.0) : lit le chemin de l'avatar d'un profil —
+/// volontairement sans permission (donnée non sensible, utilisée par
+/// l'écran de connexion avant tout profil actif).
+#[tauri::command]
+pub fn get_profile_avatar(
+    state: tauri::State<AppState>,
+    profile_id: i64,
+) -> Result<Option<String>, String> {
+    use rusqlite::OptionalExtension;
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT value FROM app_settings WHERE key = ?1",
+        rusqlite::params![format!("profile_avatar_{profile_id}")],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// Image de profil (0.3.0) : retire l'avatar du profil actif (fichier
+/// disque + référence).
+#[tauri::command]
+pub fn clear_profile_avatar(state: tauri::State<AppState>) -> Result<(), String> {
+    use rusqlite::OptionalExtension;
+    let active_profile_id = state.read_active_profile_id()?;
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    // 1) Lit le chemin actuel (s'il existe) pour supprimer le fichier.
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = ?1",
+            rusqlite::params![format!("profile_avatar_{active_profile_id}")],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if let Some(path) = existing {
+        let _ = std::fs::remove_file(path);
+    }
+    // 2) Efface la référence en base.
+    conn.execute(
+        "DELETE FROM app_settings WHERE key = ?1",
+        rusqlite::params![format!("profile_avatar_{active_profile_id}")],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}

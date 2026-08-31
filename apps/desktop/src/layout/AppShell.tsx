@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { applyNearMax } from "../window/nearMax";
 import { Outlet, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { Sidebar } from "./Sidebar";
@@ -16,7 +18,12 @@ import "./layout.css";
 export function AppShell() {
   const location = useLocation();
   const { collapsed, isForced, toggleCollapsed } = useSidebarCollapsed();
-
+  // 0.3.0 : fenêtre inset d'environ 1 mm des bords (jamais « maximisé »,
+  // jamais en contact avec les bords) — supprime l'artefact DWM.
+  useEffect(() => {
+    void applyNearMax();
+  }, []);
+  
   return (
     <div
       className={["avm-shell", collapsed ? "avm-shell--collapsed" : ""]

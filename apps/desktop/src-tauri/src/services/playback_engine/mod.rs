@@ -520,6 +520,7 @@ fn run_event_thread(functions: Arc<MpvFunctions>, mpv: MpvHandlePtr, app_handle:
                     reason,
                     Some(mpv_ffi::end_file_reason::EOF) | Some(mpv_ffi::end_file_reason::ERROR)
                 );
+				log::info!("[playback] END_FILE reason={reason:?} is_real_end={is_real_end}");
                 let error = match (reason, end_file) {
                     (Some(mpv_ffi::end_file_reason::ERROR), Some(ef)) => {
                         Some(error_string(&functions, ef.error))

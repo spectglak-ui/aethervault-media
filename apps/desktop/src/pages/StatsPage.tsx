@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { BarChart3 } from "lucide-react";
-import { EmptyState, PageHeader } from "@aethervault/ui-kit";
+import { invoke } from "@tauri-apps/api/core";
+import { BarChart3, Trash2 } from "lucide-react";
+import { Button, EmptyState, PageHeader } from "@aethervault/ui-kit";
 import type { Category, TitleSummary } from "@aethervault/shared-types";
 import { titleApi, type WatchSession, type WatchStats } from "../features/title/api";
 import { categoryApi } from "../features/category/api";
@@ -9,9 +10,9 @@ import { assetUrl } from "../lib/assetUrl";
 import "./pages.css";
 
 /**
- * Time Capsule (Étape 8) : statistiques de visionnage — heures totales,
- * top genres, top titres, "il y a 1 an", top annuel.
- */
+Time Capsule (Étape 8) : statistiques de visionnage — heures totales,
+top genres, top titres, "il y a 1 an", top annuel.
+*/
 export function StatsPage() {
   const navigate = useNavigate();
   const [stats, setStats] = useState<WatchStats | null>(null);
@@ -20,13 +21,14 @@ export function StatsPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [yearAgoSessions, setYearAgoSessions] = useState<WatchSession[]>([]);
   const [yearTop, setYearTop] = useState<TitleSummary[]>([]);
+  const [resetKey, setResetKey] = useState(0);
+  const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     titleApi.watchStats().then(setStats).catch(() => {});
     titleApi.topGenres(6).then(setTopGenres).catch(() => {});
     titleApi.topTitles(12).then(setTopTitles).catch(() => {});
     categoryApi.list().then(setCategories).catch(() => {});
-
     // "Il y a 1 an" : sessions de la même période l'an dernier
     const now = new Date();
     const oneYearAgo = new Date(now);
@@ -37,7 +39,6 @@ export function StatsPage() {
       .watchSessions(oneYearAgo.toISOString(), oneYearAgoEnd.toISOString())
       .then(setYearAgoSessions)
       .catch(() => {});
-
     // Top annuel : titres les plus regardés cette année
     const yearStart = new Date(now.getFullYear(), 0, 1);
     const yearEnd = new Date(now.getFullYear() + 1, 0, 1);
@@ -66,7 +67,29 @@ export function StatsPage() {
         setYearTop(summaries);
       })
       .catch(() => {});
-  }, []);
+    // resetKey (0.3.0) : le bouton « Réinitialiser » relance tous les
+    // chargements après avoir effacé l'historique.
+  }, [resetKey]);
+
+  /** Bouton reset (0.3.0) : efface watch_history du profil puis
+  recharge tous les compteurs. Confirmation obligatoire. */
+  const handleReset = async () => {
+    if (
+      !window.confirm(
+        "Remettre les compteurs Time Capsule à zéro ?\nL'historique de visionnage de ce profil sera définitivement effacé."
+      )
+    )
+      return;
+    setResetting(true);
+    try {
+      await invoke("reset_watch_stats");
+      setResetKey((k) => k + 1);
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setResetting(false);
+    }
+  };
 
   const openTitle = (title: TitleSummary) => {
     const category = categories.find((c) => c.id === title.category_id);
@@ -78,6 +101,11 @@ export function StatsPage() {
       <PageHeader
         title="Time Capsule"
         description="Vos statistiques de visionnage : heures regardées, genres préférés, titres les plus vus."
+        actions={
+          <Button variant="ghost" onClick={() => void handleReset()} disabled={resetting}>
+            <Trash2 size={14} /> {resetting ? "Réinitialisation…" : "Réinitialiser"}
+          </Button>
+        }
       />
       {stats === null ? (
         <p>Chargement…</p>
@@ -101,7 +129,6 @@ export function StatsPage() {
               <p className="avm-stats-value">{stats.uniqueGenres}</p>
             </div>
           </div>
-
           {topGenres.length > 0 && (
             <section className="avm-stats-section">
               <h2>Top genres</h2>
@@ -115,7 +142,6 @@ export function StatsPage() {
               </div>
             </section>
           )}
-
           {topTitles.length > 0 && (
             <section className="avm-stats-section">
               <h2>Titres les plus regardés</h2>
@@ -133,7 +159,6 @@ export function StatsPage() {
               </div>
             </section>
           )}
-
           {yearAgoSessions.length > 0 && (
             <section className="avm-stats-section">
               <h2>Il y a 1 an</h2>
@@ -142,7 +167,6 @@ export function StatsPage() {
               </p>
             </section>
           )}
-
           {yearTop.length > 0 && (
             <section className="avm-stats-section">
               <h2>Top 10 de l'année</h2>
@@ -160,7 +184,6 @@ export function StatsPage() {
               </div>
             </section>
           )}
-
           {stats.sessionCount === 0 && (
             <EmptyState
               icon={<BarChart3 size={32} />}

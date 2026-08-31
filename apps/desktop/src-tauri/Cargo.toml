@@ -1,6 +1,6 @@
 [package]
 name = "aethervault-media"
-version = "0.2.1"
+version = "0.3.0"
 description = "AetherVault Media — centre multimédia personnel local-first"
 edition = "2021"
 rust-version = "1.77"
@@ -13,6 +13,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+symphonia = { version = "0.5", features = ["all"] }
+rustfft = "6"
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
@@ -97,7 +99,9 @@ igd = "0.12"
 sha2 = "0.10"
 
 [profile.release]
-panic = "abort"
+# 0.3.0 : "unwind" (et non "abort") pour que catch_unwind puisse isoler
+# les panics (fichiers pathologiques via mpv) au lieu de tuer l'app.
+panic = "unwind"
 codegen-units = 1
 lto = true
 opt-level = "s"

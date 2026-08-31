@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ImageUp, ListPlus, Play, RotateCcw } from "lucide-react";
+import { Clapperboard, ImageUp, ListPlus, Play, RotateCcw, Volume2, VolumeX } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { Menu, CheckMenuItem } from "@tauri-apps/api/menu";
 import { Button, EmptyState, IconButton, PageHeader } from "@aethervault/ui-kit";
 import type { Category, TitleDetails, TitleSummary } from "@aethervault/shared-types";
@@ -13,8 +14,8 @@ import { assetUrl } from "../lib/assetUrl";
 import "./pages.css";
 
 /** `"5432 s"` → `"1 h 30 min"` — registre différent de `formatTime`
- * (player/formatTime.ts) : celui-ci affiche une durée totale à l'échelle
- * d'une page de navigation. */
+(player/formatTime.ts) : celui-ci affiche une durée totale à l'échelle
+d'une page de navigation. */
 function formatDuration(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.round((totalSeconds % 3600) / 60);
@@ -22,11 +23,33 @@ function formatDuration(totalSeconds: number): string {
   return `${hours} h ${String(minutes).padStart(2, "0")} min`;
 }
 
+/** Charge une seule fois le script API IFrame YouTube (0.3.0 :
+nécessaire pour désactiver les sous-titres de la bande-annonce,
+impossible avec une iframe simple). */
+function loadYouTubeApi(): Promise<any> {
+  return new Promise((resolve) => {
+    const w = window as any;
+    if (w.YT && w.YT.Player) {
+      resolve(w.YT);
+      return;
+    }
+    const previous = w.onYouTubeIframeAPIReady;
+    w.onYouTubeIframeAPIReady = () => {
+      previous?.();
+      resolve(w.YT);
+    };
+    const script = document.createElement("script");
+    script.src = "https://www.youtube.com/iframe_api";
+    document.head.appendChild(script);
+  });
+}
+
 /**
- * Page d'un Titre (doc §6.3). Étape 7 (lot 4) : fond d'écran de page
- * personnalisable. Étape 8 : menu « Ajouter à une collection » (ListPlus)
- * + rangée « Titres similaires » (genres/acteurs/studios communs).
- */
+Page d'un Titre (doc §6.3). Étape 7 (lot 4) : fond d'écran de page
+personnalisable. Étape 8 : menu « Ajouter à une collection » (ListPlus)
+rangée « Titres similaires » (genres/acteurs/studios communs).
+0.3.0 : bande-annonce YouTube en arrière-plan, sans sous-titres.
+*/
 export function TitleDetailPage() {
   const { key, titleId } = useParams<{ key: string; titleId: string }>();
   const navigate = useNavigate();
@@ -35,6 +58,116 @@ export function TitleDetailPage() {
   const [similarTitles, setSimilarTitles] = useState<TitleSummary[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [starting, setStarting] = useState(false);
+  const [trailerKeys, setTrailerKeys] = useState<string[]>([]);
+  const [trailerKeyIndex, setTrailerKeyIndex] = useState(0);
+  const trailerKey = trailerKeys[trailerKeyIndex] ?? null;
+  const [trailerMode, setTrailerMode] = useState<"backdrop" | "trailer">(() => {
+    try {
+      return localStorage.getItem("avm-title-trailer-mode") === "trailer" ? "trailer" : "backdrop";
+    } catch {
+      return "backdrop";
+    }
+  });
+  const [trailerSound, setTrailerSound] = useState(false);
+  const wallpaperRef = useRef<HTMLDivElement | null>(null);
+  const trailerHostRef = useRef<HTMLDivElement | null>(null);
+  const trailerPlayerRef = useRef<any>(null);
+  const [trailerRect, setTrailerRect] = useState<{ w: number; h: number } | null>(null);
+
+  // 0.3.0 : dimensions « cover » de l'iframe YouTube — le conteneur
+  // n'est pas 16:9, donc on surdimensionne l'iframe (ratio forcé) et
+  // on laisse overflow:hidden rogner le surplus : la bande-annonce
+  // REMPLIT le fond sans bandes noires.
+  useEffect(() => {
+    if (trailerMode !== "trailer" || !trailerKey) return;
+    const compute = () => {
+      const el = wallpaperRef.current;
+      if (!el) return;
+      const { width, height } = el.getBoundingClientRect();
+      if (width === 0 || height === 0) return;
+      const ratio = 16 / 9;
+      if (width / height > ratio) {
+        setTrailerRect({ w: width, h: width / ratio });
+      } else {
+        setTrailerRect({ w: height * ratio, h: height });
+      }
+    };
+    compute();
+    window.addEventListener("resize", compute);
+    return () => window.removeEventListener("resize", compute);
+  }, [trailerMode, trailerKey]);
+
+    // 0.3.0 : crée le lecteur YouTube du fond, DÉSACTIVE les sous-titres,
+  // et passe automatiquement à la vidéo suivante en cas d'erreur
+  // (fallback automatique sur la liste des trailers disponibles).
+  useEffect(() => {
+    if (trailerMode !== "trailer" || !trailerKey) return;
+    let cancelled = false;
+    void loadYouTubeApi().then((YT) => {
+      if (cancelled || !trailerHostRef.current) return;
+      trailerPlayerRef.current = new YT.Player(trailerHostRef.current, {
+        width: "100%",
+        height: "100%",
+        videoId: trailerKey,
+        playerVars: {
+          autoplay: 1,
+          controls: 0,
+          disablekb: 1,
+          fs: 0,
+          iv_load_policy: 3,
+          loop: 1,
+          playlist: trailerKey,
+          playsinline: 1,
+          rel: 0,
+          modestbranding: 1,
+        },
+        events: {
+          onReady: (event: any) => {
+            try {
+              event.target.unloadModule("captions");
+              event.target.unloadModule("cc");
+            } catch {
+              // best-effort
+            }
+            if (trailerSound) event.target.unMute();
+            else event.target.mute();
+            event.target.playVideo();
+          },
+          onError: () => {
+            // 0.3.0 : erreur de lecture (vidéo supprimée, géo-bloquée…)
+            // → passe automatiquement à la vidéo suivante dans la liste.
+            console.warn("[trailer] erreur de lecture, essai de la vidéo suivante");
+            setTrailerKeyIndex((idx) => {
+              const next = idx + 1;
+              return next < trailerKeys.length ? next : idx;
+            });
+          },
+        },
+      });
+    });
+    return () => {
+      cancelled = true;
+      try {
+        trailerPlayerRef.current?.destroy();
+      } catch {
+        // best-effort
+      }
+      trailerPlayerRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trailerMode, trailerKey]);
+
+  // Bouton son : mute/unmute en direct, sans recharger la vidéo.
+  useEffect(() => {
+    const player = trailerPlayerRef.current;
+    if (!player) return;
+    try {
+      if (trailerSound) player.unMute();
+      else player.mute();
+    } catch {
+      // best-effort
+    }
+  }, [trailerSound]);
 
   const refresh = useCallback(() => {
     if (!titleId) return;
@@ -54,6 +187,19 @@ export function TitleDetailPage() {
         .catch(() => setSimilarTitles([]));
     }
   }, [refresh, titleId]);
+
+    useEffect(() => {
+    if (!titleId) return;
+    invoke<string[]>("get_title_trailer", { titleId: Number(titleId) })
+      .then((keys) => {
+        setTrailerKeys(keys);
+        setTrailerKeyIndex(0);
+      })
+      .catch(() => {
+        setTrailerKeys([]);
+        setTrailerKeyIndex(0);
+      });
+  }, [titleId]);
 
   const handlePlay = async () => {
     if (!title || title.media_file_id === null) return;
@@ -90,8 +236,8 @@ export function TitleDetailPage() {
   };
 
   /** Étape 8 : menu natif « Ajouter à une collection » — coche/décoche
-   * chaque collection existante pour ce Titre ; si aucune collection
-   * n'existe encore, propose d'en créer une directement. */
+  chaque collection existante pour ce Titre ; si aucune collection
+  n'existe encore, propose d'en créer une directement. */
   const openCollectionsMenu = async () => {
     try {
       const [all, mine] = await Promise.all([
@@ -134,12 +280,37 @@ export function TitleDetailPage() {
 
   return (
     <div className="avm-title-page">
-      {wallpaper && (
-        <div className="avm-title-page__wallpaper" aria-hidden="true">
-          <img src={wallpaper} alt="" />
+      {trailerMode === "trailer" && trailerKey ? (
+        <div
+          ref={wallpaperRef}
+          className="avm-title-page__wallpaper"
+          aria-hidden="true"
+          style={{ overflow: "hidden" }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              top: "50%",
+              left: "50%",
+              width: trailerRect ? `${trailerRect.w}px` : "100%",
+              height: trailerRect ? `${trailerRect.h}px` : "100%",
+              transform: "translate(-50%, -50%)",
+              pointerEvents: "none",
+            }}
+          >
+            <div ref={trailerHostRef} style={{ width: "100%", height: "100%" }} />
+          </div>
           <div className="avm-title-page__wallpaper-overlay" />
         </div>
+      ) : (
+        wallpaper && (
+          <div className="avm-title-page__wallpaper" aria-hidden="true">
+            <img src={wallpaper} alt="" />
+            <div className="avm-title-page__wallpaper-overlay" />
+          </div>
+        )
       )}
+
       <div className="avm-title-page__wallpaper-actions">
         <IconButton label="Ajouter à une collection" onClick={() => void openCollectionsMenu()}>
           <ListPlus size={16} />
@@ -155,7 +326,36 @@ export function TitleDetailPage() {
             <RotateCcw size={16} />
           </IconButton>
         )}
+        {trailerKey && (
+          <IconButton
+            label={
+              trailerMode === "trailer"
+                ? "Revenir au fond image"
+                : "Bande-annonce en arrière-plan"
+            }
+            onClick={() => {
+              const next = trailerMode === "trailer" ? "backdrop" : "trailer";
+              setTrailerMode(next);
+              try {
+                localStorage.setItem("avm-title-trailer-mode", next);
+              } catch {
+                // best-effort
+              }
+            }}
+          >
+            <Clapperboard size={16} />
+          </IconButton>
+        )}
+        {trailerKey && trailerMode === "trailer" && (
+          <IconButton
+            label={trailerSound ? "Couper le son de la bande-annonce" : "Activer le son"}
+            onClick={() => setTrailerSound((s) => !s)}
+          >
+            {trailerSound ? <Volume2 size={16} /> : <VolumeX size={16} />}
+          </IconButton>
+        )}
       </div>
+
       <div className="avm-title-page__header">
         <div className="avm-title-page__poster">
           <PersonalizableImage
@@ -196,12 +396,12 @@ export function TitleDetailPage() {
           )}
           {title.directors.length > 0 && (
             <p>
-              <strong>Réalisation :</strong> {title.directors.join(", ")}
+              <strong>Réalisation : </strong> {title.directors.join(", ")}
             </p>
           )}
           {title.cast.length > 0 && (
             <p>
-              <strong>Casting :</strong>{" "}
+              <strong>Casting : </strong>{" "}
               {title.cast
                 .map((credit) =>
                   credit.character_name ? `${credit.name} (${credit.character_name})` : credit.name
@@ -211,7 +411,7 @@ export function TitleDetailPage() {
           )}
           {title.studios.length > 0 && (
             <p>
-              <strong>Studios :</strong> {title.studios.join(", ")}
+              <strong>Studios : </strong> {title.studios.join(", ")}
             </p>
           )}
           {title.kind === "movie" && (
@@ -226,6 +426,7 @@ export function TitleDetailPage() {
           )}
         </div>
       </div>
+
       {title.technical &&
         (title.technical.resolutions.length > 0 ||
           title.technical.codecs.length > 0 ||
@@ -286,6 +487,7 @@ export function TitleDetailPage() {
             </div>
           </div>
         )}
+
       {title.kind === "series" && (
         <section className="avm-title-page__seasons">
           <h2>Saisons</h2>
@@ -310,6 +512,7 @@ export function TitleDetailPage() {
           )}
         </section>
       )}
+
       {similarTitles.length > 0 && (
         <section className="avm-title-page__similar">
           <h2>Titres similaires</h2>
