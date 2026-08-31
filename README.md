@@ -2,7 +2,7 @@
 
 <img width="1919" height="635" alt="AetherVault Media - Centre multimédia personnel" src="https://github.com/user-attachments/assets/9152b0d9-8d67-4511-b3d8-588f48f80259" />
 
-**AetherVault Media** est un centre multimédia personnel, **local-first**, entièrement installé sur votre appareil. Gérez votre bibliothèque de films, séries, anime et galeries privées — sans compte cloud, sans surveillance.
+**AetherVault Media** est un centre multimédia personnel, **local-first**, entièrement installé sur votre appareil. Gérez votre bibliothèque de films, séries, anime et galeries privées — s[...]
 
 **État actuel** :  Étape 8+ — Installateur Windows NSIS, lecteur libmpv intégré, partage via code (chiffré), scan d'images parallélisé.
 
@@ -110,6 +110,8 @@ Cela produit :
 apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.3.0_x64-setup.exe
 ```
 
+**Correctif livré** : les binaires d'installation (.exe et .msi) ont été remplacés par les versions corrigées et commités dans le dépôt le 31 août 2026. Le numéro de version reste 0.3.0.
+
 **Installation** :
 - Interface de sélection de langue (FR/EN)
 - Installation par utilisateur (sans UAC)
@@ -214,7 +216,7 @@ Pour les questions, bugs ou suggestions d'amélioration, ouvrez les issues sur G
 
 ---
 
-**Dernière mise à jour** : Étape 8+ — Août 2026  
-**Version** : 0.3.0 (Rust/Tauri) + 0.2.0 (TypeScript)  
-**Composition** : Rust 55.9% — TypeScript 37.3% — CSS 6.8%  
+**Dernière mise à jour** : 31 août 2026 — Correctif installateurs (.exe/.msi) livré
+**Version** : 0.3.0 (Rust/Tauri) + 0.2.0 (TypeScript)
+**Composition** : Rust 55.9% — TypeScript 37.3% — CSS 6.8%
 **Mainteneur** : [@spectglak-ui](https://github.com/spectglak-ui)
