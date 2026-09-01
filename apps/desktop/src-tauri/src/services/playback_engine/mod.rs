@@ -145,10 +145,24 @@ impl PlaybackEngineHandle {
         Ok(handle)
     }
 
+    /// Point d'entrée unique de chargement : les URLs http(s) passent par
+    /// l'extraction yt-dlp (`load_url`), tout le reste (fichiers locaux,
+    /// flux directs déjà extraits) passe par `load_direct`.
     pub fn load(&self, path: &str) -> Result<(), String> {
+        // 0.4.0 : toute URL http(s) passe par l'extraction yt-dlp — la
+        // file de lecture (queue, Précédent/Suivant, playlists VaultTube)
+        // fonctionne donc avec des vidéos YouTube exactement comme avec
+        // des fichiers locaux.
         if path.starts_with("http://") || path.starts_with("https://") {
-            log::info!("[playback] lecture d'une URL distante (hook ytdl) : {path}");
+            return self.load_url(path);
         }
+        self.load_direct(path)
+    }
+
+    /// Chargement brut (`loadfile` mpv) — pour les fichiers locaux ET les
+    /// flux directs extraits par yt-dlp. Séparé de `load` pour éviter la
+    /// récursion load → load_url → load sur les URLs de flux googlevideo.
+    fn load_direct(&self, path: &str) -> Result<(), String> {
         self.command(&["loadfile", path, "replace"])?;
         self.set_paused(false)
     }
@@ -211,7 +225,7 @@ impl PlaybackEngineHandle {
         }
         let video = urls[0].clone();
         if urls.len() == 1 {
-            return self.load(&video);
+            return self.load_direct(&video);
         }
         // Flux séparés : vidéo en principal + audio en audio-file.
         let opts = format!("audio-file={}", urls[1]);
@@ -220,7 +234,7 @@ impl PlaybackEngineHandle {
             .is_err()
         {
             log::warn!("[playback] options loadfile non supportées — vidéo seule");
-            self.load(&video)?;
+            self.load_direct(&video)?;
         }
         self.set_paused(false)
     }

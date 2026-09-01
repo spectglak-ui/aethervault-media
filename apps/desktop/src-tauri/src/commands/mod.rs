@@ -29,3 +29,4 @@ pub mod auth;
 pub mod settings;
 pub mod share;
 pub mod segments;
+pub mod vaulttube;

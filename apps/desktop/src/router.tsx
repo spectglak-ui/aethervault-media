@@ -17,6 +17,11 @@ import { StatsPage } from "./pages/StatsPage";
 import { ProfilesPage } from "./pages/ProfilesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ExperimentalPlayerPage } from "./pages/ExperimentalPlayerPage";
+import { VaultTubePage } from "./pages/VaultTubePage";
+import { VaultTubeVideosPage } from "./pages/VaultTubeVideosPage";
+import { VaultTubePlaylistsPage } from "./pages/VaultTubePlaylistsPage";
+import { VaultTubePlaylistPreviewPage } from "./pages/VaultTubePlaylistPreviewPage";
+import { VaultTubeUserPlaylistPage } from "./pages/VaultTubeUserPlaylistPage";
 
 /**
  * Routeur "hash" (#/...) plutôt que "browser" : évite d'avoir à configurer
@@ -40,7 +45,12 @@ export const router = createHashRouter([
       { path: "/private", element: <PrivatePage /> },
       { path: "/private/videos/:id", element: <PrivateVideoLibraryPage /> },
       { path: "/private/images/:id", element: <PrivateImageLibraryPage /> },
-      { path: "/private/images/:libraryId/albums/:folderId", element: <PrivateAlbumPage /> },
+      { path: "/vaulttube", element: <VaultTubePage /> },
+      { path: "/vaulttube/:id", element: <VaultTubeVideosPage /> },
+	  { path: "/vaulttube/playlist/:playlistId", element: <VaultTubePlaylistPreviewPage /> },
+      { path: "/vaulttube/:id/playlists", element: <VaultTubePlaylistsPage /> },
+	  { path: "/vaulttube/myplaylist/:id", element: <VaultTubeUserPlaylistPage /> },
+	  { path: "/private/images/:libraryId/albums/:folderId", element: <PrivateAlbumPage /> },
       { path: "/libraries", element: <LibraryPage /> },
       { path: "/libraries/:id", element: <LibraryDetailPage /> },
       { path: "/explore", element: <ExplorePage /> },

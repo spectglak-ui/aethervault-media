@@ -6,6 +6,7 @@ import type { Category } from "@aethervault/shared-types";
 import { categoryApi } from "../features/category/api";
 import { categoryRoute } from "../lib/categoryRoute";
 import { categoryIcon } from "../lib/categoryIcon";
+import { Youtube } from "lucide-react";
 
 const SECONDARY_NAV_ITEMS = [
   { path: "/explore", label: "Explorer", icon: Compass },
@@ -88,7 +89,15 @@ export function Sidebar({ collapsed, canToggle, onToggleCollapsed }: SidebarProp
             />
           </li>
         ))}
-
+        <li>
+          <NavItem
+            icon={<Youtube size={18} />}
+            label="VaultTube"
+            collapsed={collapsed}
+            active={isActive("/vaulttube")}
+            onClick={() => navigate("/vaulttube")}
+          />
+        </li>
         {SECONDARY_NAV_ITEMS.map(({ path, label, icon: Icon }) => (
           <li key={path}>
             <NavItem
