@@ -5,6 +5,8 @@
 pub(crate) mod mpv_ffi;
 mod sw_render;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use mpv_ffi::MpvFormat;
 pub use mpv_ffi::MpvFunctions;
 use std::ffi::{c_void, CStr, CString};
@@ -77,15 +79,32 @@ impl PlaybackEngineState {
 }
 
 impl PlaybackEngineHandle {
-	    /// Étape 6d : expose les fonctions libmpv chargées pour qu'un service
+    /// Étape 6d : expose les fonctions libmpv chargées pour qu'un service
     /// externe (vignettes d'épisodes) crée ses PROPRES handles mpv
     /// indépendants — jamais le handle de lecture lui-même, pour ne
     /// jamais perturber une lecture en cours.
     pub fn mpv_functions(&self) -> Arc<MpvFunctions> {
         self.functions.clone()
     }
+
     pub fn start(app_handle: AppHandle) -> Result<Arc<Self>, String> {
         let library_path = locate_library()?;
+        // 0.4.0 : rend yt-dlp découvrable par le hook ytdl de mpv en
+        // préfixant son dossier au PATH du processus. Sans yt-dlp, la
+        // lecture locale fonctionne exactement comme avant.
+        if let Some(ytdlp) = locate_ytdlp() {
+            if let Some(dir) = ytdlp.parent() {
+                let old_path = std::env::var("PATH").unwrap_or_default();
+                let sep = if cfg!(windows) { ";" } else { ":" };
+                let dir_str = dir.to_string_lossy();
+                if !old_path.split(sep).any(|p| p == dir_str.as_ref()) {
+                    std::env::set_var("PATH", format!("{dir_str}{sep}{old_path}"));
+                }
+                log::info!("[playback] yt-dlp disponible : {}", ytdlp.display());
+            }
+        } else {
+            log::info!("[playback] yt-dlp introuvable — lecture d'URLs désactivée");
+        }
         let functions =
             Arc::new(MpvFunctions::load(&library_path).map_err(|err| err.to_string())?);
         let mpv_ptr = unsafe { (functions.create)() };
@@ -97,6 +116,15 @@ impl PlaybackEngineHandle {
         set_option(&functions, mpv, "hwdec", "auto-safe")?;
         set_option(&functions, mpv, "video-timing-offset", "0.150")?;
         set_option(&functions, mpv, "keep-open", "yes")?;
+        // 0.4.0 : active le hook yt-dlp (URLs YouTube / VaultTube).
+        let _ = set_option(&functions, mpv, "ytdl", "yes");
+        // Format par défaut : H.264 ≤ 1080p (décodage logiciel fluide).
+        let _ = set_option(
+            &functions,
+            mpv,
+            "ytdl-format",
+            "bv*[height<=1080][vcodec^=avc1]+ba/b[height<=1080]",
+        );
         let rc = unsafe { (functions.initialize)(mpv.0) };
         if rc < 0 {
             return Err(error_string(&functions, rc));
@@ -110,12 +138,90 @@ impl PlaybackEngineHandle {
             surface: Mutex::new(None),
         });
         std::thread::spawn(move || run_event_thread(functions, mpv, app_handle));
-        log::info!("Playback Engine Bridge démarré (libmpv chargée depuis {})", library_path.display());
+        log::info!(
+            "Playback Engine Bridge démarré (libmpv chargée depuis {})",
+            library_path.display()
+        );
         Ok(handle)
     }
 
     pub fn load(&self, path: &str) -> Result<(), String> {
+        if path.starts_with("http://") || path.starts_with("https://") {
+            log::info!("[playback] lecture d'une URL distante (hook ytdl) : {path}");
+        }
         self.command(&["loadfile", path, "replace"])?;
+        self.set_paused(false)
+    }
+
+    /// 0.4.0 (VaultTube, jalon 1) : lit une URL distante en extrayant les
+    /// flux directs via yt-dlp (ce build libmpv n'a pas le hook ytdl Lua).
+    /// Essaie plusieurs clients YouTube : le premier qui extrait des flux
+    /// gagne (YouTube bloque certains clients selon l'IP / la période).
+    pub fn load_url(&self, url: &str) -> Result<(), String> {
+        let ytdlp = locate_ytdlp().ok_or_else(|| "yt-dlp introuvable".to_string())?;
+        log::info!("[playback] extraction des flux via yt-dlp : {url}");
+        let configs: &[&[&str]] = &[
+            &[],
+            &["--extractor-args", "youtube:player_client=android"],
+            &["--extractor-args", "youtube:player_client=tv"],
+            &["--extractor-args", "youtube:player_client=ios"],
+        ];
+        let mut last_err = String::new();
+        let mut urls: Vec<String> = Vec::new();
+        for extra in configs {
+            let mut cmd = std::process::Command::new(&ytdlp);
+            cmd.args([
+                "-f",
+                "b[vcodec^=avc1][height<=1080][acodec!=none]/bv*[vcodec^=avc1][height<=1080]+ba/b",
+                "-g",
+                "--no-warnings",
+            ]);
+            cmd.args(*extra);
+            cmd.arg(url);
+            #[cfg(windows)]
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            match cmd.output() {
+                Ok(output) if output.status.success() => {
+                    let found: Vec<String> = String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty())
+                        .map(str::to_string)
+                        .collect();
+                    if !found.is_empty() {
+                        log::info!(
+                            "[playback] flux extraits via client {:?} ({} URL(s))",
+                            extra,
+                            found.len()
+                        );
+                        urls = found;
+                        break;
+                    }
+                    last_err = "aucun flux extrait".to_string();
+                }
+                Ok(output) => {
+                    last_err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    log::warn!("[playback] yt-dlp client {:?} en échec : {}", extra, last_err);
+                }
+                Err(e) => last_err = e.to_string(),
+            }
+        }
+        if urls.is_empty() {
+            return Err(format!("yt-dlp en échec : {last_err}"));
+        }
+        let video = urls[0].clone();
+        if urls.len() == 1 {
+            return self.load(&video);
+        }
+        // Flux séparés : vidéo en principal + audio en audio-file.
+        let opts = format!("audio-file={}", urls[1]);
+        if self
+            .command(&["loadfile", &video, "replace", "0", &opts])
+            .is_err()
+        {
+            log::warn!("[playback] options loadfile non supportées — vidéo seule");
+            self.load(&video)?;
+        }
         self.set_paused(false)
     }
 
@@ -187,7 +293,7 @@ impl PlaybackEngineHandle {
         result
     }
 
-        /// Force mpv à re-rendre la frame courante (sans changer la position).
+    /// Force mpv à re-rendre la frame courante (sans changer la position).
     /// Utilisé après transfert de surface vers la fenêtre PiP : mpv ne
     /// réveille plus le wake callback pour la nouvelle surface, cette
     /// commande le force à produire une nouvelle frame et relancer le
@@ -195,12 +301,12 @@ impl PlaybackEngineHandle {
     pub fn redraw(&self) -> Result<(), String> {
         self.command(&["seek", "0", "relative"])
     }
-	
-	pub fn capture_screenshot(&self, target_path: &str) -> Result<(), String> {
+
+    pub fn capture_screenshot(&self, target_path: &str) -> Result<(), String> {
         self.command(&["screenshot-to-file", target_path, "video"])
     }
 
-        pub fn attach_surface(
+    pub fn attach_surface(
         &self,
         channel: Channel<InvokeResponseBody>,
         width: i32,
@@ -251,7 +357,7 @@ impl PlaybackEngineHandle {
         // la vidéo et relance le pipeline. Le second envoi, 300 ms plus
         // tard, couvre la course entre le seek et la création du nouveau
         // contexte de rendu par le thread qui vient d'être démarré.
-                let _ = self.command(&["seek", "0", "relative"]);
+        let _ = self.command(&["seek", "0", "relative"]);
         let functions_for_redraw = self.functions.clone();
         // ⚠️ L'adresse est passée sous forme de `usize` (toujours `Send`)
         // plutôt que le pointeur brut `*mut c_void` (qui ne l'est pas) :
@@ -267,7 +373,9 @@ impl PlaybackEngineHandle {
             let mut ptrs: Vec<*const c_char> = c_args.iter().map(|a| a.as_ptr()).collect();
             ptrs.push(std::ptr::null());
             let mpv_ptr = mpv_addr as *mut c_void;
-            unsafe { (functions_for_redraw.command)(mpv_ptr, ptrs.as_ptr()); }
+            unsafe {
+                (functions_for_redraw.command)(mpv_ptr, ptrs.as_ptr());
+            }
         });
         Ok(())
     }
@@ -419,7 +527,12 @@ impl PlaybackEngineHandle {
     }
 }
 
-fn set_option(functions: &MpvFunctions, mpv: MpvHandlePtr, name: &str, value: &str) -> Result<(), String> {
+fn set_option(
+    functions: &MpvFunctions,
+    mpv: MpvHandlePtr,
+    name: &str,
+    value: &str,
+) -> Result<(), String> {
     let cname = CString::new(name).unwrap_or_default();
     let cvalue = CString::new(value).unwrap_or_default();
     let rc = unsafe { (functions.set_option_string)(mpv.0, cname.as_ptr(), cvalue.as_ptr()) };
@@ -454,22 +567,46 @@ fn locate_library() -> Result<PathBuf, String> {
         .and_then(|path| path.parent().map(|p| p.to_path_buf()))
         .ok_or_else(|| "Impossible de déterminer le dossier de l'exécutable".to_string())?;
     const CANDIDATES: &[&str] = &["libmpv-2.dll", "mpv-2.dll", "libmpv.dll"];
-// Deux emplacements : à côté de l'exécutable (dev / copie manuelle) ou
-// dans le dossier resources de l'installation NSIS (Étape 7, bundle).
-let dirs = [exe_dir.clone(), exe_dir.join("resources")];
-for name in CANDIDATES {
-    for dir in &dirs {
-        let candidate = dir.join(name);
-        if candidate.exists() {
-            return Ok(candidate);
+    // Deux emplacements : à côté de l'exécutable (dev / copie manuelle) ou
+    // dans le dossier resources de l'installation NSIS (Étape 7, bundle).
+    let dirs = [exe_dir.clone(), exe_dir.join("resources")];
+    for name in CANDIDATES {
+        for dir in &dirs {
+            let candidate = dir.join(name);
+            if candidate.exists() {
+                return Ok(candidate);
+            }
         }
     }
-}
     Err(format!(
-        "Aucune libmpv trouvée à côté de l'exécutable ({}). Le binaire redistribuable (build \
-         LGPL) doit être déposé là par l'installateur — voir doc §4.2.",
+        "Aucune libmpv trouvée à côté de l'exécutable ({}). Le binaire redistribuable (build LGPL) doit être déposé là par l'installateur — voir doc §4.2.",
         exe_dir.display()
     ))
+}
+
+/// 0.4.0 : localise yt-dlp (VaultTube / AetherFy) — mêmes emplacements
+/// que libmpv : à côté de l'exécutable, dans resources (installation
+/// NSIS), ou répertoire courant (dev : src-tauri).
+fn locate_ytdlp() -> Option<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            dirs.push(dir.to_path_buf());
+            dirs.push(dir.join("resources"));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        dirs.push(cwd);
+    }
+    for dir in dirs {
+        for name in ["yt-dlp.exe", "yt-dlp"] {
+            let candidate = dir.join(name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn run_event_thread(functions: Arc<MpvFunctions>, mpv: MpvHandlePtr, app_handle: AppHandle) {
@@ -520,7 +657,7 @@ fn run_event_thread(functions: Arc<MpvFunctions>, mpv: MpvHandlePtr, app_handle:
                     reason,
                     Some(mpv_ffi::end_file_reason::EOF) | Some(mpv_ffi::end_file_reason::ERROR)
                 );
-				log::info!("[playback] END_FILE reason={reason:?} is_real_end={is_real_end}");
+                log::info!("[playback] END_FILE reason={reason:?} is_real_end={is_real_end}");
                 let error = match (reason, end_file) {
                     (Some(mpv_ffi::end_file_reason::ERROR), Some(ef)) => {
                         Some(error_string(&functions, ef.error))
@@ -550,7 +687,18 @@ fn run_event_thread(functions: Arc<MpvFunctions>, mpv: MpvHandlePtr, app_handle:
 pub fn player_pull_frame(
     state: tauri::State<'_, crate::state::AppState>,
 ) -> tauri::ipc::Response {
-        let _ = state;
+    let _ = state;
     let bytes = sw_render::pull_latest_frame();
     tauri::ipc::Response::new(tauri::ipc::InvokeResponseBody::Raw(bytes))
+}
+
+/// 0.4.0 (VaultTube, jalon 1) : lit directement une URL (YouTube, etc.)
+/// en extrayant les flux via yt-dlp — commande de test en attendant l'UI
+/// VaultTube. Plan B car ce build libmpv n'a pas le hook ytdl Lua.
+#[tauri::command]
+pub fn player_load_url(
+    state: tauri::State<'_, crate::state::AppState>,
+    url: String,
+) -> Result<(), String> {
+    state.playback_engine.handle()?.load_url(&url)
 }
