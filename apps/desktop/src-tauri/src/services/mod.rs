@@ -13,3 +13,4 @@ pub mod episode_thumbnails;
 pub mod media_probe;
 pub mod share;
 pub mod intro_detector;
+pub mod vaulttube;

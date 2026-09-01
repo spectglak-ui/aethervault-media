@@ -57,6 +57,10 @@ pub fn run() {
             // données par défaut insérées séparément (voir db::seed).
             db::migrations::apply_migrations(&pool)
                 .expect("impossible d'appliquer les migrations de la base de données");
+			         // 0.4.0 : tables VaultTube (idempotent — CREATE TABLE IF NOT EXISTS).
+services::vaulttube::VaultTubeRepository::new(pool.clone())
+    .create_tables()
+    .expect("impossible de créer les tables VaultTube");
             db::seed::ensure_default_profile(&pool)
                 .expect("impossible d'initialiser les données par défaut");
             db::seed::ensure_default_categories(&pool)
@@ -177,6 +181,22 @@ if let Some(window) = app.get_webview_window("main") {
             commands::segments::delete_episode_segment,
             commands::segments::detect_credits,
 			commands::segments::get_media_segment_context,
+			commands::vaulttube::vaulttube_add_subscription,
+            commands::vaulttube::vaulttube_list_subscriptions,
+            commands::vaulttube::vaulttube_list_videos,
+            commands::vaulttube::vaulttube_refresh_subscription,
+            commands::vaulttube::vaulttube_remove_subscription,
+			commands::vaulttube::vaulttube_list_playlists,
+            commands::vaulttube::vaulttube_sync_playlists,
+            commands::vaulttube::vaulttube_preview_videos,
+			commands::vaulttube::vaulttube_search,
+			commands::vaulttube::vaulttube_create_user_playlist,
+            commands::vaulttube::vaulttube_list_user_playlists,
+            commands::vaulttube::vaulttube_delete_user_playlist,
+            commands::vaulttube::vaulttube_list_user_playlist_items,
+            commands::vaulttube::vaulttube_add_to_user_playlist,
+            commands::vaulttube::vaulttube_remove_from_user_playlist,
+            commands::vaulttube::vaulttube_reorder_user_playlist,
 			// Authentification des profils (Étape 6c)
             commands::auth::get_login_state,
             commands::auth::login_profile,
@@ -281,7 +301,12 @@ if let Some(window) = app.get_webview_window("main") {
             commands::share::share_stop,
             commands::share::share_receive,
             services::playback_engine::player_pull_frame,
-            services::playback_engine::player_load_url,   // ← ajoute cette ligne
+            services::playback_engine::player_load_url,
+            commands::vaulttube::vaulttube_add_subscription,
+            commands::vaulttube::vaulttube_list_subscriptions,
+            commands::vaulttube::vaulttube_list_videos,
+            commands::vaulttube::vaulttube_refresh_subscription,
+            commands::vaulttube::vaulttube_remove_subscription,
      ])
         .run(tauri::generate_context!())
         .expect("erreur lors du lancement d'AetherVault Media");
