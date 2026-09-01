@@ -281,7 +281,8 @@ if let Some(window) = app.get_webview_window("main") {
             commands::share::share_stop,
             commands::share::share_receive,
             services::playback_engine::player_pull_frame,
-        ])
+            services::playback_engine::player_load_url,   // ← ajoute cette ligne
+     ])
         .run(tauri::generate_context!())
         .expect("erreur lors du lancement d'AetherVault Media");
 }
