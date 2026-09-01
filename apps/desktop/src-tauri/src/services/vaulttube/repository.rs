@@ -1,9 +1,25 @@
-//! Opérations SQLite pour VaultTube.
+//! Opérations SQLite pour VaultTube / AetherFy.
 use crate::db::DbPool;
 use super::models::{UserPlaylist, UserPlaylistItem, VaultTubePlaylist, VaultTubeSubscription, VaultTubeVideo};
 
 pub struct VaultTubeRepository {
     pool: DbPool,
+}
+
+/// Détecte si une URL pointe probablement vers du contenu audio
+/// (chaînes « - Topic », playlists musicales, podcasts). L'utilisateur
+/// peut toujours basculer le mode manuellement ensuite.
+pub fn detect_mode_from_url(url: &str, title: &str) -> &'static str {
+    let u = url.to_lowercase();
+    let t = title.to_lowercase();
+    if u.contains("- topic") || t.contains("- topic") {
+        return "audio";
+    }
+    if t.contains("music") || t.contains("musique") || t.contains("podcast") || t.contains("album")
+    {
+        return "audio";
+    }
+    "video"
 }
 
 impl VaultTubeRepository {
@@ -80,6 +96,8 @@ impl VaultTubeRepository {
         kind: &str,
         youtube_id: &str,
         thumbnail_url: Option<&str>,
+        source: &str,
+        mode: &str,
     ) -> Result<i64, String> {
         let conn = self.pool.get().map_err(|e| e.to_string())?;
         let now = std::time::SystemTime::now()
@@ -87,9 +105,9 @@ impl VaultTubeRepository {
             .unwrap()
             .as_secs() as i64;
         conn.execute(
-            "INSERT INTO vaulttube_subscriptions (name, url, kind, youtube_id, thumbnail_url, added_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![name, url, kind, youtube_id, thumbnail_url, now],
+            "INSERT INTO vaulttube_subscriptions (name, url, kind, youtube_id, thumbnail_url, added_at, source, mode)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![name, url, kind, youtube_id, thumbnail_url, now, source, mode],
         )
         .map_err(|e| e.to_string())?;
         Ok(conn.last_insert_rowid())
@@ -100,7 +118,7 @@ impl VaultTubeRepository {
         let conn = self.pool.get().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, url, kind, youtube_id, thumbnail_url, added_at, last_synced_at
+                "SELECT id, name, url, kind, youtube_id, thumbnail_url, added_at, last_synced_at, source, mode
                  FROM vaulttube_subscriptions
                  ORDER BY added_at DESC",
             )
@@ -116,6 +134,8 @@ impl VaultTubeRepository {
                     thumbnail_url: row.get(5)?,
                     added_at: row.get(6)?,
                     last_synced_at: row.get(7)?,
+                    source: row.get(8)?,
+                    mode: row.get(9)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -150,7 +170,8 @@ impl VaultTubeRepository {
         Ok(())
     }
 
-    /// Ajoute une vidéo (ignore si déjà présente).
+    /// Ajoute une vidéo (ignore si déjà présente). Le mode est hérité
+    /// automatiquement de l'abonnement parent.
     pub fn add_video(
         &self,
         subscription_id: i64,
@@ -160,25 +181,27 @@ impl VaultTubeRepository {
         thumbnail_url: Option<&str>,
         duration_seconds: Option<i64>,
         published_at: Option<i64>,
+        source: &str,
     ) -> Result<(), String> {
         let conn = self.pool.get().map_err(|e| e.to_string())?;
+        let mode: String = conn
+            .query_row(
+                "SELECT mode FROM vaulttube_subscriptions WHERE id = ?1",
+                rusqlite::params![subscription_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "video".to_string());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
         conn.execute(
             "INSERT OR IGNORE INTO vaulttube_videos
-             (subscription_id, youtube_id, title, description, thumbnail_url, duration_seconds, published_at, added_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (subscription_id, youtube_id, title, description, thumbnail_url, duration_seconds, published_at, added_at, source, mode)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
-                subscription_id,
-                youtube_id,
-                title,
-                description,
-                thumbnail_url,
-                duration_seconds,
-                published_at,
-                now
+                subscription_id, youtube_id, title, description, thumbnail_url,
+                duration_seconds, published_at, now, source, mode
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -191,7 +214,7 @@ impl VaultTubeRepository {
         let mut stmt = conn
             .prepare(
                 "SELECT id, subscription_id, youtube_id, title, description, thumbnail_url,
-                        duration_seconds, published_at, added_at
+                        duration_seconds, published_at, added_at, source, mode
                  FROM vaulttube_videos
                  WHERE subscription_id = ?1
                  ORDER BY published_at DESC NULLS LAST, added_at DESC",
@@ -209,6 +232,8 @@ impl VaultTubeRepository {
                     duration_seconds: row.get(6)?,
                     published_at: row.get(7)?,
                     added_at: row.get(8)?,
+                    source: row.get(9)?,
+                    mode: row.get(10)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -225,6 +250,7 @@ impl VaultTubeRepository {
         title: &str,
         thumbnail_url: Option<&str>,
         video_count: Option<i64>,
+        source: &str,
     ) -> Result<(), String> {
         let conn = self.pool.get().map_err(|e| e.to_string())?;
         let now = std::time::SystemTime::now()
@@ -233,13 +259,13 @@ impl VaultTubeRepository {
             .as_secs() as i64;
         conn.execute(
             "INSERT INTO vaulttube_playlists
-             (subscription_id, youtube_id, title, thumbnail_url, video_count, added_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             (subscription_id, youtube_id, title, thumbnail_url, video_count, added_at, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(subscription_id, youtube_id) DO UPDATE SET
                title = excluded.title,
                thumbnail_url = excluded.thumbnail_url,
                video_count = excluded.video_count",
-            rusqlite::params![subscription_id, youtube_id, title, thumbnail_url, video_count, now],
+            rusqlite::params![subscription_id, youtube_id, title, thumbnail_url, video_count, now, source],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -250,7 +276,7 @@ impl VaultTubeRepository {
         let conn = self.pool.get().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, subscription_id, youtube_id, title, thumbnail_url, video_count, added_at
+                "SELECT id, subscription_id, youtube_id, title, thumbnail_url, video_count, added_at, source
                  FROM vaulttube_playlists
                  WHERE subscription_id = ?1
                  ORDER BY title ASC",
@@ -266,6 +292,7 @@ impl VaultTubeRepository {
                     thumbnail_url: row.get(4)?,
                     video_count: row.get(5)?,
                     added_at: row.get(6)?,
+                    source: row.get(7)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -287,15 +314,15 @@ impl VaultTubeRepository {
 
     // ---------- Playlists locales (utilisateur) ----------
 
-    pub fn create_user_playlist(&self, name: &str) -> Result<i64, String> {
+    pub fn create_user_playlist(&self, name: &str, mode: &str) -> Result<i64, String> {
         let conn = self.pool.get().map_err(|e| e.to_string())?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
         conn.execute(
-            "INSERT INTO vaulttube_user_playlists (name, created_at) VALUES (?1, ?2)",
-            rusqlite::params![name, now],
+            "INSERT INTO vaulttube_user_playlists (name, created_at, mode) VALUES (?1, ?2, ?3)",
+            rusqlite::params![name, now, mode],
         )
         .map_err(|e| e.to_string())?;
         Ok(conn.last_insert_rowid())
@@ -305,7 +332,7 @@ impl VaultTubeRepository {
         let conn = self.pool.get().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT p.id, p.name, p.created_at,
+                "SELECT p.id, p.name, p.created_at, p.mode,
                         (SELECT COUNT(*) FROM vaulttube_user_playlist_items i
                          WHERE i.playlist_id = p.id) AS item_count
                  FROM vaulttube_user_playlists p
@@ -318,7 +345,8 @@ impl VaultTubeRepository {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     created_at: row.get(2)?,
-                    item_count: row.get(3)?,
+                    mode: row.get(3)?,
+                    item_count: row.get(4)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -345,7 +373,7 @@ impl VaultTubeRepository {
         let mut stmt = conn
             .prepare(
                 "SELECT id, playlist_id, youtube_id, title, thumbnail_url,
-                        duration_seconds, channel, position, added_at
+                        duration_seconds, channel, position, added_at, source, mode
                  FROM vaulttube_user_playlist_items
                  WHERE playlist_id = ?1
                  ORDER BY position ASC, id ASC",
@@ -363,6 +391,8 @@ impl VaultTubeRepository {
                     channel: row.get(6)?,
                     position: row.get(7)?,
                     added_at: row.get(8)?,
+                    source: row.get(9)?,
+                    mode: row.get(10)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -372,6 +402,7 @@ impl VaultTubeRepository {
     }
 
     /// Ajoute une vidéo à la fin d'une playlist locale (doublon ignoré).
+    /// Le mode est hérité automatiquement de la playlist parente.
     pub fn add_user_playlist_item(
         &self,
         playlist_id: i64,
@@ -380,8 +411,16 @@ impl VaultTubeRepository {
         thumbnail_url: Option<&str>,
         duration_seconds: Option<i64>,
         channel: Option<&str>,
+        source: &str,
     ) -> Result<(), String> {
         let conn = self.pool.get().map_err(|e| e.to_string())?;
+        let mode: String = conn
+            .query_row(
+                "SELECT mode FROM vaulttube_user_playlists WHERE id = ?1",
+                rusqlite::params![playlist_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "video".to_string());
         let next_pos: i64 = conn
             .query_row(
                 "SELECT COALESCE(MAX(position), -1) + 1
@@ -396,17 +435,11 @@ impl VaultTubeRepository {
             .as_secs() as i64;
         conn.execute(
             "INSERT OR IGNORE INTO vaulttube_user_playlist_items
-             (playlist_id, youtube_id, title, thumbnail_url, duration_seconds, channel, position, added_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (playlist_id, youtube_id, title, thumbnail_url, duration_seconds, channel, position, added_at, source, mode)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
-                playlist_id,
-                youtube_id,
-                title,
-                thumbnail_url,
-                duration_seconds,
-                channel,
-                next_pos,
-                now
+                playlist_id, youtube_id, title, thumbnail_url,
+                duration_seconds, channel, next_pos, now, source, mode
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -446,6 +479,38 @@ impl VaultTubeRepository {
             .map_err(|e| e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Bascule une playlist locale en mode video/audio et propage aux items.
+    pub fn set_user_playlist_mode(&self, id: i64, mode: &str) -> Result<(), String> {
+        let conn = self.pool.get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE vaulttube_user_playlists SET mode = ?1 WHERE id = ?2",
+            rusqlite::params![mode, id],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE vaulttube_user_playlist_items SET mode = ?1 WHERE playlist_id = ?2",
+            rusqlite::params![mode, id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Bascule un abonnement en mode video/audio et propage aux vidéos.
+    pub fn set_subscription_mode(&self, id: i64, mode: &str) -> Result<(), String> {
+        let conn = self.pool.get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE vaulttube_subscriptions SET mode = ?1 WHERE id = ?2",
+            rusqlite::params![mode, id],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE vaulttube_videos SET mode = ?1 WHERE subscription_id = ?2",
+            rusqlite::params![mode, id],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 }

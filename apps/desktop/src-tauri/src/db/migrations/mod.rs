@@ -118,6 +118,26 @@ pub const MIGRATIONS: &[Migration] = &[
         description: "Historique de visionnage (Time Capsule, Étape 8)",
         sql: include_str!("0017_watch_history.sql"),
     },
+	    Migration {
+        version: 18,
+        description: "AetherFy — colonne source multi-plateformes (jalon 3)",
+        sql: include_str!("0018_aetherfy.sql"),
+    },
+	    Migration {
+        version: 19,
+        description: "AetherFy — colonne source pour les items des playlists locales (jalon 3)",
+        sql: include_str!("0019_aetherfy_playlist_source.sql"),
+    },
+	    Migration {
+        version: 20,
+        description: "AetherFy — mode de lecture (video/audio) pour playlists et abonnements (jalon 3)",
+        sql: include_str!("0020_aetherfy_modes.sql"),
+    },
+	    Migration {
+        version: 21,
+        description: "AetherFy — colonne mode sur vaulttube_videos (complément migration 20)",
+        sql: include_str!("0021_aetherfy_videos_mode.sql"),
+    },
 ];
 
 /// Applique, dans l'ordre, toutes les migrations dont la version est

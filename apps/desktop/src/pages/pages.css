@@ -1353,3 +1353,41 @@
   color: #e8e8ec !important;
   background: rgba(255, 255, 255, 0.06);
 }
+/* ----- AetherFy (style Spotify, 0.4.0) ----- */
+.avm-af-card:hover .avm-af-card__play {
+  opacity: 1 !important;
+  transform: translateY(0) !important;
+}
+.avm-af-card:hover .avm-af-card__mode {
+  opacity: 1 !important;
+}
+/* ----- Lecteur audio AetherFy (0.4.0) ----- */
+.avm-audio-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.2);
+  outline: none;
+  cursor: pointer;
+}
+.avm-audio-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+}
+.avm-audio-range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+}
+.avm-af-queue-row:hover .avm-q-next { 
+opacity: 1 !important; 
+}

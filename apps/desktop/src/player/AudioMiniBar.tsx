@@ -1,29 +1,9 @@
 import { ChevronUp, Music, Pause, Play, SkipForward } from "lucide-react";
-import { usePlayer, FULLSCREEN_TARGET_ID } from "../player/PlayerContext";
-import { PlayerSurface } from "../player/PlayerSurface";
-import { PlayerControls } from "../player/PlayerControls";
-import { useControlsAutoHide } from "../player/useControlsAutoHide";
+import { usePlayer } from "./PlayerContext";
 
-/** 0.4.0 — Déduit la miniature depuis les métadonnées OU l'URL de lecture. */
-function artFromMedia(m: {
-  thumbnail?: string;
-  youtubeId?: string;
-  path: string;
-}): string | null {
-  if (m.thumbnail) return m.thumbnail;
-  if (m.youtubeId) return `https://i.ytimg.com/vi/${m.youtubeId}/hqdefault.jpg`;
-  const yt = m.path.match(/[?&]v=([^&]+)/) ?? m.path.match(/youtu\.be\/([^?/&]+)/);
-  if (yt) return `https://i.ytimg.com/vi/${yt[1]}/hqdefault.jpg`;
-  const dm = m.path.match(/dailymotion\.com\/video\/([^?/&]+)/);
-  if (dm) return `https://www.dailymotion.com/thumbnail/video/${dm[1]}`;
-  return null;
-}
-
-/**
- * 0.4.0 — Mini-barre audio : le lecteur musique se réduit en bas de
- * l'écran pour le multitâche ; ⌃ rouvre la vue immersive Spotify.
- */
-function AudioMiniBar() {
+/** 0.4.0 — Mini-barre audio : le lecteur musique se réduit en bas de
+ * l'écran pour le multitâche ; le bouton ⌃ rouvre la vue immersive. */
+export function AudioMiniBar() {
   const {
     currentMedia,
     isPlaying,
@@ -37,7 +17,11 @@ function AudioMiniBar() {
 
   if (!currentMedia) return null;
 
-  const thumb = artFromMedia(currentMedia);
+  const thumb =
+    currentMedia.thumbnail ??
+    (currentMedia.youtubeId
+      ? `https://i.ytimg.com/vi/${currentMedia.youtubeId}/hqdefault.jpg`
+      : null);
   const pct = duration > 0 ? Math.min(100, (position / duration) * 100) : 0;
 
   return (
@@ -58,6 +42,7 @@ function AudioMiniBar() {
         backdropFilter: "blur(8px)",
       }}
     >
+      {/* Progression fine en haut de la barre */}
       <div
         style={{
           position: "absolute",
@@ -159,42 +144,6 @@ function AudioMiniBar() {
       >
         <ChevronUp size={17} />
       </button>
-    </div>
-  );
-}
-
-/**
- * Habillage du lecteur dans la fenêtre principale.
- * 0.4.0 : piste audio → mini-barre discrète (multitâche) quand la vue
- * immersive est fermée ; rien ici quand l'overlay Spotify est ouvert.
- * Vue immersive vidéo ouverte → elle contient son propre affichage.
- */
-export function PlayerDock() {
-  const { currentMedia, isDetached, isPlaying, immersiveOpen } = usePlayer();
-  const active = Boolean(currentMedia) && !isDetached;
-  const { visible: controlsVisible, onActivity, controlsHoverHandlers } =
-    useControlsAutoHide(active, isPlaying);
-
-  if (!currentMedia || isDetached) return null;
-
-  if (currentMedia.mode === "audio") {
-    return immersiveOpen ? null : <AudioMiniBar />;
-  }
-
-  if (immersiveOpen) return null;
-
-  return (
-    <div id={FULLSCREEN_TARGET_ID} className="avm-player" onMouseMove={onActivity}>
-      <PlayerSurface className="avm-player__surface" />
-      <div
-        className={[
-          "avm-player__controls-wrap",
-          !controlsVisible ? "avm-player__controls-wrap--hidden" : "",
-        ].join(" ")}
-        {...controlsHoverHandlers}
-      >
-        <PlayerControls variant="normal" />
-      </div>
     </div>
   );
 }

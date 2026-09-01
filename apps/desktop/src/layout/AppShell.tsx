@@ -1,36 +1,39 @@
 import { useEffect } from "react";
-import { applyNearMax } from "../window/nearMax";
 import { Outlet, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
+import { applyNearMax } from "../window/nearMax";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { PlayerDock } from "./PlayerDock";
 import { useSidebarCollapsed } from "./useSidebarCollapsed";
+import { usePlayer } from "../player/PlayerContext";
+import { AudioPlayerOverlay } from "../player/AudioPlayerOverlay";
+import { VideoWatchLayout } from "../player/VideoWatchLayout";
 import "./layout.css";
 
-/**
- * Mise en page générale de l'application : barre latérale + barre
- * supérieure fixes, contenu de page défilant avec transition douce entre
- * les routes, et zone réservée au lecteur en bas. Chaque route déclarée
- * dans `router.tsx` est rendue dans `<Outlet />`, à l'intérieur de cette
- * même coquille.
- */
 export function AppShell() {
   const location = useLocation();
   const { collapsed, isForced, toggleCollapsed } = useSidebarCollapsed();
-  // 0.3.0 : fenêtre inset d'environ 1 mm des bords (jamais « maximisé »,
-  // jamais en contact avec les bords) — supprime l'artefact DWM.
+  const { immersiveMode, immersiveOpen } = usePlayer();
+
   useEffect(() => {
     void applyNearMax();
   }, []);
-  
+
   return (
     <div
-      className={["avm-shell", collapsed ? "avm-shell--collapsed" : ""]
+      className={[
+        "avm-shell",
+        collapsed ? "avm-shell--collapsed" : "",
+      ]
         .filter(Boolean)
         .join(" ")}
     >
-      <Sidebar collapsed={collapsed} canToggle={!isForced} onToggleCollapsed={toggleCollapsed} />
+      <Sidebar
+        collapsed={collapsed}
+        canToggle={!isForced}
+        onToggleCollapsed={toggleCollapsed}
+      />
       <div className="avm-shell__main">
         <TopBar />
         <div className="avm-shell__content">
@@ -47,6 +50,8 @@ export function AppShell() {
           </AnimatePresence>
         </div>
         <PlayerDock />
+        {immersiveOpen && immersiveMode === "audio" && <AudioPlayerOverlay />}
+        {immersiveOpen && immersiveMode === "video" && <VideoWatchLayout />}
       </div>
     </div>
   );

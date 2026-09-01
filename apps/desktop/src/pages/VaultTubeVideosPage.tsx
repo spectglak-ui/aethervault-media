@@ -1,15 +1,16 @@
-import { VaultTubePlaylistPicker, type PickableVideo } from "../components/VaultTubePlaylistPicker";
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ListVideo, RefreshCw } from "lucide-react";
 import { Button } from "@aethervault/ui-kit";
 import {
   vaultTubeApi,
+  watchUrl,
   type VaultTubeSubscription,
   type VaultTubeVideo,
 } from "../features/vaulttube/api";
 import { usePlayer } from "../player/PlayerContext";
 import { VaultTubeVideoGrid } from "./VaultTubeVideoGrid";
+import { VaultTubePlaylistPicker, type PickableVideo } from "../components/VaultTubePlaylistPicker";
 import "./pages.css";
 
 type SortKey = "recent" | "old" | "alpha";
@@ -24,12 +25,14 @@ const selectStyle: CSSProperties = {
   outline: "none",
 };
 
-/** 0.4.0 — Vidéos d'un abonnement : tri, playlists liées, lecture en un clic. */
+/** 0.4.0 — Vidéos d'un abonnement : tri, playlists liées, lecture en un
+ * clic. Phase 3 : chaque élément de la file porte `mode` → la vue
+ * immersive (audio Spotify / vidéo YouTube) s'ouvre automatiquement. */
 export function VaultTubeVideosPage() {
-  const [pickerVideo, setPickerVideo] = useState<PickableVideo | null>(null);
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { playQueue } = usePlayer();
+  const [pickerVideo, setPickerVideo] = useState<PickableVideo | null>(null);
   const [subscription, setSubscription] = useState<VaultTubeSubscription | null>(null);
   const [videos, setVideos] = useState<VaultTubeVideo[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -70,11 +73,12 @@ export function VaultTubeVideosPage() {
   };
 
   const handlePlay = (clicked: VaultTubeVideo) => {
-    const queue = sorted.map((v) => ({
-      id: v.id,
+    const queue = sorted.map((v, i) => ({
+      id: v.id || i + 1,
       title: v.title,
-      path: `https://www.youtube.com/watch?v=${v.youtube_id}`,
+      path: watchUrl(v.source, v.youtube_id),
       libraryId: -1,
+      mode: v.mode,
     }));
     const index = sorted.findIndex((v) => v.youtube_id === clicked.youtube_id);
     if (index !== -1) playQueue(queue, index);
@@ -154,6 +158,7 @@ export function VaultTubeVideosPage() {
             thumbnail_url: v.thumbnail_url,
             duration_seconds: v.duration_seconds,
             channel: null,
+            source: v.source,
           })
         }
       />
