@@ -42,6 +42,9 @@ interface PlayerContextValue {
   toggleLoop: () => void;
   autoNextEnabled: boolean;
   toggleAutoNext: () => void;
+  shuffleEnabled: boolean;
+  toggleShuffle: () => void;
+  queueNext: (index: number) => void;
   play: (media: PlayableMedia) => void;
   playQueue: (items: PlayableMedia[], startIndex: number) => void;
   playNext: () => void;
@@ -55,6 +58,11 @@ interface PlayerContextValue {
   toggleDetached: () => void;
   stop: () => void;
   captureScreenshot: () => Promise<string | null>;
+  queue: PlaybackQueueState;
+  immersiveMode: "audio" | "video" | null;
+  immersiveOpen: boolean;
+  openImmersive: () => void;
+  closeAudioView: () => void;
 }
 
 const PlayerContext = createContext<PlayerContextValue | null>(null);
@@ -68,8 +76,13 @@ export const FULLSCREEN_TARGET_ID = "avm-player-fullscreen-root";
 
 function loadAndBroadcast(items: PlayableMedia[], index: number): void {
   const media = items[index];
-  void emit("player-queue-changed", { items, currentIndex: index } satisfies PlaybackQueueState);
-  const getProgress = media.isPrivate ? playerApi.getPrivateProgress : playerApi.getProgress;
+  void emit("player-queue-changed", {
+    items,
+    currentIndex: index,
+  } satisfies PlaybackQueueState);
+  const getProgress = media.isPrivate
+    ? playerApi.getPrivateProgress
+    : playerApi.getProgress;
   getProgress(media.id)
     .then((progress) => {
       void playerApi.load(media.path).then(() => {
@@ -88,8 +101,6 @@ function syncFullscreen(shouldBeFullscreen: boolean): void {
   const win = getCurrentWindow();
   if (shouldBeFullscreen) {
     if (document.fullscreenElement) return;
-    // 0.3.0 : fenêtre au premier plan pour que rien (barre des tâches,
-    // liseré) ne se dessine par-dessus le plein écran.
     void win.setAlwaysOnTop(true);
     const target = document.getElementById(FULLSCREEN_TARGET_ID);
     target?.requestFullscreen().catch(() => {});
@@ -97,8 +108,6 @@ function syncFullscreen(shouldBeFullscreen: boolean): void {
   }
   const settle = () => {
     void win.setAlwaysOnTop(false);
-    // 0.3.0 : on ne revient JAMAIS en « maximisé » (artefact DWM) :
-    // fenêtre inset d'environ 1 mm de chaque bord.
     void applyNearMax();
   };
   if (document.fullscreenElement) {
@@ -117,9 +126,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [muted, setMuted] = useState(false);
   const [rate, setRateState] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [displayMode, setDisplayMode] = useState<"contain" | "cover" | "stretch" | "original">("contain");
-  const [isDetached, setIsDetached] = useState(() => getWindowLabel() === "player");
+  const [displayMode, setDisplayMode] = useState<
+    "contain" | "cover" | "stretch" | "original"
+  >("contain");
+  const [isDetached, setIsDetached] = useState(
+    () => getWindowLabel() === "player"
+  );
   const [lastError, setLastError] = useState<string | null>(null);
+  const [immersiveOpen, setImmersiveOpen] = useState(false);
 
   const [loopEnabled, setLoopEnabled] = useState<boolean>(() => {
     try {
@@ -135,12 +149,23 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       return true;
     }
   });
+  const [shuffleEnabled, setShuffleEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("avm-player-shuffle") === "1";
+    } catch {
+      return false;
+    }
+  });
+
   const loopRef = useRef(loopEnabled);
   loopRef.current = loopEnabled;
   const autoNextRef = useRef(autoNextEnabled);
   autoNextRef.current = autoNextEnabled;
+  const shuffleRef = useRef(shuffleEnabled);
+  shuffleRef.current = shuffleEnabled;
 
-  const currentMedia = queue.currentIndex !== null ? queue.items[queue.currentIndex] ?? null : null;
+  const currentMedia =
+    queue.currentIndex !== null ? queue.items[queue.currentIndex] ?? null : null;
 
   const queueRef = useRef(queue);
   queueRef.current = queue;
@@ -169,9 +194,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       })
       .catch(() => {});
   }, []);
-  /** Fin de session (événement réel OU repli position≈durée) :
-  historique Time Capsule + boucle + enchaînement — une seule fois par
-  média (endedHandledRef). */
+
   const handleEnded = () => {
     const media = currentMediaRef.current;
     if (!media || endedHandledRef.current === media.id) return;
@@ -187,14 +210,24 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       void playerApi.load(media.path);
     } else if (autoNextRef.current) {
       const { items, currentIndex } = queueRef.current;
-      if (currentIndex !== null && currentIndex < items.length - 1) {
-        loadAndBroadcast(items, currentIndex + 1);
+      if (currentIndex !== null && items.length > 0) {
+        let nextIndex: number | null = null;
+        if (shuffleRef.current && items.length > 1) {
+          do {
+            nextIndex = Math.floor(Math.random() * items.length);
+          } while (nextIndex === currentIndex);
+        } else if (currentIndex < items.length - 1) {
+          nextIndex = currentIndex + 1;
+        }
+        if (nextIndex !== null) loadAndBroadcast(items, nextIndex);
       }
     }
   };
+
   useEffect(() => {
     const unlistenState = listen<PlayerStateEvent>("player-state", (event) => {
-      const { position_seconds, duration_seconds, playing, ended, error } = event.payload;
+      const { position_seconds, duration_seconds, playing, ended, error } =
+        event.payload;
       if (position_seconds !== undefined && position_seconds !== null) {
         setPosition(position_seconds);
       }
@@ -207,37 +240,43 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       if (error) {
         setLastError(`Lecture impossible : ${error}`);
       }
-            if (ended) {
+      if (ended) {
         handleEnded();
       } else if (
         playing === false &&
         durationRef.current > 0 &&
         positionRef.current >= durationRef.current - 1
       ) {
-        // 0.3.0 : repli si l'événement « fin de fichier » n'arrive pas
-        // (mpv keep-open) : position collée à la durée = fin détectée.
         handleEnded();
       }
     });
 
     let lastMediaId: number | null = null;
-    const unlistenQueue = listen<PlaybackQueueState>("player-queue-changed", (event) => {
-      const state = event.payload;
-      const media = state.currentIndex !== null ? state.items[state.currentIndex] ?? null : null;
-      const mediaChanged = (media?.id ?? null) !== lastMediaId;
-      lastMediaId = media?.id ?? null;
-      setQueue(state);
-      if (mediaChanged) {
-        setIsPlaying(media !== null);
-        setPosition(0);
-        setDuration(0);
-		endedHandledRef.current = null;
-        if (media === null) {
-          syncFullscreen(false);
+    const unlistenQueue = listen<PlaybackQueueState>(
+      "player-queue-changed",
+      (event) => {
+        const state = event.payload;
+        const media =
+          state.currentIndex !== null
+            ? state.items[state.currentIndex] ?? null
+            : null;
+        const mediaChanged = (media?.id ?? null) !== lastMediaId;
+        lastMediaId = media?.id ?? null;
+        setQueue(state);
+        if (mediaChanged) {
+          setIsPlaying(media !== null);
+          setPosition(0);
+          setDuration(0);
+          endedHandledRef.current = null;
+          if (media?.mode) setImmersiveOpen(true);
+          if (media === null) {
+            setImmersiveOpen(false);
+            syncFullscreen(false);
+          }
         }
+        setLastError(null);
       }
-      setLastError(null);
-    });
+    );
 
     const unlistenSettings = listen<PlayerSettingsChangedPayload>(
       "player-settings-changed",
@@ -275,25 +314,36 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setIsFullscreen(document.fullscreenElement === target);
     };
     document.addEventListener("fullscreenchange", handleFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    return () =>
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
   const saveProgressNow = () => {
     const media = currentMediaRef.current;
     if (media && durationRef.current > 0) {
-      const saveProgress = media.isPrivate ? playerApi.savePrivateProgress : playerApi.saveProgress;
-      saveProgress(media.id, positionRef.current, durationRef.current).catch(() => {});
+      const saveProgress = media.isPrivate
+        ? playerApi.savePrivateProgress
+        : playerApi.saveProgress;
+      saveProgress(media.id, positionRef.current, durationRef.current).catch(
+        () => {}
+      );
     }
   };
 
   useEffect(() => {
     if (!currentMedia || !isPlaying) return;
-    const interval = window.setInterval(saveProgressNow, PROGRESS_SAVE_INTERVAL_MS);
+    const interval = window.setInterval(
+      saveProgressNow,
+      PROGRESS_SAVE_INTERVAL_MS
+    );
     return () => window.clearInterval(interval);
   }, [currentMedia, isPlaying]);
 
-  const hasNext = queue.currentIndex !== null && queue.currentIndex < queue.items.length - 1;
+  const hasNext =
+    queue.currentIndex !== null && queue.currentIndex < queue.items.length - 1;
   const hasPrevious = queue.currentIndex !== null && queue.currentIndex > 0;
+
+  const immersiveMode: "audio" | "video" | null = currentMedia?.mode ?? null;
 
   const value = useMemo<PlayerContextValue>(
     () => ({
@@ -314,21 +364,37 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       dismissError: () => setLastError(null),
       loopEnabled,
       autoNextEnabled,
+      shuffleEnabled,
       play: (media) => loadAndBroadcast([media], 0),
       playQueue: (items, startIndex) => {
         if (items.length === 0) return;
-        const clampedIndex = Math.min(Math.max(startIndex, 0), items.length - 1);
+        const clampedIndex = Math.min(
+          Math.max(startIndex, 0),
+          items.length - 1
+        );
         loadAndBroadcast(items, clampedIndex);
       },
       playNext: () => {
         const { items, currentIndex } = queueRef.current;
-        if (currentIndex === null || currentIndex >= items.length - 1) return;
+        if (currentIndex === null || items.length === 0) return;
+        if (shuffleRef.current && items.length > 1) {
+          let n = currentIndex;
+          while (n === currentIndex) {
+            n = Math.floor(Math.random() * items.length);
+          }
+          loadAndBroadcast(items, n);
+          return;
+        }
+        if (currentIndex >= items.length - 1) return;
         loadAndBroadcast(items, currentIndex + 1);
       },
       playPrevious: () => {
         const { items, currentIndex } = queueRef.current;
         if (currentIndex === null) return;
-        if (positionRef.current > PREVIOUS_RESTART_THRESHOLD_SECONDS || currentIndex === 0) {
+        if (
+          positionRef.current > PREVIOUS_RESTART_THRESHOLD_SECONDS ||
+          currentIndex === 0
+        ) {
           setPosition(0);
           void playerApi.seek(0);
           return;
@@ -382,7 +448,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         try {
           localStorage.setItem("avm-player-loop", next ? "1" : "0");
         } catch {}
-        void emit("player-extras-changed", { loop: next, autoNext: autoNextEnabled });
+        void emit("player-extras-changed", {
+          loop: next,
+          autoNext: autoNextEnabled,
+        });
       },
       toggleAutoNext: () => {
         const next = !autoNextEnabled;
@@ -390,7 +459,30 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         try {
           localStorage.setItem("avm-player-autonext", next ? "1" : "0");
         } catch {}
-        void emit("player-extras-changed", { loop: loopEnabled, autoNext: next });
+        void emit("player-extras-changed", {
+          loop: loopEnabled,
+          autoNext: next,
+        });
+      },
+      toggleShuffle: () => {
+        const next = !shuffleEnabled;
+        setShuffleEnabled(next);
+        try {
+          localStorage.setItem("avm-player-shuffle", next ? "1" : "0");
+        } catch {}
+      },
+      queueNext: (index: number) => {
+        const { items, currentIndex } = queueRef.current;
+        if (currentIndex === null) return;
+        if (index === currentIndex || index < 0 || index >= items.length) return;
+        const newItems = [...items];
+        const [moved] = newItems.splice(index, 1);
+        const currentPos = index < currentIndex ? currentIndex - 1 : currentIndex;
+        newItems.splice(currentPos + 1, 0, moved);
+        void emit("player-queue-changed", {
+          items: newItems,
+          currentIndex: currentPos,
+        } satisfies PlaybackQueueState);
       },
       toggleFullscreen: () => syncFullscreen(!isFullscreen),
       toggleDetached: () => {
@@ -403,8 +495,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
               setIsDetached(false);
             })
             .catch((err) => {
-              console.error("[PiP] Échec de la fermeture de la fenêtre PiP.", err);
-              setLastError("Impossible de fermer la fenêtre Picture-in-Picture.");
+              console.error("[PiP] Échec de la fermeture PiP.", err);
+              setLastError("Impossible de fermer la fenêtre PiP.");
             });
           return;
         }
@@ -416,13 +508,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             setIsDetached(true);
           })
           .catch((err) => {
-            console.error("[PiP] Échec de l'ouverture de la fenêtre PiP.", err);
-            setLastError("Impossible d'ouvrir le mode Picture-in-Picture. Réessayez.");
+            console.error("[PiP] Échec de l'ouverture PiP.", err);
+            setLastError("Impossible d'ouvrir le mode PiP.");
           });
       },
-            stop: () => {
-        // 0.3.0 : fermer le lecteur compte comme une session (Time
-        // Capsule) si on n'a pas déjà enregistré la fin.
+      stop: () => {
         const media = currentMediaRef.current;
         if (
           media &&
@@ -438,11 +528,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         void playerApi.stop();
         windowApi
           .closePlayerWindow()
-          .catch((err) => console.error("[PiP] Échec de la fermeture (stop()).", err));
+          .catch((err) =>
+            console.error("[PiP] Échec de la fermeture (stop()).", err)
+          );
         setIsDetached(false);
-        void emit("player-queue-changed", EMPTY_QUEUE satisfies PlaybackQueueState);
+        setImmersiveOpen(false);
+        void emit(
+          "player-queue-changed",
+          EMPTY_QUEUE satisfies PlaybackQueueState
+        );
       },
       captureScreenshot: () => playerApi.captureScreenshot().catch(() => null),
+      queue,
+      immersiveMode,
+      immersiveOpen,
+      openImmersive: () => setImmersiveOpen(true),
+      closeAudioView: () => setImmersiveOpen(false),
     }),
     [
       currentMedia,
@@ -460,16 +561,24 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       lastError,
       loopEnabled,
       autoNextEnabled,
+      shuffleEnabled,
+      queue,
+      immersiveMode,
+      immersiveOpen,
     ]
   );
 
-  return <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>;
+  return (
+    <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>
+  );
 }
 
 export function usePlayer(): PlayerContextValue {
   const ctx = useContext(PlayerContext);
   if (!ctx) {
-    throw new Error("usePlayer doit être utilisé à l'intérieur de <PlayerProvider>");
+    throw new Error(
+      "usePlayer doit être utilisé à l'intérieur de <PlayerProvider>"
+    );
   }
   return ctx;
 }

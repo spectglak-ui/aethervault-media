@@ -97,12 +97,13 @@ export function VaultTubePlaylistPreviewPage() {
           videos={videos}
           onPlay={handlePlay}
           onAddToPlaylist={(v) =>
-            setPickerVideo({
+                        setPickerVideo({
               youtube_id: v.youtube_id,
               title: v.title,
               thumbnail_url: v.thumbnail_url,
               duration_seconds: v.duration_seconds,
               channel: null,
+              source: v.source,
             })
           }
         />

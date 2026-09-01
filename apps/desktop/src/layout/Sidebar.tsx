@@ -92,7 +92,7 @@ export function Sidebar({ collapsed, canToggle, onToggleCollapsed }: SidebarProp
         <li>
           <NavItem
             icon={<Youtube size={18} />}
-            label="VaultTube"
+            label="AetherFy"
             collapsed={collapsed}
             active={isActive("/vaulttube")}
             onClick={() => navigate("/vaulttube")}

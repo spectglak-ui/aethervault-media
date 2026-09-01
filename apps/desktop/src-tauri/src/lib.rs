@@ -197,6 +197,8 @@ if let Some(window) = app.get_webview_window("main") {
             commands::vaulttube::vaulttube_add_to_user_playlist,
             commands::vaulttube::vaulttube_remove_from_user_playlist,
             commands::vaulttube::vaulttube_reorder_user_playlist,
+			commands::vaulttube::vaulttube_set_user_playlist_mode,
+            commands::vaulttube::vaulttube_set_subscription_mode,
 			// Authentification des profils (Étape 6c)
             commands::auth::get_login_state,
             commands::auth::login_profile,

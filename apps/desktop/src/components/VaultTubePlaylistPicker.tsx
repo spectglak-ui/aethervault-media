@@ -7,6 +7,7 @@ export interface PickableVideo {
   thumbnail_url: string | null;
   duration_seconds: number | null;
   channel: string | null;
+  source: string | null;   // ← ajoute cette ligne
 }
 
 /** Mini-modale « Ajouter à une playlist » (locale), avec création directe. */
@@ -29,13 +30,14 @@ export function VaultTubePlaylistPicker({
   const add = async (playlistId: number) => {
     setBusy(true);
     try {
-      await vaultTubeApi.addToUserPlaylist({
+            await vaultTubeApi.addToUserPlaylist({
         playlistId,
         youtubeId: video.youtube_id,
         title: video.title,
         thumbnailUrl: video.thumbnail_url,
         durationSeconds: video.duration_seconds,
         channel: video.channel,
+        source: video.source ?? "youtube",   // ← ICI
       });
       setFeedback("Ajouté ✔");
       setTimeout(onClose, 350);

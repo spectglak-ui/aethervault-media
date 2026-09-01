@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowDown, ArrowLeft, ArrowUp, Play, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, Music, Play, Trash2, Video } from "lucide-react";
 import { Button } from "@aethervault/ui-kit";
-import { vaultTubeApi, type UserPlaylist, type UserPlaylistItem } from "../features/vaulttube/api";
+import {
+  vaultTubeApi,
+  watchUrl,
+  type UserPlaylist,
+  type UserPlaylistItem,
+} from "../features/vaulttube/api";
 import { usePlayer } from "../player/PlayerContext";
 import { formatDuration } from "./VaultTubeVideoGrid";
 import "./pages.css";
@@ -18,7 +23,7 @@ const rowBtn: CSSProperties = {
 };
 
 /** 0.4.0 — Playlist locale : lecture dans l'ordre choisi, réordonnement
- * ▲▼, retrait de vidéos, suppression de la playlist. */
+ * ▲▼, retrait de vidéos, bascule de mode, suppression de la playlist. */
 export function VaultTubeUserPlaylistPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -43,11 +48,12 @@ export function VaultTubeUserPlaylistPage() {
   }, [refresh]);
 
   const handlePlayFrom = (index: number) => {
-    const queue = items.map((it) => ({
-      id: it.id,
+    const queue = items.map((it, i) => ({
+      id: it.id || i + 1,
       title: it.title,
-      path: `https://www.youtube.com/watch?v=${it.youtube_id}`,
+      path: watchUrl(it.source, it.youtube_id),
       libraryId: -1,
+      mode: it.mode,
     }));
     playQueue(queue, index);
   };
@@ -58,12 +64,22 @@ export function VaultTubeUserPlaylistPage() {
     const reordered = [...items];
     const [moved] = reordered.splice(index, 1);
     reordered.splice(target, 0, moved);
-    await vaultTubeApi.reorderUserPlaylist(Number(id), reordered.map((it) => it.id));
+    await vaultTubeApi.reorderUserPlaylist(
+      Number(id),
+      reordered.map((it) => it.id)
+    );
     setItems(reordered);
   };
 
   const handleRemove = async (it: UserPlaylistItem) => {
     await vaultTubeApi.removeFromUserPlaylist(Number(id), it.youtube_id);
+    refresh();
+  };
+
+  const handleToggleMode = async () => {
+    if (!playlist) return;
+    const next = playlist.mode === "audio" ? "video" : "audio";
+    await vaultTubeApi.setUserPlaylistMode(playlist.id, next);
     refresh();
   };
 
@@ -73,12 +89,14 @@ export function VaultTubeUserPlaylistPage() {
     navigate("/vaulttube");
   };
 
+  const isAudio = playlist?.mode === "audio";
+
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
         <Button variant="secondary" onClick={() => navigate("/vaulttube")}>
           <ArrowLeft size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
-          VaultTube
+          AetherFy
         </Button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 20, fontWeight: 700 }}>{playlist?.name ?? "…"}</div>
@@ -86,6 +104,25 @@ export function VaultTubeUserPlaylistPage() {
             {items.length} vidéo(s) — playlist locale
           </div>
         </div>
+        <button
+          onClick={() => void handleToggleMode()}
+          title={isAudio ? "Basculer en mode vidéo" : "Basculer en mode musique"}
+          style={{
+            padding: "7px 12px",
+            borderRadius: 999,
+            border: "1px solid #2a2a32",
+            background: isAudio ? "rgba(29,185,84,.15)" : "transparent",
+            color: isAudio ? "#1db954" : "var(--color-text-muted, #9a9aa3)",
+            fontSize: 12,
+            cursor: "pointer",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          {isAudio ? <Music size={13} /> : <Video size={13} />}
+          {isAudio ? "Musique" : "Vidéo"}
+        </button>
         <Button onClick={() => handlePlayFrom(0)} disabled={items.length === 0}>
           <Play size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
           Tout lire
@@ -116,16 +153,38 @@ export function VaultTubeUserPlaylistPage() {
               borderRadius: 10,
             }}
           >
-            <span style={{ width: 22, textAlign: "center", color: "var(--color-text-muted, #9a9aa3)", fontSize: 12 }}>
+            <span
+              style={{
+                width: 22,
+                textAlign: "center",
+                color: "var(--color-text-muted, #9a9aa3)",
+                fontSize: 12,
+              }}
+            >
               {index + 1}
             </span>
             <img
               src={it.thumbnail_url ?? `https://i.ytimg.com/vi/${it.youtube_id}/hqdefault.jpg`}
               alt=""
-              style={{ width: 72, height: 44, objectFit: "cover", borderRadius: 6, background: "#000", flexShrink: 0 }}
+              style={{
+                width: 72,
+                height: 44,
+                objectFit: "cover",
+                borderRadius: 6,
+                background: "#000",
+                flexShrink: 0,
+              }}
             />
             <div style={{ flex: 1, minWidth: 0, cursor: "pointer" }} onClick={() => handlePlayFrom(index)}>
-              <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
                 {it.title}
               </div>
               <div style={{ fontSize: 11, color: "var(--color-text-muted, #9a9aa3)", marginTop: 2 }}>
@@ -137,10 +196,20 @@ export function VaultTubeUserPlaylistPage() {
             <button title="Lire à partir d'ici" style={rowBtn} onClick={() => handlePlayFrom(index)}>
               <Play size={15} />
             </button>
-            <button title="Monter" style={rowBtn} disabled={index === 0} onClick={() => void handleMove(index, -1)}>
+            <button
+              title="Monter"
+              style={rowBtn}
+              disabled={index === 0}
+              onClick={() => void handleMove(index, -1)}
+            >
               <ArrowUp size={15} />
             </button>
-            <button title="Descendre" style={rowBtn} disabled={index === items.length - 1} onClick={() => void handleMove(index, 1)}>
+            <button
+              title="Descendre"
+              style={rowBtn}
+              disabled={index === items.length - 1}
+              onClick={() => void handleMove(index, 1)}
+            >
               <ArrowDown size={15} />
             </button>
             <button title="Retirer de la playlist" style={rowBtn} onClick={() => void handleRemove(it)}>

@@ -1,21 +1,23 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Plus,
-  RefreshCw,
-  Trash2,
-  Youtube,
-  Search,
-  Play,
   ListVideo,
+  Music,
+  Play,
+  Plus,
+  Radio,
+  Search,
   UserCircle2,
+  Video,
 } from "lucide-react";
-import { Button, PageHeader } from "@aethervault/ui-kit";
+import { Button } from "@aethervault/ui-kit";
 import {
   vaultTubeApi,
+  watchUrl,
+  type PlaybackMode,
   type SearchResult,
-  type VaultTubeSubscription,
   type UserPlaylist,
+  type VaultTubeSubscription,
 } from "../features/vaulttube/api";
 import { usePlayer } from "../player/PlayerContext";
 import { formatDuration } from "./VaultTubeVideoGrid";
@@ -33,159 +35,262 @@ const inputStyle: CSSProperties = {
   outline: "none",
 };
 
-const iconBtn: CSSProperties = {
-  background: "transparent",
-  border: "none",
-  cursor: "pointer",
-  color: "var(--color-text-muted, #9a9aa3)",
-  padding: 6,
-  borderRadius: 6,
-  display: "inline-flex",
+const SOURCE_COLORS: Record<string, string> = {
+  youtube: "#ff4d6d",
+  dailymotion: "#00aaff",
+  vimeo: "#1ab7ea",
+  peertube: "#f1680d",
+  generic: "#9a9aa3",
 };
 
-const badgeStyle: CSSProperties = {
-  display: "inline-block",
-  padding: "2px 7px",
-  borderRadius: 4,
-  fontSize: 10,
-  fontWeight: 600,
-  textTransform: "uppercase",
-  letterSpacing: 0.3,
-};
-
-const sectionTitleStyle: CSSProperties = {
-  fontSize: 12,
-  color: "var(--color-text-muted, #9a9aa3)",
-  textTransform: "uppercase",
-  letterSpacing: 0.5,
-  margin: "6px 0 10px",
-};
-
-function kindBadge(kind: string) {
-  if (kind === "playlist")
-    return (
-      <span style={{ ...badgeStyle, background: "#3a2a6d", color: "#c4b5ff" }}>Playlist</span>
-    );
-  if (kind === "channel")
-    return <span style={{ ...badgeStyle, background: "#6d3a2a", color: "#ffc4b5" }}>Chaîne</span>;
-  return <span style={{ ...badgeStyle, background: "#2a4d6d", color: "#b5d9ff" }}>Vidéo</span>;
+function SourceBadge({ source }: { source?: string }) {
+  const s = source ?? "youtube";
+  const c = SOURCE_COLORS[s] ?? "#9a9aa3";
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        padding: "1px 6px",
+        borderRadius: 4,
+        fontSize: 9,
+        fontWeight: 700,
+        textTransform: "uppercase",
+        letterSpacing: 0.4,
+        background: `${c}22`,
+        color: c,
+        border: `1px solid ${c}55`,
+      }}
+    >
+      {s}
+    </span>
+  );
 }
 
-/** Carte d'abonnement (chaîne ou playlist suivie) */
-function SubscriptionCard({
-  sub,
-  busy,
+/** Badge indiquant le mode de lecture d'une carte (musique / vidéo). */
+function ModeBadge({ mode }: { mode?: string }) {
+  const audio = mode === "audio";
+  return (
+    <span
+      title={audio ? "Mode musique (interface Spotify)" : "Mode vidéo (interface YouTube)"}
+      style={{
+        position: "absolute",
+        top: 6,
+        right: 6,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "2px 7px",
+        borderRadius: 4,
+        fontSize: 9,
+        fontWeight: 700,
+        textTransform: "uppercase",
+        letterSpacing: 0.4,
+        background: audio ? "rgba(29,185,84,.20)" : "rgba(124,92,255,.20)",
+        color: audio ? "#1db954" : "#c4b5ff",
+        border: `1px solid ${audio ? "rgba(29,185,84,.45)" : "rgba(124,92,255,.45)"}`,
+      }}
+    >
+      {audio ? <Music size={10} /> : <Video size={10} />}
+      {audio ? "Musique" : "Vidéo"}
+    </span>
+  );
+}
+
+/** Carte carrée façon Spotify : vignette 1:1, badges source/mode,
+ * bouton play rond et bascule de mode au survol. */
+function AetherCard({
+  title,
+  subtitle,
+  image,
+  source,
+  mode,
   onOpen,
-  onRefresh,
-  onRemove,
+  onPlayAll,
+  onToggleMode,
 }: {
-  sub: VaultTubeSubscription;
-  busy: boolean;
+  title: string;
+  subtitle: string;
+  image: string | null;
+  source?: string;
+  mode?: string;
   onOpen: () => void;
-  onRefresh: () => void;
-  onRemove: () => void;
+  onPlayAll?: () => void;
+  onToggleMode?: () => void;
 }) {
   return (
     <div
+      className="avm-af-card"
       onClick={onOpen}
       style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 14,
-        padding: "12px 14px",
-        background: "var(--color-surface, #1e1e24)",
-        border: "1px solid rgba(255,255,255,.06)",
-        borderRadius: 12,
+        background: "#181818",
+        borderRadius: 8,
+        padding: 12,
         cursor: "pointer",
-        transition: "border-color .15s ease",
+        transition: "background .2s ease",
       }}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--color-accent, #7c5cff)")}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = "rgba(255,255,255,.06)")}
+      onMouseEnter={(e) => (e.currentTarget.style.background = "#242424")}
+      onMouseLeave={(e) => (e.currentTarget.style.background = "#181818")}
     >
-      {sub.thumbnail_url ? (
-        <img
-          src={sub.thumbnail_url}
-          alt=""
-          style={{
-            width: 52,
-            height: 52,
-            borderRadius: "50%",
-            objectFit: "cover",
-            flexShrink: 0,
-          }}
-        />
-      ) : (
-        <div
-          style={{
-            width: 52,
-            height: 52,
-            borderRadius: "50%",
-            background: "linear-gradient(135deg, var(--color-accent, #7c5cff), #4c3a99)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontWeight: 700,
-            fontSize: 20,
-            color: "#fff",
-            flexShrink: 0,
-          }}
-        >
-          {sub.name.charAt(0).toUpperCase()}
-        </div>
-      )}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div
-          style={{
-            fontWeight: 600,
-            fontSize: 14,
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
-          {sub.name}
-        </div>
-        <div style={{ fontSize: 12, color: "var(--color-text-muted, #9a9aa3)", marginTop: 2 }}>
-          {sub.kind === "playlist" ? "Playlist" : "Chaîne"}
-          {sub.last_synced_at !== null &&
-            ` · synchronisé le ${new Date(sub.last_synced_at * 1000).toLocaleDateString()}`}
-        </div>
+      <div
+        style={{
+          position: "relative",
+          aspectRatio: "1/1",
+          borderRadius: 6,
+          overflow: "hidden",
+          background: "#000",
+          marginBottom: 10,
+        }}
+      >
+        {image ? (
+          <img
+            src={image}
+            alt=""
+            loading="lazy"
+            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+          />
+        ) : (
+          <div
+            style={{
+              width: "100%",
+              height: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "linear-gradient(135deg, #241b4d, #12101c)",
+            }}
+          >
+            <ListVideo size={44} style={{ opacity: 0.5 }} />
+          </div>
+        )}
+        {source && (
+          <span style={{ position: "absolute", top: 6, left: 6 }}>
+            <SourceBadge source={source} />
+          </span>
+        )}
+        {mode && <ModeBadge mode={mode} />}
+        {onToggleMode && (
+          <button
+            className="avm-af-card__mode"
+            title={mode === "audio" ? "Basculer en mode vidéo" : "Basculer en mode musique"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleMode();
+            }}
+            style={{
+              position: "absolute",
+              left: 8,
+              bottom: 8,
+              width: 34,
+              height: 34,
+              borderRadius: "50%",
+              background: "rgba(0,0,0,.78)",
+              border: "1px solid rgba(255,255,255,.22)",
+              color: "#fff",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              opacity: 0,
+              transition: "opacity .15s ease",
+              zIndex: 2,
+            }}
+          >
+            {mode === "audio" ? <Video size={15} /> : <Music size={15} />}
+          </button>
+        )}
+        {onPlayAll && (
+          <button
+            className="avm-af-card__play"
+            title="Tout lire"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPlayAll();
+            }}
+            style={{
+              position: "absolute",
+              right: 8,
+              bottom: 8,
+              width: 42,
+              height: 42,
+              borderRadius: "50%",
+              background: "var(--color-accent, #7c5cff)",
+              border: "none",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              opacity: 0,
+              transform: "translateY(6px)",
+              transition: "opacity .15s ease, transform .15s ease",
+              boxShadow: "0 4px 12px rgba(0,0,0,.5)",
+            }}
+          >
+            <Play size={18} fill="#fff" color="#fff" />
+          </button>
+        )}
       </div>
-      <div style={{ display: "flex", gap: 4 }} onClick={(e) => e.stopPropagation()}>
-        <button title="Actualiser" style={iconBtn} disabled={busy} onClick={onRefresh}>
-          <RefreshCw size={16} />
-        </button>
-        <button title="Supprimer" style={iconBtn} onClick={onRemove}>
-          <Trash2 size={16} />
-        </button>
+      <div
+        style={{
+          fontWeight: 700,
+          fontSize: 14,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {title}
+      </div>
+      <div
+        style={{
+          fontSize: 12,
+          color: "var(--color-text-muted, #9a9aa3)",
+          marginTop: 3,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {subtitle}
       </div>
     </div>
   );
 }
 
+const gridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+  gap: 16,
+};
+
+const sectionTitle: CSSProperties = {
+  fontSize: 20,
+  fontWeight: 800,
+  margin: "26px 0 14px",
+};
+
+/** 0.4.0 — AetherFy : hub multi-sources façon Spotify (YouTube,
+ * Dailymotion, Vimeo, PeerTube) — abonnements, playlists locales avec
+ * mode musique/vidéo, recherche unifiée, lecture en un clic. */
 export function VaultTubePage() {
   const navigate = useNavigate();
   const { playQueue } = usePlayer();
 
-  // Abonnements
   const [subscriptions, setSubscriptions] = useState<VaultTubeSubscription[]>([]);
+  const [userPlaylists, setUserPlaylists] = useState<UserPlaylist[]>([]);
   const [newUrl, setNewUrl] = useState("");
+  const [newPlaylist, setNewPlaylist] = useState("");
+  const [newPlaylistMode, setNewPlaylistMode] = useState<PlaybackMode>("video");
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
 
-  // Playlists locales
-  const [userPlaylists, setUserPlaylists] = useState<UserPlaylist[]>([]);
-  const [newPlaylist, setNewPlaylist] = useState("");
-
-  // Recherche
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchSource, setSearchSource] = useState<"all" | "youtube" | "dailymotion">("all");
   const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [busyUrl, setBusyUrl] = useState<string | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Picker de playlist (ajout de vidéo à une playlist locale)
   const [pickerVideo, setPickerVideo] = useState<PickableVideo | null>(null);
 
   const refresh = useCallback(() => {
@@ -196,6 +301,27 @@ export function VaultTubePage() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Recherche debounced multi-sources
+  useEffect(() => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    const q = searchQuery.trim();
+    if (!q) {
+      setSearchResults(null);
+      return;
+    }
+    searchTimer.current = setTimeout(() => {
+      setSearching(true);
+      vaultTubeApi
+        .search(q, searchSource)
+        .then(setSearchResults)
+        .catch(() => setSearchResults([]))
+        .finally(() => setSearching(false));
+    }, 500);
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+    };
+  }, [searchQuery, searchSource]);
 
   const handleAdd = async () => {
     const url = newUrl.trim();
@@ -211,6 +337,14 @@ export function VaultTubePage() {
     } finally {
       setAdding(false);
     }
+  };
+
+  const handleCreatePlaylist = async () => {
+    const name = newPlaylist.trim();
+    if (!name) return;
+    await vaultTubeApi.createUserPlaylist(name, newPlaylistMode);
+    setNewPlaylist("");
+    refresh();
   };
 
   const handleRefresh = async (id: number) => {
@@ -231,38 +365,51 @@ export function VaultTubePage() {
     refresh();
   };
 
-  const handleCreatePlaylist = async () => {
-    const name = newPlaylist.trim();
-    if (!name) return;
-    await vaultTubeApi.createUserPlaylist(name);
-    setNewPlaylist("");
+  const handleToggleSubMode = async (sub: VaultTubeSubscription) => {
+    const next: PlaybackMode = sub.mode === "audio" ? "video" : "audio";
+    await vaultTubeApi.setSubscriptionMode(sub.id, next);
     refresh();
   };
 
-  // Recherche debounced (500 ms)
-  useEffect(() => {
-    if (searchTimer.current) clearTimeout(searchTimer.current);
-    const q = searchQuery.trim();
-    if (!q) {
-      setSearchResults(null);
-      return;
-    }
-    searchTimer.current = setTimeout(() => {
-      setSearching(true);
-      vaultTubeApi
-        .search(q)
-        .then(setSearchResults)
-        .catch(() => setSearchResults([]))
-        .finally(() => setSearching(false));
-    }, 500);
-    return () => {
-      if (searchTimer.current) clearTimeout(searchTimer.current);
-    };
-  }, [searchQuery]);
+  const handleTogglePlaylistMode = async (p: UserPlaylist) => {
+    const next: PlaybackMode = p.mode === "audio" ? "video" : "audio";
+    await vaultTubeApi.setUserPlaylistMode(p.id, next);
+    refresh();
+  };
 
-  // Actions sur les résultats de recherche
-  const handleSearchPlayVideo = (r: SearchResult) => {
-    playQueue([{ id: 0, title: r.title, path: r.url, libraryId: -1 }], 0);
+  // Lecture « Tout lire » façon Spotify
+    const handlePlayAllSub = async (sub: VaultTubeSubscription) => {
+    const vids = await vaultTubeApi.listVideos(sub.id);
+    if (vids.length === 0) return;
+    playQueue(
+      vids.map((v, i) => ({
+        id: v.id || i + 1,
+        title: v.title,
+        path: watchUrl(v.source, v.youtube_id),
+        libraryId: -1,
+        mode: sub.mode,
+      })),
+      0
+    );
+  };
+
+  const handlePlayAllPlaylist = async (p: UserPlaylist) => {
+    const items = await vaultTubeApi.listUserPlaylistItems(p.id);
+    if (items.length === 0) return;
+    playQueue(
+      items.map((it, i) => ({
+        id: it.id || i + 1,
+        title: it.title,
+        path: watchUrl(it.source, it.youtube_id),
+        libraryId: -1,
+        mode: p.mode,
+      })),
+      0
+    );
+  };
+
+    const handleSearchPlayVideo = (r: SearchResult) => {
+    playQueue([{ id: 0, title: r.title, path: r.url, libraryId: -1, mode: "video" }], 0);
   };
 
   const handleSearchFollow = async (r: SearchResult) => {
@@ -280,43 +427,92 @@ export function VaultTubePage() {
 
   const handleSearchPreviewPlaylist = (r: SearchResult) => {
     const m = r.url.match(/[?&]list=([^&]+)/);
-    if (m) {
-      navigate(`/vaulttube/playlist/${m[1]}`);
-    }
+    if (m) navigate(`/vaulttube/playlist/${m[1]}`);
   };
 
   return (
     <div>
-      <PageHeader title="VaultTube" />
-      <p style={{ color: "var(--color-text-muted, #9a9aa3)", margin: "-8px 0 18px", fontSize: 13 }}>
-        Chaînes, playlists et vidéos YouTube — lecture sans publicité via le lecteur intégré.
-      </p>
-
-      {/* Barre de recherche YouTube */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
-        <div style={{ position: "relative", flex: 1 }}>
-          <Search
-            size={15}
+      {/* Header dégradé façon Spotify */}
+      <div
+        style={{
+          margin: "-20px -20px 0",
+          padding: "30px 26px 26px",
+          background: "linear-gradient(180deg, rgba(124,92,255,.30), rgba(124,92,255,0) 95%)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div
             style={{
-              position: "absolute",
-              left: 12,
-              top: "50%",
-              transform: "translateY(-50%)",
-              color: "var(--color-text-muted, #9a9aa3)",
-              pointerEvents: "none",
+              width: 58,
+              height: 58,
+              borderRadius: 12,
+              background: "linear-gradient(135deg, #7c5cff, #4c3a99)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxShadow: "0 6px 18px rgba(0,0,0,.45)",
             }}
-          />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Rechercher sur YouTube (vidéos, chaînes, playlists)…"
-            style={{ ...inputStyle, paddingLeft: 34 }}
-          />
+          >
+            <Radio size={26} color="#fff" />
+          </div>
+          <div>
+            <div
+              style={{
+                fontSize: 11,
+                textTransform: "uppercase",
+                letterSpacing: 1.2,
+                color: "var(--color-text-muted, #9a9aa3)",
+              }}
+            >
+              Streaming multi-sources
+            </div>
+            <div style={{ fontSize: 30, fontWeight: 800, margin: 0 }}>AetherFy</div>
+          </div>
         </div>
-        {searching && (
-          <span style={{ fontSize: 12, color: "var(--color-text-muted, #9a9aa3)" }}>Recherche…</span>
-        )}
+
+        {/* Recherche + sélecteur de source */}
+        <div style={{ display: "flex", gap: 8, marginTop: 20, alignItems: "center" }}>
+          <div style={{ position: "relative", flex: 1 }}>
+            <Search
+              size={15}
+              style={{
+                position: "absolute",
+                left: 12,
+                top: "50%",
+                transform: "translateY(-50%)",
+                color: "var(--color-text-muted, #9a9aa3)",
+                pointerEvents: "none",
+              }}
+            />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Rechercher des vidéos, chaînes, playlists…"
+              style={{ ...inputStyle, paddingLeft: 34 }}
+            />
+          </div>
+          {(["all", "youtube", "dailymotion"] as const).map((s) => (
+            <button
+              key={s}
+              onClick={() => setSearchSource(s)}
+              style={{
+                padding: "7px 13px",
+                borderRadius: 999,
+                border: `1px solid ${searchSource === s ? "var(--color-accent, #7c5cff)" : "#2a2a32"}`,
+                background: searchSource === s ? "rgba(124,92,255,.18)" : "transparent",
+                color: searchSource === s ? "#c4b5ff" : "var(--color-text-muted, #9a9aa3)",
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              {s === "all" ? "Toutes" : s === "youtube" ? "YouTube" : "Dailymotion"}
+            </button>
+          ))}
+          {searching && (
+            <span style={{ fontSize: 12, color: "var(--color-text-muted, #9a9aa3)" }}>…</span>
+          )}
+        </div>
       </div>
 
       {/* Résultats de recherche */}
@@ -327,7 +523,7 @@ export function VaultTubePage() {
             border: "1px solid rgba(255,255,255,.06)",
             borderRadius: 10,
             padding: 12,
-            marginBottom: 20,
+            marginTop: 16,
           }}
         >
           <div
@@ -349,7 +545,7 @@ export function VaultTubePage() {
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {searchResults.map((r) => (
                 <div
-                  key={`${r.kind}-${r.id}`}
+                  key={`${r.source}-${r.kind}-${r.id}`}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -361,7 +557,6 @@ export function VaultTubePage() {
                   onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.04)")}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                 >
-                  {/* Thumbnail */}
                   <div
                     style={{
                       width: 64,
@@ -389,11 +584,9 @@ export function VaultTubePage() {
                       <Play size={18} style={{ color: "#555" }} />
                     )}
                   </div>
-
-                  {/* Titre + meta */}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
-                      {kindBadge(r.kind)}
+                      <SourceBadge source={r.source} />
                       <span
                         style={{
                           fontSize: 13,
@@ -415,11 +608,9 @@ export function VaultTubePage() {
                         </>
                       )}
                       {r.kind === "playlist" && r.video_count !== null && `${r.video_count} vidéo(s)`}
-                      {r.kind === "channel" && "Chaîne YouTube"}
+                      {r.kind === "channel" && "Chaîne"}
                     </div>
                   </div>
-
-                  {/* Actions contextuelles */}
                   <div style={{ display: "flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
                     {r.kind === "video" && (
                       <>
@@ -440,6 +631,7 @@ export function VaultTubePage() {
                               thumbnail_url: r.thumbnail_url,
                               duration_seconds: r.duration_seconds,
                               channel: r.channel,
+                              source: r.source,
                             })
                           }
                           style={{ padding: "5px 10px", fontSize: 12 }}
@@ -459,7 +651,7 @@ export function VaultTubePage() {
                           Voir
                         </Button>
                         <Button
-                          onClick={() => handleSearchFollow(r)}
+                          onClick={() => void handleSearchFollow(r)}
                           disabled={busyUrl === r.url}
                           style={{ padding: "5px 10px", fontSize: 12 }}
                         >
@@ -470,7 +662,7 @@ export function VaultTubePage() {
                     )}
                     {r.kind === "channel" && (
                       <Button
-                        onClick={() => handleSearchFollow(r)}
+                        onClick={() => void handleSearchFollow(r)}
                         disabled={busyUrl === r.url}
                         style={{ padding: "5px 10px", fontSize: 12 }}
                       >
@@ -486,14 +678,90 @@ export function VaultTubePage() {
         </div>
       )}
 
-      {/* Barre d'ajout par URL */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+      {/* Mes playlists (locales) */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+        <div style={sectionTitle}>Mes playlists</div>
+        <input
+          value={newPlaylist}
+          onChange={(e) => setNewPlaylist(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && void handleCreatePlaylist()}
+          placeholder="Nouvelle playlist…"
+          style={{ ...inputStyle, maxWidth: 220 }}
+        />
+        <button
+          onClick={() => setNewPlaylistMode(newPlaylistMode === "audio" ? "video" : "audio")}
+          title="Mode de la nouvelle playlist"
+          style={{
+            padding: "7px 12px",
+            borderRadius: 999,
+            border: "1px solid #2a2a32",
+            background: newPlaylistMode === "audio" ? "rgba(29,185,84,.15)" : "transparent",
+            color: newPlaylistMode === "audio" ? "#1db954" : "var(--color-text-muted, #9a9aa3)",
+            fontSize: 12,
+            cursor: "pointer",
+          }}
+        >
+          {newPlaylistMode === "audio" ? "🎵 Musique" : "🎬 Vidéo"}
+        </button>
+        <Button
+          variant="secondary"
+          onClick={() => void handleCreatePlaylist()}
+          disabled={!newPlaylist.trim()}
+        >
+          Créer
+        </Button>
+      </div>
+      <div style={gridStyle}>
+        {userPlaylists.map((p) => (
+          <AetherCard
+            key={p.id}
+            title={p.name}
+            subtitle={`${p.item_count} vidéo(s) · locale`}
+            image={null}
+            mode={p.mode}
+            onOpen={() => navigate(`/vaulttube/myplaylist/${p.id}`)}
+            onPlayAll={() => void handlePlayAllPlaylist(p)}
+            onToggleMode={() => void handleTogglePlaylistMode(p)}
+          />
+        ))}
+        {userPlaylists.length === 0 && (
+          <p style={{ fontSize: 13, color: "var(--color-text-muted, #9a9aa3)" }}>
+            Aucune playlist locale — créez-en une ci-dessus.
+          </p>
+        )}
+      </div>
+
+      {/* Abonnements (chaînes + playlists suivies, toutes sources) */}
+      <div style={sectionTitle}>Abonnements</div>
+      <div style={gridStyle}>
+        {subscriptions.map((sub) => (
+          <AetherCard
+            key={sub.id}
+            title={sub.name}
+            subtitle={sub.kind === "playlist" ? "Playlist suivie" : "Chaîne suivie"}
+            image={sub.thumbnail_url}
+            source={sub.source}
+            mode={sub.mode}
+            onOpen={() => navigate(`/vaulttube/${sub.id}`)}
+            onPlayAll={() => void handlePlayAllSub(sub)}
+            onToggleMode={() => void handleToggleSubMode(sub)}
+          />
+        ))}
+        {subscriptions.length === 0 && (
+          <p style={{ fontSize: 13, color: "var(--color-text-muted, #9a9aa3)" }}>
+            Aucun abonnement — suivez une chaîne via la recherche ou l'URL ci-dessous.
+          </p>
+        )}
+      </div>
+
+      {/* Ajout par URL */}
+      <div style={{ display: "flex", gap: 8, marginTop: 26 }}>
         <input
           type="text"
           value={newUrl}
           onChange={(e) => setNewUrl(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && void handleAdd()}
-          placeholder="ou collez directement l'URL d'une chaîne / playlist YouTube…"
+          placeholder="ou collez l'URL d'une chaîne / playlist (YouTube, Dailymotion, Vimeo…)"
           style={inputStyle}
           disabled={adding}
         />
@@ -510,7 +778,7 @@ export function VaultTubePage() {
             borderRadius: 8,
             background: "rgba(239,68,68,.12)",
             color: "#fca5a5",
-            marginBottom: 16,
+            marginTop: 16,
             fontSize: 13,
           }}
         >
@@ -518,120 +786,6 @@ export function VaultTubePage() {
         </div>
       )}
 
-      {/* --- Mes playlists (locales) --- */}
-      <div style={sectionTitleStyle}>Mes playlists</div>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
-        <input
-          value={newPlaylist}
-          onChange={(e) => setNewPlaylist(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && void handleCreatePlaylist()}
-          placeholder="Nouvelle playlist locale…"
-          style={{ ...inputStyle, maxWidth: 260 }}
-        />
-        <Button
-          variant="secondary"
-          onClick={() => void handleCreatePlaylist()}
-          disabled={!newPlaylist.trim()}
-        >
-          Créer
-        </Button>
-      </div>
-      {userPlaylists.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
-          {userPlaylists.map((p) => (
-            <div
-              key={p.id}
-              onClick={() => navigate(`/vaulttube/myplaylist/${p.id}`)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                padding: "10px 14px",
-                background: "var(--color-surface, #1e1e24)",
-                border: "1px solid rgba(255,255,255,.06)",
-                borderRadius: 10,
-                cursor: "pointer",
-                transition: "border-color .15s ease",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--color-accent, #7c5cff)")}
-              onMouseLeave={(e) => (e.currentTarget.style.borderColor = "rgba(255,255,255,.06)")}
-            >
-              <ListVideo size={20} style={{ color: "var(--color-accent, #7c5cff)" }} />
-              <span style={{ fontWeight: 600, fontSize: 14, flex: 1 }}>{p.name}</span>
-              <span style={{ fontSize: 12, color: "var(--color-text-muted, #9a9aa3)" }}>
-                {p.item_count} vidéo(s)
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* --- Chaînes suivies --- */}
-      <div style={sectionTitleStyle}>Chaînes suivies</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
-        {subscriptions
-          .filter((s) => s.kind !== "playlist")
-          .map((sub) => (
-            <SubscriptionCard
-              key={sub.id}
-              sub={sub}
-              busy={busyId === sub.id}
-              onOpen={() => navigate(`/vaulttube/${sub.id}`)}
-              onRefresh={() => void handleRefresh(sub.id)}
-              onRemove={() => void handleRemove(sub.id)}
-            />
-          ))}
-        {subscriptions.filter((s) => s.kind !== "playlist").length === 0 && (
-          <p style={{ fontSize: 13, color: "var(--color-text-muted, #9a9aa3)" }}>
-            Aucune chaîne suivie pour l'instant.
-          </p>
-        )}
-      </div>
-
-      {/* --- Playlists suivies --- */}
-      <div style={sectionTitleStyle}>Playlists suivies</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {subscriptions
-          .filter((s) => s.kind === "playlist")
-          .map((sub) => (
-            <SubscriptionCard
-              key={sub.id}
-              sub={sub}
-              busy={busyId === sub.id}
-              onOpen={() => navigate(`/vaulttube/${sub.id}`)}
-              onRefresh={() => void handleRefresh(sub.id)}
-              onRemove={() => void handleRemove(sub.id)}
-            />
-          ))}
-        {subscriptions.filter((s) => s.kind === "playlist").length === 0 && (
-          <p style={{ fontSize: 13, color: "var(--color-text-muted, #9a9aa3)" }}>
-            Aucune playlist suivie pour l'instant.
-          </p>
-        )}
-      </div>
-
-      {/* État vide global */}
-      {subscriptions.length === 0 &&
-        userPlaylists.length === 0 &&
-        !adding &&
-        searchResults === null && (
-          <div
-            style={{
-              padding: 48,
-              textAlign: "center",
-              color: "var(--color-text-muted, #9a9aa3)",
-              marginTop: 20,
-            }}
-          >
-            <Youtube size={44} style={{ opacity: 0.45, marginBottom: 12 }} />
-            <p>Aucun abonnement pour l'instant.</p>
-            <p style={{ fontSize: 13, marginTop: 4 }}>
-              Recherchez ci-dessus ou collez une URL YouTube pour commencer.
-            </p>
-          </div>
-        )}
-
-      {/* Picker de playlist (modale) */}
       {pickerVideo && (
         <VaultTubePlaylistPicker video={pickerVideo} onClose={() => setPickerVideo(null)} />
       )}
