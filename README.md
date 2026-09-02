@@ -33,7 +33,7 @@
 - **Thème cohérent** : scrollbars sombres et personnalisation complète
 - **Maximisée au démarrage** : expérience immersive dès le lancement
 
-### 🔗 Partage sécurisé
+###  Partage sécurisé
 - **Partage via code** : générez un code partageable pour inviter d'autres utilisateurs
 - **Chiffrement bout-à-bout** : SHA-256 + AES-256-GCM pour les données partagées
 - **Ouverture de port UPnP** : support optionnel pour le LAN (configurable)
