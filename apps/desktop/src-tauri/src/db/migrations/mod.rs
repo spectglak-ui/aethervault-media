@@ -138,6 +138,11 @@ pub const MIGRATIONS: &[Migration] = &[
         description: "AetherFy — colonne mode sur vaulttube_videos (complément migration 20)",
         sql: include_str!("0021_aetherfy_videos_mode.sql"),
     },
+	    Migration {
+        version: 22,
+        description: "Système d'amis et activité de visionnage",
+        sql: include_str!("0022_friends_and_activity.sql"),
+    },
 ];
 
 /// Applique, dans l'ordre, toutes les migrations dont la version est

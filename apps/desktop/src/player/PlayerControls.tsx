@@ -18,6 +18,7 @@ import {
   Repeat1,
   ListVideo,
   Scissors,
+  Wand2,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -30,6 +31,10 @@ import { formatTime } from "./formatTime";
 
 interface PlayerControlsProps {
   variant: "normal" | "detached";
+  /** 0.4.0 : comportement du bouton épinglette — "window" = flottant toute
+   * la fenêtre (lecteur normal) ; "detach" = fenêtre de lecture détachée
+   * (vue YouTube), pour ne pas embarquer toute la fenêtre. */
+  floatMode?: "window" | "detach";
 }
 
 interface LocalTrackList {
@@ -63,6 +68,15 @@ const DISPLAY_MODE_LABELS: Record<"contain" | "cover" | "stretch" | "original", 
   cover: "Remplir",
   stretch: "Étirer",
   original: "Taille originale",
+};
+
+/** 0.4.0 : presets de post-traitement GPU (bouton restauré). */
+const SHADER_PRESETS = ["off", "sharp", "vivid", "anime"] as const;
+const SHADER_LABELS: Record<string, string> = {
+  off: "Désactivé",
+  sharp: "Netteté",
+  vivid: "Couleurs vives",
+  anime: "Anime",
 };
 
 const MENU_PANEL_STYLE: CSSProperties = {
@@ -105,12 +119,13 @@ function trackLabel(track: PlayerTrack, index: number): string {
   return track.title ?? track.lang ?? `Piste ${index + 1}`;
 }
 
-export function PlayerControls({ variant }: PlayerControlsProps) {
+export function PlayerControls({ variant, floatMode = "window" }: PlayerControlsProps) {
   const {
     currentMedia,
     isPlaying,
     position,
     duration,
+    buffered,
     volume,
     muted,
     rate,
@@ -143,6 +158,7 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
     kind: "success" | "error";
     message: string;
   } | null>(null);
+
   useEffect(() => {
     if (!screenshotFeedback) return;
     const timeout = window.setTimeout(() => setScreenshotFeedback(null), 4000);
@@ -158,20 +174,42 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
     return () => unlisten?.();
   }, []);
 
-  const [openMenu, setOpenMenu] = useState<null | "audio" | "subtitles" | "display" | "segments">(
-    null
-  );
+  const [openMenu, setOpenMenu] = useState<
+    null | "audio" | "subtitles" | "display" | "segments" | "shader"
+  >(null);
   const [tracks, setTracks] = useState<LocalTrackList>({ audio: [], subtitles: [] });
-  const toggleMenu = async (kind: "audio" | "subtitles" | "display" | "segments") => {
+  const [shaderPreset, setShaderPreset] = useState<string>("off");
+
+  // Garde le badge du bouton shaders synchronisé (changements externes).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<string>("post-shader-changed", (event) => setShaderPreset(event.payload)).then(
+      (fn) => {
+        unlisten = fn;
+      }
+    );
+    return () => unlisten?.();
+  }, []);
+
+  const toggleMenu = async (
+    kind: "audio" | "subtitles" | "display" | "segments" | "shader"
+  ) => {
     if (openMenu === kind) {
       setOpenMenu(null);
       return;
     }
-    if (kind !== "display" && kind !== "segments") {
+    if (kind === "audio" || kind === "subtitles") {
       try {
         setTracks(await playerApi.listTracks());
       } catch {
         setTracks({ audio: [], subtitles: [] });
+      }
+    }
+    if (kind === "shader") {
+      try {
+        setShaderPreset(await playerApi.getPostShader());
+      } catch {
+        setShaderPreset("off");
       }
     }
     setOpenMenu(kind);
@@ -203,7 +241,7 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
 
   useEffect(() => {
     if (!currentMedia) return;
-        invoke<SegmentContext>("get_media_segment_context", { mediaFileId: currentMedia.id })
+    invoke<SegmentContext>("get_media_segment_context", { mediaFileId: currentMedia.id })
       .then(setSegmentCtx)
       .catch(() => setSegmentCtx(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -254,6 +292,25 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
 
   return (
     <div className="avm-player__controls">
+      {/* 0.4.0 : titre draggable du PiP, police héritée. */}
+      {variant === "detached" && (
+        <div
+          data-tauri-drag-region=""
+          style={{
+            cursor: "move",
+            padding: "8px 12px",
+            fontSize: 13,
+            fontWeight: 600,
+            fontFamily: "inherit",
+            color: "var(--color-text, #f2f2f5)",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {currentMedia.title}
+        </div>
+      )}
       {variant === "normal" && (
         <div
           className="avm-player__title"
@@ -263,7 +320,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
           {currentMedia.title}
         </div>
       )}
-
       {lastError && (
         <div className="avm-player__error" role="alert">
           <span>{lastError}</span>
@@ -272,7 +328,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
           </IconButton>
         </div>
       )}
-
       {screenshotFeedback && (
         <div
           className={
@@ -288,7 +343,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
           </IconButton>
         </div>
       )}
-
       {/* 0.3.0 : bouton flottant « Passer » pendant un segment. */}
       {activeSegment && !autoSkip && (
         <button
@@ -311,7 +365,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
           {SEGMENT_LABELS[activeSegment.segment_type] ?? "Passer"}
         </button>
       )}
-
       {/* 0.3.0 : menus intégrés — panneau flottant + voile de fermeture. */}
       {openMenu && (
         <div
@@ -338,7 +391,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
                 </button>
               ))
             ))}
-
           {openMenu === "subtitles" && (
             <>
               <button
@@ -364,7 +416,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
               ))}
             </>
           )}
-
           {openMenu === "display" &&
             (Object.keys(DISPLAY_MODE_LABELS) as Array<keyof typeof DISPLAY_MODE_LABELS>).map(
               (mode) => (
@@ -380,7 +431,20 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
                 </button>
               )
             )}
-
+          {openMenu === "shader" &&
+            SHADER_PRESETS.map((preset) => (
+              <button
+                key={preset}
+                style={menuItemStyle(shaderPreset === preset)}
+                onClick={() => {
+                  void playerApi.setPostShader(preset);
+                  setShaderPreset(preset);
+                  setOpenMenu(null);
+                }}
+              >
+                {SHADER_LABELS[preset]}
+              </button>
+            ))}
           {openMenu === "segments" && (
             <>
               {(segmentCtx?.segments ?? []).map((s) => (
@@ -443,7 +507,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
           )}
         </div>
       )}
-
       <div className="avm-player__row">
         {variant === "normal" && (
           <IconButton label="Piste précédente" onClick={playPrevious} disabled={!hasPrevious}>
@@ -453,19 +516,30 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
         <IconButton label={isPlaying ? "Pause" : "Lecture"} onClick={togglePlay}>
           {isPlaying ? <Pause size={16} /> : <Play size={16} />}
         </IconButton>
-        {variant === "detached" && (
-          <IconButton label="Retour à la fenêtre principale" onClick={toggleDetached}>
-            <Minimize2 size={16} />
-          </IconButton>
-        )}
         {variant === "normal" && (
           <IconButton label="Piste suivante" onClick={playNext} disabled={!hasNext}>
             <SkipForward size={16} />
           </IconButton>
         )}
-
         <span className="avm-player__time">{formatTime(position)}</span>
         <div style={{ position: "relative", flex: 1 }}>
+          {/* 0.4.0 : barre verte de préchargement derrière la progression. */}
+          {duration > 0 && buffered > position && (
+            <div
+              style={{
+                position: "absolute",
+                left: 0,
+                top: "50%",
+                transform: "translateY(-50%)",
+                height: 4,
+                width: `${Math.min(100, (buffered / duration) * 100)}%`,
+                background: "rgba(74,222,128,.45)",
+                borderRadius: 2,
+                pointerEvents: "none",
+              }}
+              title="Préchargement"
+            />
+          )}
           <Slider
             value={position}
             max={duration || 1}
@@ -499,7 +573,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
         </div>
         <span className="avm-player__time">{formatTime(duration)}</span>
         <EndsAtLabel position={position} duration={duration} />
-
         {variant === "normal" && (
           <>
             <IconButton label={muted ? "Réactiver le son" : "Couper le son"} onClick={toggleMuted}>
@@ -528,7 +601,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             </IconButton>
           </>
         )}
-
         {variant === "normal" && (
           <select
             className="avm-player__rate"
@@ -543,7 +615,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             ))}
           </select>
         )}
-
         {variant === "normal" && (
           <IconButton
             label={`Mode d'affichage (${DISPLAY_MODE_LABELS[displayMode]})`}
@@ -552,7 +623,18 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             <Crop size={16} />
           </IconButton>
         )}
-
+        {/* 0.4.0 : bouton shaders restauré ✨ */}
+        {variant === "normal" && (
+          <IconButton
+            label={`Post-traitement (${SHADER_LABELS[shaderPreset] ?? shaderPreset})`}
+            onClick={() => void toggleMenu("shader")}
+          >
+            <Wand2
+              size={16}
+              style={shaderPreset !== "off" ? { color: "var(--color-accent)" } : undefined}
+            />
+          </IconButton>
+        )}
         {variant === "normal" && (
           <IconButton
             label={loopEnabled ? "Désactiver la lecture en boucle" : "Lire en boucle"}
@@ -561,7 +643,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             <Repeat1 size={16} style={loopEnabled ? { color: "var(--color-accent)" } : undefined} />
           </IconButton>
         )}
-
         {variant === "normal" && (
           <IconButton
             label={
@@ -577,14 +658,22 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             />
           </IconButton>
         )}
-
         {variant === "normal" && (
           <IconButton label="Capturer une image" onClick={() => void handleCaptureScreenshot()}>
             <Camera size={16} />
           </IconButton>
         )}
-
-        {variant === "normal" && !isDetached && (
+        {/* 0.4.0 : épinglette — en vue YouTube, ouvre la fenêtre de lecture
+        détachée au lieu du flottant pleine fenêtre. */}
+        {variant === "normal" && !isDetached && floatMode === "detach" && (
+          <IconButton
+            label="Ouvrir dans la fenêtre de lecture flottante"
+            onClick={toggleDetached}
+          >
+            <Pin size={16} />
+          </IconButton>
+        )}
+        {variant === "normal" && !isDetached && floatMode === "window" && (
           <IconButton
             label="Mode flottant (toujours au-dessus, sans bordure)"
             onClick={() => void windowApi.toggleFloatingPlayer()}
@@ -592,7 +681,6 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             <Pin size={16} />
           </IconButton>
         )}
-
         {variant === "normal" && !isDetached && (
           <IconButton
             label={isFullscreen ? "Quitter le plein écran" : "Plein écran"}
@@ -601,12 +689,15 @@ export function PlayerControls({ variant }: PlayerControlsProps) {
             {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
           </IconButton>
         )}
-
-        <IconButton label="Fermer le lecteur" onClick={stop}>
+        {/* 0.4.0 : en PiP, la croix REVIENT à la fenêtre principale au lieu
+        de tout stopper. */}
+        <IconButton
+          label={variant === "detached" ? "Revenir à la fenêtre principale" : "Fermer le lecteur"}
+          onClick={variant === "detached" ? toggleDetached : stop}
+        >
           <X size={16} />
         </IconButton>
       </div>
-
       {floating && (
         <div
           style={{

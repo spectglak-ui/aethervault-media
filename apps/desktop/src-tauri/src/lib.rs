@@ -246,6 +246,8 @@ if let Some(window) = app.get_webview_window("main") {
             commands::library::get_media_file,
             commands::library::scan_library,
             commands::library::match_library_metadata_command,
+			commands::nas::nas_test_connection,
+            commands::nas::nas_connect,
             commands::category::list_categories,
             commands::category::pick_image,
             commands::category::set_category_banner,
@@ -296,20 +298,26 @@ if let Some(window) = app.get_webview_window("main") {
 			commands::player_settings::get_post_shader,
             commands::player_settings::set_post_shader,
             commands::window::open_player_window,
-			commands::window::toggle_floating_player,
+            commands::window::toggle_floating_player,
             commands::window::mark_player_ready,
             commands::window::close_player_window,
-			commands::share::share_start,
+            commands::share::share_start,
             commands::share::share_stop,
             commands::share::share_receive,
+			commands::friends::add_friend,
+            commands::friends::remove_friend,
+            commands::friends::list_friends,
+            commands::friends::get_friends_activity,
+            commands::friends::update_activity,
+            commands::friends::clear_activity,
+            commands::friends::set_activity_visibility,
+            commands::friends::get_activity_visibility,
             services::playback_engine::player_pull_frame,
             services::playback_engine::player_load_url,
-            commands::vaulttube::vaulttube_add_subscription,
-            commands::vaulttube::vaulttube_list_subscriptions,
-            commands::vaulttube::vaulttube_list_videos,
-            commands::vaulttube::vaulttube_refresh_subscription,
-            commands::vaulttube::vaulttube_remove_subscription,
+            services::playback_engine::player_extract_media,
+            services::playback_engine::player_unload,
+			
      ])
-        .run(tauri::generate_context!())
-        .expect("erreur lors du lancement d'AetherVault Media");
+     .run(tauri::generate_context!())
+     .expect("erreur lors du lancement d'AetherVault Media");
 }

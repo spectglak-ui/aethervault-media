@@ -30,3 +30,5 @@ pub mod settings;
 pub mod share;
 pub mod segments;
 pub mod vaulttube;
+pub mod nas;
+pub mod friends;

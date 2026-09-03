@@ -19,6 +19,7 @@ import { playerApi } from "../features/player/api";
 import { titleApi } from "../features/title/api";
 import { windowApi } from "../features/window/api";
 import { playerSettingsApi } from "../features/playerSettings/api";
+import { friendsApi } from "../features/friends/api";
 import { getWindowLabel } from "../window/getWindowLabel";
 import { applyNearMax } from "../window/nearMax";
 
@@ -27,6 +28,7 @@ interface PlayerContextValue {
   isPlaying: boolean;
   position: number;
   duration: number;
+  buffered: number;
   volume: number;
   muted: boolean;
   rate: number;
@@ -120,6 +122,7 @@ function syncFullscreen(shouldBeFullscreen: boolean): void {
 export function PlayerProvider({ children }: { children: ReactNode }) {
   const [queue, setQueue] = useState<PlaybackQueueState>(EMPTY_QUEUE);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [buffered, setBuffered] = useState(0);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
@@ -129,9 +132,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [displayMode, setDisplayMode] = useState<
     "contain" | "cover" | "stretch" | "original"
   >("contain");
-  const [isDetached, setIsDetached] = useState(
-    () => getWindowLabel() === "player"
-  );
+  const [isDetached, setIsDetached] = useState(() => getWindowLabel() === "player");
   const [lastError, setLastError] = useState<string | null>(null);
   const [immersiveOpen, setImmersiveOpen] = useState(false);
 
@@ -224,8 +225,44 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  /** 0.4.0 : publie l'activité de visionnage (amis) — même rythme que la
+   * sauvegarde de progression (5 s), jamais de spam SQLite. */
+  const publishActivity = () => {
+    const media = currentMediaRef.current;
+    if (!media || durationRef.current <= 0) return;
+    const extra = media as {
+      titleId?: number;
+      poster?: string;
+      categoryKey?: string;
+    };
+    friendsApi
+      .updateActivity({
+        title_id: extra.titleId ?? null,
+        title_name: media.title ?? null,
+        poster: extra.poster ?? null,
+        category_key: extra.categoryKey ?? null,
+        position_seconds: positionRef.current,
+        duration_seconds: durationRef.current,
+      })
+      .catch(() => {});
+  };
+
+  const saveProgressNow = () => {
+    const media = currentMediaRef.current;
+    if (media && durationRef.current > 0) {
+      const saveProgress = media.isPrivate
+        ? playerApi.savePrivateProgress
+        : playerApi.saveProgress;
+      saveProgress(media.id, positionRef.current, durationRef.current).catch(() => {});
+      publishActivity();
+    }
+  };
+
   useEffect(() => {
     const unlistenState = listen<PlayerStateEvent>("player-state", (event) => {
+      const bufferedSeconds = (event.payload as { buffered_seconds?: number })
+        .buffered_seconds;
+      if (typeof bufferedSeconds === "number") setBuffered(bufferedSeconds);
       const { position_seconds, duration_seconds, playing, ended, error } =
         event.payload;
       if (position_seconds !== undefined && position_seconds !== null) {
@@ -252,31 +289,29 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     });
 
     let lastMediaId: number | null = null;
-    const unlistenQueue = listen<PlaybackQueueState>(
-      "player-queue-changed",
-      (event) => {
-        const state = event.payload;
-        const media =
-          state.currentIndex !== null
-            ? state.items[state.currentIndex] ?? null
-            : null;
-        const mediaChanged = (media?.id ?? null) !== lastMediaId;
-        lastMediaId = media?.id ?? null;
-        setQueue(state);
-        if (mediaChanged) {
-          setIsPlaying(media !== null);
-          setPosition(0);
-          setDuration(0);
-          endedHandledRef.current = null;
-          if (media?.mode) setImmersiveOpen(true);
-          if (media === null) {
-            setImmersiveOpen(false);
-            syncFullscreen(false);
-          }
+    const unlistenQueue = listen<PlaybackQueueState>("player-queue-changed", (event) => {
+      const state = event.payload;
+      const media =
+        state.currentIndex !== null ? state.items[state.currentIndex] ?? null : null;
+      const mediaChanged = (media?.id ?? null) !== lastMediaId;
+      lastMediaId = media?.id ?? null;
+      setQueue(state);
+      if (mediaChanged) {
+        setIsPlaying(media !== null);
+        setPosition(0);
+        setDuration(0);
+        setBuffered(0);
+        endedHandledRef.current = null;
+        if (media?.mode) setImmersiveOpen(true);
+        if (media === null) {
+          setImmersiveOpen(false);
+          syncFullscreen(false);
+          // 0.4.0 : plus rien ne joue → activité amis effacée.
+          friendsApi.clearActivity().catch(() => {});
         }
-        setLastError(null);
       }
-    );
+      setLastError(null);
+    });
 
     const unlistenSettings = listen<PlayerSettingsChangedPayload>(
       "player-settings-changed",
@@ -318,29 +353,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
-  const saveProgressNow = () => {
-    const media = currentMediaRef.current;
-    if (media && durationRef.current > 0) {
-      const saveProgress = media.isPrivate
-        ? playerApi.savePrivateProgress
-        : playerApi.saveProgress;
-      saveProgress(media.id, positionRef.current, durationRef.current).catch(
-        () => {}
-      );
-    }
-  };
-
   useEffect(() => {
     if (!currentMedia || !isPlaying) return;
-    const interval = window.setInterval(
-      saveProgressNow,
-      PROGRESS_SAVE_INTERVAL_MS
-    );
+    const interval = window.setInterval(saveProgressNow, PROGRESS_SAVE_INTERVAL_MS);
     return () => window.clearInterval(interval);
   }, [currentMedia, isPlaying]);
 
-  const hasNext =
-    queue.currentIndex !== null && queue.currentIndex < queue.items.length - 1;
+  const hasNext = queue.currentIndex !== null && queue.currentIndex < queue.items.length - 1;
   const hasPrevious = queue.currentIndex !== null && queue.currentIndex > 0;
 
   const immersiveMode: "audio" | "video" | null = currentMedia?.mode ?? null;
@@ -351,6 +370,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       isPlaying,
       position,
       duration,
+      buffered,
       volume,
       muted,
       rate,
@@ -368,10 +388,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       play: (media) => loadAndBroadcast([media], 0),
       playQueue: (items, startIndex) => {
         if (items.length === 0) return;
-        const clampedIndex = Math.min(
-          Math.max(startIndex, 0),
-          items.length - 1
-        );
+        const clampedIndex = Math.min(Math.max(startIndex, 0), items.length - 1);
         loadAndBroadcast(items, clampedIndex);
       },
       playNext: () => {
@@ -448,10 +465,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         try {
           localStorage.setItem("avm-player-loop", next ? "1" : "0");
         } catch {}
-        void emit("player-extras-changed", {
-          loop: next,
-          autoNext: autoNextEnabled,
-        });
+        void emit("player-extras-changed", { loop: next, autoNext: autoNextEnabled });
       },
       toggleAutoNext: () => {
         const next = !autoNextEnabled;
@@ -459,10 +473,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         try {
           localStorage.setItem("avm-player-autonext", next ? "1" : "0");
         } catch {}
-        void emit("player-extras-changed", {
-          loop: loopEnabled,
-          autoNext: next,
-        });
+        void emit("player-extras-changed", { loop: loopEnabled, autoNext: next });
       },
       toggleShuffle: () => {
         const next = !shuffleEnabled;
@@ -487,26 +498,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       toggleFullscreen: () => syncFullscreen(!isFullscreen),
       toggleDetached: () => {
         if (isDetached) {
-          console.info("[PiP] Fermeture demandée.");
           windowApi
             .closePlayerWindow()
-            .then(() => {
-              console.info("[PiP] Fenêtre fermée avec succès.");
-              setIsDetached(false);
-            })
+            .then(() => setIsDetached(false))
             .catch((err) => {
               console.error("[PiP] Échec de la fermeture PiP.", err);
               setLastError("Impossible de fermer la fenêtre PiP.");
             });
           return;
         }
-        console.info("[PiP] Ouverture demandée.");
         windowApi
           .openPlayerWindow()
-          .then(() => {
-            console.info("[PiP] Fenêtre ouverte avec succès.");
-            setIsDetached(true);
-          })
+          .then(() => setIsDetached(true))
           .catch((err) => {
             console.error("[PiP] Échec de l'ouverture PiP.", err);
             setLastError("Impossible d'ouvrir le mode PiP.");
@@ -526,17 +529,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         }
         endedHandledRef.current = null;
         void playerApi.stop();
+        // 0.4.0 : arrêt → activité amis effacée.
+        friendsApi.clearActivity().catch(() => {});
         windowApi
           .closePlayerWindow()
-          .catch((err) =>
-            console.error("[PiP] Échec de la fermeture (stop()).", err)
-          );
+          .catch((err) => console.error("[PiP] Échec de la fermeture (stop()).", err));
         setIsDetached(false);
         setImmersiveOpen(false);
-        void emit(
-          "player-queue-changed",
-          EMPTY_QUEUE satisfies PlaybackQueueState
-        );
+        void emit("player-queue-changed", EMPTY_QUEUE satisfies PlaybackQueueState);
       },
       captureScreenshot: () => playerApi.captureScreenshot().catch(() => null),
       queue,
@@ -550,6 +550,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       isPlaying,
       position,
       duration,
+      buffered,
       volume,
       muted,
       rate,
@@ -568,17 +569,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     ]
   );
 
-  return (
-    <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>
-  );
+  return <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>;
 }
 
 export function usePlayer(): PlayerContextValue {
   const ctx = useContext(PlayerContext);
   if (!ctx) {
-    throw new Error(
-      "usePlayer doit être utilisé à l'intérieur de <PlayerProvider>"
-    );
+    throw new Error("usePlayer doit être utilisé à l'intérieur de <PlayerProvider>");
   }
   return ctx;
 }
