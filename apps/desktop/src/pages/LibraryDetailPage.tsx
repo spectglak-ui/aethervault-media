@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
-import { FolderPlus, RefreshCw, Trash2 } from "lucide-react";
+import { FolderPlus, Network, RefreshCw, Trash2 } from "lucide-react";
 import { Button, EmptyState, Modal, PageHeader } from "@aethervault/ui-kit";
 import type {
   Library,
@@ -11,6 +11,7 @@ import type {
   ScanCompleteEvent,
 } from "@aethervault/shared-types";
 import { libraryApi } from "../features/library/api";
+import { nasApi } from "../features/nas/api";
 import { usePlayer } from "../player/PlayerContext";
 import "./pages.css";
 
@@ -23,8 +24,6 @@ function toPlayableMedia(file: MediaFile): PlayableMedia {
   };
 }
 
-/** Payload de `library:scan-progress` (Étape 6d) — un seul événement,
- * trois phases utiles + le signal de fin `done`. */
 interface ScanProgressPayload {
   library_id: number;
   phase: "scan" | "metadata" | "thumbnails" | "done";
@@ -54,6 +53,19 @@ export function LibraryDetailPage() {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  // 0.4.0 : modal NAS (serveur distant).
+  const [nasModalOpen, setNasModalOpen] = useState(false);
+  const [nasServer, setNasServer] = useState("");
+  const [nasShare, setNasShare] = useState("");
+  const [nasUsername, setNasUsername] = useState("");
+  const [nasPassword, setNasPassword] = useState("");
+  const [nasTesting, setNasTesting] = useState(false);
+  const [nasConnecting, setNasConnecting] = useState(false);
+  const [nasFeedback, setNasFeedback] = useState<{
+    kind: "success" | "error";
+    message: string;
+  } | null>(null);
+
   const refresh = useCallback(async () => {
     try {
       const [libraries, folderList, files] = await Promise.all([
@@ -74,16 +86,6 @@ export function LibraryDetailPage() {
     refresh();
   }, [refresh]);
 
-  // Écoute les événements émis par le File Scanner et le Filesystem
-  // Watcher (Rust) : "library:updated" signale une mise à jour incrémentale
-  // (un seul fichier ajouté/modifié/supprimé, pas un nouveau scan complet),
-  // tandis que "library:scan-complete"/"scan-error" concernent un scan
-  // manuel déclenché depuis cette page.
-  //
-  // Étape 6d : "library:scan-progress" pilote la barre de progression sur
-  // les trois phases (scan → appariement → vignettes). `scan-complete` ne
-  // masque plus l'état "en cours" : la chaîne continue après le scan
-  // (appariement puis vignettes) — seul `phase: "done"` rend la main.
   useEffect(() => {
     const unlistenUpdated = listen<number>("library:updated", (event) => {
       if (event.payload === libraryId) {
@@ -91,15 +93,15 @@ export function LibraryDetailPage() {
       }
     });
     const unlistenProgress = listen<ScanProgressPayload>("library:scan-progress", (event) => {
-  if (event.payload.library_id !== libraryId) return;
-  if (event.payload.phase === "done") {
-    setScanning(false);
-    window.setTimeout(() => setProgress(null), 900);
-  } else {
-    setProgress(event.payload);
-    setScanning(true);
-  }
-});
+      if (event.payload.library_id !== libraryId) return;
+      if (event.payload.phase === "done") {
+        setScanning(false);
+        window.setTimeout(() => setProgress(null), 900);
+      } else {
+        setProgress(event.payload);
+        setScanning(true);
+      }
+    });
     const unlistenComplete = listen<ScanCompleteEvent>("library:scan-complete", (event) => {
       if (event.payload.library_id === libraryId) {
         refresh();
@@ -152,6 +154,53 @@ export function LibraryDetailPage() {
     }
   };
 
+  // 0.4.0 : test de connexion NAS (vérifie que le partage est lisible).
+  const handleNasTest = async () => {
+    setNasTesting(true);
+    setNasFeedback(null);
+    try {
+      await nasApi.test(nasServer, nasShare);
+      setNasFeedback({ kind: "success", message: "Connexion réussie !" });
+    } catch (err) {
+      setNasFeedback({
+        kind: "error",
+        message: err instanceof Error ? err.message : "Test échoué.",
+      });
+    } finally {
+      setNasTesting(false);
+    }
+  };
+
+  // 0.4.0 : connexion NAS + ajout comme dossier de bibliothèque.
+  const handleNasConnect = async () => {
+    setNasConnecting(true);
+    setNasFeedback(null);
+    try {
+      const uncPath = await nasApi.connect(
+        nasServer,
+        nasShare,
+        nasUsername || null,
+        nasPassword || null
+      );
+      await libraryApi.addFolder(libraryId, uncPath);
+      setNasModalOpen(false);
+      setNasServer("");
+      setNasShare("");
+      setNasUsername("");
+      setNasPassword("");
+      setNasFeedback(null);
+      setScanning(true);
+      refresh();
+    } catch (err) {
+      setNasFeedback({
+        kind: "error",
+        message: err instanceof Error ? err.message : "Connexion échouée.",
+      });
+    } finally {
+      setNasConnecting(false);
+    }
+  };
+
   if (!library) {
     return <p>Chargement…</p>;
   }
@@ -172,6 +221,11 @@ export function LibraryDetailPage() {
               <FolderPlus size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
               Ajouter un dossier
             </Button>
+            {/* 0.4.0 : ajout de dossier NAS (serveur distant). */}
+            <Button variant="secondary" onClick={() => setNasModalOpen(true)} disabled={scanning}>
+              <Network size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
+              Ajouter un dossier NAS
+            </Button>
             <Button
               variant="primary"
               onClick={handleScan}
@@ -188,27 +242,27 @@ export function LibraryDetailPage() {
         }
       />
       {progress && progress.phase !== "done" && (
-  <div className="avm-scan-progress">
-    <div className="avm-scan-progress__labels">
-      <span>{PHASE_LABELS[progress.phase]}</span>
-      {progress.total > 0 && (
-        <span>
-          {progress.processed}/{progress.total}
-        </span>
+        <div className="avm-scan-progress">
+          <div className="avm-scan-progress__labels">
+            <span>{PHASE_LABELS[progress.phase]}</span>
+            {progress.total > 0 && (
+              <span>
+                {progress.processed}/{progress.total}
+              </span>
+            )}
+          </div>
+          <div className="avm-scan-progress__track">
+            {progress.total > 0 ? (
+              <div className="avm-scan-progress__fill" style={{ width: `${percent}%` }} />
+            ) : (
+              <div className="avm-scan-progress__fill avm-scan-progress__fill--indeterminate" />
+            )}
+          </div>
+          {progress.current && (
+            <span className="avm-scan-progress__current">{progress.current}</span>
+          )}
+        </div>
       )}
-    </div>
-    <div className="avm-scan-progress__track">
-      {progress.total > 0 ? (
-        <div className="avm-scan-progress__fill" style={{ width: `${percent}%` }} />
-      ) : (
-        <div className="avm-scan-progress__fill avm-scan-progress__fill--indeterminate" />
-      )}
-    </div>
-    {progress.current && (
-      <span className="avm-scan-progress__current">{progress.current}</span>
-    )}
-  </div>
-)}
       <Modal
         open={deleteModalOpen}
         onClose={() => setDeleteModalOpen(false)}
@@ -229,12 +283,158 @@ export function LibraryDetailPage() {
           </Button>
         </div>
       </Modal>
+      {/* 0.4.0 : modal NAS — serveur distant avec identifiants optionnels. */}
+      <Modal
+        open={nasModalOpen}
+        onClose={() => {
+          if (!nasConnecting) {
+            setNasModalOpen(false);
+            setNasFeedback(null);
+          }
+        }}
+        title="Ajouter un dossier NAS"
+      >
+        <p style={{ marginTop: 0 }}>
+          Connectez-vous à un partage réseau (NAS, serveur Windows, etc.) pour y rechercher des
+          fichiers média. Les identifiants sont stockés dans le Gestionnaire d'identification
+          Windows, <strong>jamais dans la base de données</strong>.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 16 }}>
+          <div>
+            <label style={{ display: "block", fontSize: 12, marginBottom: 4 }}>
+              Serveur (adresse IP ou nom)
+            </label>
+            <input
+              type="text"
+              value={nasServer}
+              onChange={(e) => setNasServer(e.target.value)}
+              placeholder="192.168.1.100 ou NAS-MAISON"
+              disabled={nasConnecting}
+              style={{
+                width: "100%",
+                padding: "8px 10px",
+                border: "1px solid var(--color-border, #2c2c33)",
+                borderRadius: 6,
+                background: "var(--color-bg, #0f0f14)",
+                color: "var(--color-text, #f2f2f5)",
+                fontSize: 14,
+              }}
+            />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: 12, marginBottom: 4 }}>
+              Nom du partage
+            </label>
+            <input
+              type="text"
+              value={nasShare}
+              onChange={(e) => setNasShare(e.target.value)}
+              placeholder="Films ou Series"
+              disabled={nasConnecting}
+              style={{
+                width: "100%",
+                padding: "8px 10px",
+                border: "1px solid var(--color-border, #2c2c33)",
+                borderRadius: 6,
+                background: "var(--color-bg, #0f0f14)",
+                color: "var(--color-text, #f2f2f5)",
+                fontSize: 14,
+              }}
+            />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: 12, marginBottom: 4 }}>
+              Nom d'utilisateur (optionnel)
+            </label>
+            <input
+              type="text"
+              value={nasUsername}
+              onChange={(e) => setNasUsername(e.target.value)}
+              placeholder="Laisser vide si accès anonyme"
+              disabled={nasConnecting}
+              style={{
+                width: "100%",
+                padding: "8px 10px",
+                border: "1px solid var(--color-border, #2c2c33)",
+                borderRadius: 6,
+                background: "var(--color-bg, #0f0f14)",
+                color: "var(--color-text, #f2f2f5)",
+                fontSize: 14,
+              }}
+            />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: 12, marginBottom: 4 }}>
+              Mot de passe (optionnel)
+            </label>
+            <input
+              type="password"
+              value={nasPassword}
+              onChange={(e) => setNasPassword(e.target.value)}
+              placeholder="Laisser vide si accès anonyme"
+              disabled={nasConnecting}
+              style={{
+                width: "100%",
+                padding: "8px 10px",
+                border: "1px solid var(--color-border, #2c2c33)",
+                borderRadius: 6,
+                background: "var(--color-bg, #0f0f14)",
+                color: "var(--color-text, #f2f2f5)",
+                fontSize: 14,
+              }}
+            />
+          </div>
+        </div>
+        {nasFeedback && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: "8px 12px",
+              borderRadius: 6,
+              fontSize: 13,
+              background:
+                nasFeedback.kind === "success"
+                  ? "rgba(74,222,128,0.15)"
+                  : "rgba(255,100,100,0.15)",
+              color: nasFeedback.kind === "success" ? "#4ade80" : "#ff6464",
+            }}
+          >
+            {nasFeedback.message}
+          </div>
+        )}
+        <div className="avm-form-actions">
+          <Button
+            variant="ghost"
+            onClick={() => {
+              setNasModalOpen(false);
+              setNasFeedback(null);
+            }}
+            disabled={nasConnecting}
+          >
+            Annuler
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={handleNasTest}
+            disabled={nasTesting || nasConnecting || !nasServer || !nasShare}
+          >
+            {nasTesting ? "Test en cours…" : "Tester la connexion"}
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleNasConnect}
+            disabled={nasConnecting || !nasServer || !nasShare}
+          >
+            {nasConnecting ? "Connexion…" : "Connecter et ajouter"}
+          </Button>
+        </div>
+      </Modal>
       {error && <p className="avm-settings-error">{error}</p>}
       {folders.length === 0 ? (
         <EmptyState
           icon={<FolderPlus size={32} />}
           title="Aucun dossier associé"
-          description="Ajoutez un dossier de votre disque pour qu'AetherVault Media y recherche des vidéos."
+          description="Ajoutez un dossier de votre disque ou un partage réseau pour qu'AetherVault Media y recherche des vidéos."
         />
       ) : (
         <>
@@ -267,13 +467,6 @@ export function LibraryDetailPage() {
                       .join(" ")}
                     onClick={() => {
                       if (!file.is_available) return;
-                      // La file de lecture (Étape 3e) reflète exactement ce
-                      // qui est affiché : tous les fichiers disponibles de
-                      // cette bibliothèque, dans le même ordre — c'est ce
-                      // qui permet à Précédent/Suivant de parcourir la
-                      // liste telle que l'utilisateur la voit. Les fichiers
-                      // indisponibles sont exclus, comme ils l'étaient déjà
-                      // du clic lui-même.
                       const playableFiles = mediaFiles.filter(
                         (candidate) => candidate.is_available
                       );

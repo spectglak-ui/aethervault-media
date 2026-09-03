@@ -2,11 +2,13 @@
 //! (abandon du rendu Win32/OpenGL natif au profit du rendu logiciel +
 //! `<canvas>`, voir le rapport de transmission "écran noir" et la
 //! discussion qui a suivi).
+
 pub(crate) mod mpv_ffi;
 mod sw_render;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+
 use mpv_ffi::MpvFormat;
 pub use mpv_ffi::MpvFunctions;
 use std::ffi::{c_void, CStr, CString};
@@ -24,6 +26,8 @@ pub struct PlayerStateEvent {
     pub playing: Option<bool>,
     pub ended: bool,
     pub error: Option<String>,
+    /// 0.4.0 : fin du préchargement (timestamp absolu) pour la barre verte.
+    pub buffered_seconds: Option<f64>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -40,8 +44,18 @@ pub struct TrackList {
     pub subtitles: Vec<PlayerTrack>,
 }
 
+/// 0.4.0 (lecteur hybride) : extraction SANS lecture. Renvoie un flux
+/// fusionné (lisible par <video> HTML5) ou séparé (mpv uniquement).
+#[derive(Clone, serde::Serialize)]
+pub struct ExtractedMedia {
+    pub kind: String, // "merged" | "split"
+    pub url: String,
+    pub audio_url: Option<String>,
+}
+
 #[derive(Clone, Copy)]
 struct MpvHandlePtr(*mut c_void);
+
 unsafe impl Send for MpvHandlePtr {}
 unsafe impl Sync for MpvHandlePtr {}
 
@@ -89,9 +103,6 @@ impl PlaybackEngineHandle {
 
     pub fn start(app_handle: AppHandle) -> Result<Arc<Self>, String> {
         let library_path = locate_library()?;
-        // 0.4.0 : rend yt-dlp découvrable par le hook ytdl de mpv en
-        // préfixant son dossier au PATH du processus. Sans yt-dlp, la
-        // lecture locale fonctionne exactement comme avant.
         if let Some(ytdlp) = locate_ytdlp() {
             if let Some(dir) = ytdlp.parent() {
                 let old_path = std::env::var("PATH").unwrap_or_default();
@@ -116,15 +127,28 @@ impl PlaybackEngineHandle {
         set_option(&functions, mpv, "hwdec", "auto-safe")?;
         set_option(&functions, mpv, "video-timing-offset", "0.150")?;
         set_option(&functions, mpv, "keep-open", "yes")?;
-        // 0.4.0 : active le hook yt-dlp (URLs YouTube / VaultTube).
         let _ = set_option(&functions, mpv, "ytdl", "yes");
-        // Format par défaut : H.264 ≤ 1080p (décodage logiciel fluide).
         let _ = set_option(
             &functions,
             mpv,
             "ytdl-format",
             "bv*[height<=1080][vcodec^=avc1]+ba/b[height<=1080]",
         );
+        // 0.4.0 : fiabilité streaming AetherFy — gros cache qui DEVANCE la
+        // lecture (60 s / 512 Mio) pour absorber le throttling YouTube,
+        // buffer de flux 4 Mio, cache seekable = retour arrière instantané.
+             let _ = set_option(&functions, mpv, "cache", "yes");
+        let _ = set_option(&functions, mpv, "demuxer-max-bytes", "512MiB");
+        let _ = set_option(&functions, mpv, "demuxer-max-back-bytes", "256MiB");
+        let _ = set_option(&functions, mpv, "network-timeout", "60");
+        let _ = set_option(&functions, mpv, "hr-seek", "yes");
+		let _ = set_option(&functions, mpv, "demuxer-cache-wait", "yes");
+        let _ = set_option(&functions, mpv, "cache-pause-initial", "yes");
+        let _ = set_option(&functions, mpv, "cache-pause-wait", "10");
+		let _ = set_option(&functions, mpv, "video-sync", "display-resample");
+        let _ = set_option(&functions, mpv, "hr-seek-framedrop", "no");
+        let _ = set_option(&functions, mpv, "video-sync-max-video-change", "5");
+        let _ = set_option(&functions, mpv, "video-sync-max-audio-change", "0.1");
         let rc = unsafe { (functions.initialize)(mpv.0) };
         if rc < 0 {
             return Err(error_string(&functions, rc));
@@ -132,6 +156,7 @@ impl PlaybackEngineHandle {
         observe(&functions, mpv, "time-pos", MpvFormat::Double);
         observe(&functions, mpv, "duration", MpvFormat::Double);
         observe(&functions, mpv, "pause", MpvFormat::Flag);
+        observe(&functions, mpv, "demuxer-cache-time", MpvFormat::Double);
         let handle = Arc::new(Self {
             functions: functions.clone(),
             mpv,
@@ -149,28 +174,17 @@ impl PlaybackEngineHandle {
     /// l'extraction yt-dlp (`load_url`), tout le reste (fichiers locaux,
     /// flux directs déjà extraits) passe par `load_direct`.
     pub fn load(&self, path: &str) -> Result<(), String> {
-        // 0.4.0 : toute URL http(s) passe par l'extraction yt-dlp — la
-        // file de lecture (queue, Précédent/Suivant, playlists VaultTube)
-        // fonctionne donc avec des vidéos YouTube exactement comme avec
-        // des fichiers locaux.
         if path.starts_with("http://") || path.starts_with("https://") {
             return self.load_url(path);
         }
         self.load_direct(path)
     }
 
-    /// Chargement brut (`loadfile` mpv) — pour les fichiers locaux ET les
-    /// flux directs extraits par yt-dlp. Séparé de `load` pour éviter la
-    /// récursion load → load_url → load sur les URLs de flux googlevideo.
     fn load_direct(&self, path: &str) -> Result<(), String> {
         self.command(&["loadfile", path, "replace"])?;
         self.set_paused(false)
     }
 
-    /// 0.4.0 (VaultTube, jalon 1) : lit une URL distante en extrayant les
-    /// flux directs via yt-dlp (ce build libmpv n'a pas le hook ytdl Lua).
-    /// Essaie plusieurs clients YouTube : le premier qui extrait des flux
-    /// gagne (YouTube bloque certains clients selon l'IP / la période).
     pub fn load_url(&self, url: &str) -> Result<(), String> {
         let ytdlp = locate_ytdlp().ok_or_else(|| "yt-dlp introuvable".to_string())?;
         log::info!("[playback] extraction des flux via yt-dlp : {url}");
@@ -193,7 +207,7 @@ impl PlaybackEngineHandle {
             cmd.args(*extra);
             cmd.arg(url);
             #[cfg(windows)]
-            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            cmd.creation_flags(0x08000000);
             match cmd.output() {
                 Ok(output) if output.status.success() => {
                     let found: Vec<String> = String::from_utf8_lossy(&output.stdout)
@@ -227,7 +241,6 @@ impl PlaybackEngineHandle {
         if urls.len() == 1 {
             return self.load_direct(&video);
         }
-        // Flux séparés : vidéo en principal + audio en audio-file.
         let opts = format!("audio-file={}", urls[1]);
         if self
             .command(&["loadfile", &video, "replace", "0", &opts])
@@ -237,6 +250,70 @@ impl PlaybackEngineHandle {
             self.load_direct(&video)?;
         }
         self.set_paused(false)
+    }
+
+    /// 0.4.0 (lecteur hybride) : extraction SANS lecture. Renvoie un flux
+    /// fusionné (lisible par <video> HTML5) ou séparé (mpv uniquement).
+    pub fn extract_media(&self, url: &str) -> Result<ExtractedMedia, String> {
+        let ytdlp = locate_ytdlp().ok_or_else(|| "yt-dlp introuvable".to_string())?;
+        log::info!("[playback] extraction hybride (HTML5/mpv) : {url}");
+        let configs: &[&[&str]] = &[
+            &[],
+            &["--extractor-args", "youtube:player_client=android"],
+            &["--extractor-args", "youtube:player_client=tv"],
+        ];
+        let mut last_err = String::new();
+        for extra in configs {
+            let mut cmd = std::process::Command::new(&ytdlp);
+            cmd.args([
+                "-f",
+                "b[vcodec^=avc1][acodec!=none][height<=720]/bv*[vcodec^=avc1][height<=1080]+ba/b",
+                "-g",
+                "--no-warnings",
+            ]);
+            cmd.args(*extra);
+            cmd.arg(url);
+            #[cfg(windows)]
+            cmd.creation_flags(0x08000000);
+            match cmd.output() {
+                Ok(output) if output.status.success() => {
+                    let urls: Vec<String> = String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty())
+                        .map(str::to_string)
+                        .collect();
+                    if urls.is_empty() {
+                        last_err = "aucun flux extrait".to_string();
+                        continue;
+                    }
+                    return Ok(if urls.len() == 1 {
+                        ExtractedMedia {
+                            kind: "merged".into(),
+                            url: urls[0].clone(),
+                            audio_url: None,
+                        }
+                    } else {
+                        ExtractedMedia {
+                            kind: "split".into(),
+                            url: urls[0].clone(),
+                            audio_url: Some(urls[1].clone()),
+                        }
+                    });
+                }
+                Ok(output) => {
+                    last_err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                }
+                Err(e) => last_err = e.to_string(),
+            }
+        }
+        Err(format!("yt-dlp en échec : {last_err}"))
+    }
+
+    /// Stoppe mpv sans effet de bord — pour libérer la place quand le
+    /// frontend bascule sur le lecteur HTML5.
+    pub fn unload(&self) -> Result<(), String> {
+        self.command(&["stop"])
     }
 
     pub fn set_paused(&self, paused: bool) -> Result<(), String> {
@@ -307,11 +384,6 @@ impl PlaybackEngineHandle {
         result
     }
 
-    /// Force mpv à re-rendre la frame courante (sans changer la position).
-    /// Utilisé après transfert de surface vers la fenêtre PiP : mpv ne
-    /// réveille plus le wake callback pour la nouvelle surface, cette
-    /// commande le force à produire une nouvelle frame et relancer le
-    /// pipeline de rendu.
     pub fn redraw(&self) -> Result<(), String> {
         self.command(&["seek", "0", "relative"])
     }
@@ -320,12 +392,12 @@ impl PlaybackEngineHandle {
         self.command(&["screenshot-to-file", target_path, "video"])
     }
 
-    pub fn attach_surface(
-        &self,
-        channel: Channel<InvokeResponseBody>,
-        width: i32,
-        height: i32,
-    ) -> Result<(), String> {
+         pub fn attach_surface(
+         &self,
+         channel: Channel<InvokeResponseBody>,
+         width: i32,
+         height: i32,
+     ) -> Result<(), String> {
         let mut guard = self.surface.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(mut previous) = guard.take() {
             previous.stop_flag.store(true, Ordering::Relaxed);
@@ -361,22 +433,8 @@ impl PlaybackEngineHandle {
             in_flight_frames,
             latest_frame,
         });
-        // ⚠️ Correctif image FIGÉE du PiP (prouvé en test réel : la fenêtre
-        // PiP affichait une image fixe pendant que le son continuait).
-        // Quand la surface est transférée EN COURS de lecture, mpv
-        // considère la frame courante comme déjà « présentée » et ne
-        // réveille plus JAMAIS le wake callback du nouveau contexte de
-        // rendu — son thread ne rend donc plus aucune image. Un seek
-        // relatif de 0 seconde (imperceptible) force mpv à re-présenter
-        // la vidéo et relance le pipeline. Le second envoi, 300 ms plus
-        // tard, couvre la course entre le seek et la création du nouveau
-        // contexte de rendu par le thread qui vient d'être démarré.
         let _ = self.command(&["seek", "0", "relative"]);
         let functions_for_redraw = self.functions.clone();
-        // ⚠️ L'adresse est passée sous forme de `usize` (toujours `Send`)
-        // plutôt que le pointeur brut `*mut c_void` (qui ne l'est pas) :
-        // c'est ce qui permet à ce thread de compiler à coup sûr, et le
-        // pointeur est reconstitué à l'intérieur du thread.
         let mpv_addr = self.mpv.0 as usize;
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(300));
@@ -401,8 +459,6 @@ impl PlaybackEngineHandle {
         }
     }
 
-    /// Repli PiP : renvoie une copie de la dernière image rendue (format
-    /// identique au canal : `[largeur:u32 LE][hauteur:u32 LE][pixels RGB0]`).
     pub fn pull_frame(&self) -> Vec<u8> {
         let guard = self.surface.lock().unwrap_or_else(|p| p.into_inner());
         guard
@@ -581,8 +637,6 @@ fn locate_library() -> Result<PathBuf, String> {
         .and_then(|path| path.parent().map(|p| p.to_path_buf()))
         .ok_or_else(|| "Impossible de déterminer le dossier de l'exécutable".to_string())?;
     const CANDIDATES: &[&str] = &["libmpv-2.dll", "mpv-2.dll", "libmpv.dll"];
-    // Deux emplacements : à côté de l'exécutable (dev / copie manuelle) ou
-    // dans le dossier resources de l'installation NSIS (Étape 7, bundle).
     let dirs = [exe_dir.clone(), exe_dir.join("resources")];
     for name in CANDIDATES {
         for dir in &dirs {
@@ -598,9 +652,6 @@ fn locate_library() -> Result<PathBuf, String> {
     ))
 }
 
-/// 0.4.0 : localise yt-dlp (VaultTube / AetherFy) — mêmes emplacements
-/// que libmpv : à côté de l'exécutable, dans resources (installation
-/// NSIS), ou répertoire courant (dev : src-tauri).
 fn locate_ytdlp() -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
@@ -646,6 +697,9 @@ fn run_event_thread(functions: Arc<MpvFunctions>, mpv: MpvHandlePtr, app_handle:
                 let name = unsafe { CStr::from_ptr(prop.name) }.to_string_lossy();
                 let mut payload = PlayerStateEvent::default();
                 match name.as_ref() {
+                    "demuxer-cache-time" if prop.format == MpvFormat::Double as c_int => {
+                        payload.buffered_seconds = Some(unsafe { *(prop.data as *const f64) });
+                    }
                     "time-pos" if prop.format == MpvFormat::Double as c_int => {
                         payload.position_seconds = Some(unsafe { *(prop.data as *const f64) });
                     }
@@ -694,9 +748,7 @@ fn run_event_thread(functions: Arc<MpvFunctions>, mpv: MpvHandlePtr, app_handle:
 }
 
 /// ⚠️ Commande de repli PiP (canal Tauri muet dans les fenêtres
-/// secondaires — prouvé en test réel) : la fenêtre détachée « tire » la
-/// dernière image rendue au lieu de la recevoir par le canal. Renvoie le
-/// buffer binaire brut (`InvokeResponseBody::Raw` → `ArrayBuffer` côté JS).
+/// secondaires) : la fenêtre détachée « tire » la dernière image rendue.
 #[tauri::command]
 pub fn player_pull_frame(
     state: tauri::State<'_, crate::state::AppState>,
@@ -707,12 +759,26 @@ pub fn player_pull_frame(
 }
 
 /// 0.4.0 (VaultTube, jalon 1) : lit directement une URL (YouTube, etc.)
-/// en extrayant les flux via yt-dlp — commande de test en attendant l'UI
-/// VaultTube. Plan B car ce build libmpv n'a pas le hook ytdl Lua.
+/// en extrayant les flux via yt-dlp.
 #[tauri::command]
 pub fn player_load_url(
     state: tauri::State<'_, crate::state::AppState>,
     url: String,
 ) -> Result<(), String> {
     state.playback_engine.handle()?.load_url(&url)
+}
+
+#[tauri::command]
+pub fn player_extract_media(
+    state: tauri::State<'_, crate::state::AppState>,
+    url: String,
+) -> Result<ExtractedMedia, String> {
+    state.playback_engine.handle()?.extract_media(&url)
+}
+
+#[tauri::command]
+pub fn player_unload(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<(), String> {
+    state.playback_engine.handle()?.unload()
 }

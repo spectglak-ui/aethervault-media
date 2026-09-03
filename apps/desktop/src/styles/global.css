@@ -43,3 +43,6 @@ body,
     animation: none !important;
   }
 }
+@keyframes avm-spin {
+  to { transform: rotate(360deg); }
+}

@@ -1,20 +1,71 @@
-import { X } from "lucide-react";
-import { usePlayer } from "./PlayerContext";
+import { useEffect, type CSSProperties } from "react";
+import { ArrowLeft, Minus, Square, X } from "lucide-react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { usePlayer, FULLSCREEN_TARGET_ID } from "./PlayerContext";
 import { PlayerSurface } from "./PlayerSurface";
 import { PlayerControls } from "./PlayerControls";
-import { formatDuration } from "./formatTime";
+
+/** 0.4.0 — Déduit la miniature depuis les métadonnées OU l'URL de lecture. */
+function artFromMedia(m: {
+  thumbnail?: string;
+  youtubeId?: string;
+  path: string;
+}): string | null {
+  if (m.thumbnail) return m.thumbnail;
+  if (m.youtubeId) return `https://i.ytimg.com/vi/${m.youtubeId}/hqdefault.jpg`;
+  const yt = m.path.match(/[?&]v=([^&]+)/) ?? m.path.match(/youtu\.be\/([^?/&]+)/);
+  if (yt) return `https://i.ytimg.com/vi/${yt[1]}/hqdefault.jpg`;
+  const dm = m.path.match(/dailymotion\.com\/video\/([^?/&]+)/);
+  if (dm) return `https://www.dailymotion.com/thumbnail/video/${dm[1]}`;
+  return null;
+}
+
+const topBtn: CSSProperties = {
+  background: "rgba(255,255,255,.08)",
+  border: "none",
+  borderRadius: 8,
+  color: "#e8e8ec",
+  padding: 7,
+  cursor: "pointer",
+  display: "inline-flex",
+};
 
 /**
- * 0.4.0 — Disposition VIDÉO façon YouTube (jalon 3) : lecteur 16:9 à
- * gauche, liste « À suivre » (file d'attente) à droite. S'affiche quand
- * la piste en cours est en mode "video" lancée depuis AetherFy.
+ * 0.4.0 — Disposition VIDÉO façon YouTube : grand lecteur 16:9 presque au
+ * bord gauche, colonne « À suivre » avec miniatures, barre de fenêtre
+ * (retour / réduire / plein écran / fermer) en haut.
  */
 export function VideoWatchLayout() {
-  const { queue, currentMedia, playQueue, closeAudioView } = usePlayer();
+  const {
+    queue,
+    currentMedia,
+    playQueue,
+    closeAudioView,
+    displayMode,
+    setDisplayMode,
+    isFullscreen,
+    toggleFullscreen,
+    isDetached,
+  } = usePlayer();
+
+  // 0.4.0 : cette vue ne doit JAMAIS laisser la fenêtre « toujours au-dessus ».
+  useEffect(() => {
+    void getCurrentWindow().setAlwaysOnTop(false);
+  }, []);
 
   if (!currentMedia) return null;
 
   const upNext = queue.items.filter((_, i) => i !== queue.currentIndex);
+
+  const handleBack = () => {
+    if (isFullscreen) toggleFullscreen();
+    closeAudioView();
+  };
+
+  const toggleWindowFullscreen = () => {
+    const win = getCurrentWindow();
+    void win.isFullscreen().then((f) => win.setFullscreen(!f));
+  };
 
   return (
     <div
@@ -22,57 +73,138 @@ export function VideoWatchLayout() {
         position: "fixed",
         inset: 0,
         zIndex: 900,
-        background: "var(--color-bg, #131318)",
+        background: "var(--color-bg, #0f0f14)",
         overflowY: "auto",
       }}
     >
+      {/* ----- Barre supérieure : retour + boutons de fenêtre ----- */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 12px" }}>
+        <button onClick={handleBack} title="Retour à la page précédente" style={topBtn}>
+          <ArrowLeft size={17} />
+        </button>
+        <div style={{ flex: 1 }} />
+        <button
+          onClick={() => void getCurrentWindow().minimize()}
+          title="Réduire la fenêtre"
+          style={topBtn}
+        >
+          <Minus size={15} />
+        </button>
+        <button onClick={toggleWindowFullscreen} title="Plein écran (fenêtre)" style={topBtn}>
+          <Square size={13} />
+        </button>
+        <button
+          onClick={() => void getCurrentWindow().close()}
+          title="Fermer AetherVault"
+          style={topBtn}
+        >
+          <X size={16} />
+        </button>
+      </div>
+
       <div
         style={{
           display: "flex",
-          gap: 24,
-          maxWidth: 1400,
-          margin: "0 auto",
-          padding: "20px 24px 40px",
+          gap: 20,
+          padding: "0 16px 40px 10px",
           alignItems: "flex-start",
         }}
       >
         {/* ----- Colonne lecteur ----- */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div
+            id={FULLSCREEN_TARGET_ID}
             className="avm-player avm-player--inline"
             style={{
               position: "relative",
               aspectRatio: "16/9",
-              borderRadius: 12,
+              borderRadius: 10,
               overflow: "hidden",
               background: "#000",
             }}
           >
-            <PlayerSurface className="avm-player__surface" />
-            <div className="avm-player__controls-wrap">
-              <PlayerControls variant="normal" />
-            </div>
+            {isDetached ? (
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "#000",
+                  color: "var(--color-text-muted, #9a9aa3)",
+                  fontSize: 13,
+                  zIndex: 2,
+                }}
+              >
+                Vidéo lue dans la fenêtre de lecture détachée.
+              </div>
+            ) : (
+              <>
+                <PlayerSurface className="avm-player__surface" />
+                <div className="avm-player__controls-wrap">
+                  <PlayerControls variant="normal" floatMode="detach" />
+                </div>
+              </>
+            )}
           </div>
 
-          <h1 style={{ fontSize: 20, fontWeight: 800, margin: "16px 0 6px" }}>
-            {currentMedia.title}
-          </h1>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              color: "var(--color-text-muted, #9a9aa3)",
-              fontSize: 13,
-            }}
-          >
-            <span style={{ fontWeight: 600, color: "#e8e8ec" }}>
-              {currentMedia.channel ?? "AetherFy"}
-            </span>
-            <button
-              onClick={closeAudioView}
+          {/* Titre + cadrage + réduire */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12 }}>
+            <h1
               style={{
-                marginLeft: "auto",
+                fontSize: 19,
+                fontWeight: 800,
+                margin: 0,
+                flex: 1,
+                minWidth: 0,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {currentMedia.title}
+            </h1>
+
+            <div
+              style={{
+                display: "flex",
+                gap: 4,
+                background: "rgba(255,255,255,.06)",
+                borderRadius: 999,
+                padding: 3,
+              }}
+            >
+              {(
+                [
+                  ["contain", "Ajuster"],
+                  ["cover", "Remplir"],
+                  ["stretch", "Étirer"],
+                ] as const
+              ).map(([m, label]) => (
+                <button
+                  key={m}
+                  onClick={() => setDisplayMode(m)}
+                  title={`Cadrage : ${label}`}
+                  style={{
+                    padding: "5px 10px",
+                    borderRadius: 999,
+                    border: "none",
+                    fontSize: 11,
+                    cursor: "pointer",
+                    background:
+                      displayMode === m ? "var(--color-accent, #7c5cff)" : "transparent",
+                    color: displayMode === m ? "#fff" : "var(--color-text-muted, #9a9aa3)",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <button
+              onClick={handleBack}
+              style={{
                 background: "rgba(255,255,255,.08)",
                 border: "none",
                 borderRadius: 999,
@@ -89,14 +221,18 @@ export function VideoWatchLayout() {
               <X size={14} /> Réduire
             </button>
           </div>
+
+          <div style={{ marginTop: 6, fontSize: 13, color: "var(--color-text-muted, #9a9aa3)" }}>
+            {currentMedia.channel ?? "AetherFy"}
+          </div>
         </div>
 
         {/* ----- Colonne « À suivre » ----- */}
-        <div style={{ width: 380, flexShrink: 0 }}>
+        <aside style={{ width: 400, flexShrink: 0 }}>
           <div
             style={{
               fontWeight: 700,
-              fontSize: 14,
+              fontSize: 13,
               textTransform: "uppercase",
               letterSpacing: 0.6,
               color: "var(--color-text-muted, #9a9aa3)",
@@ -108,6 +244,7 @@ export function VideoWatchLayout() {
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {upNext.map((item) => {
               const realIndex = queue.items.indexOf(item);
+              const itemThumb = artFromMedia(item);
               return (
                 <div
                   key={`${item.id}-${realIndex}`}
@@ -134,14 +271,29 @@ export function VideoWatchLayout() {
                       flexShrink: 0,
                     }}
                   >
-                    <img
-                      src={
-                        item.thumbnail ??
-                        `https://i.ytimg.com/vi/${item.youtubeId ?? ""}/default.jpg`
-                      }
-                      alt=""
-                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                    />
+                    {itemThumb ? (
+                      <img
+                        src={itemThumb}
+                        alt=""
+                        loading="lazy"
+                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          background: "#241b4d",
+                          color: "#9a9aa3",
+                          fontSize: 10,
+                        }}
+                      >
+                        —
+                      </div>
+                    )}
                   </div>
                   <div style={{ minWidth: 0 }}>
                     <div
@@ -158,11 +310,7 @@ export function VideoWatchLayout() {
                       {item.title}
                     </div>
                     <div
-                      style={{
-                        fontSize: 11,
-                        color: "var(--color-text-muted, #9a9aa3)",
-                        marginTop: 4,
-                      }}
+                      style={{ fontSize: 11, color: "var(--color-text-muted, #9a9aa3)", marginTop: 4 }}
                     >
                       {item.channel ?? ""}
                     </div>
@@ -176,7 +324,7 @@ export function VideoWatchLayout() {
               </p>
             )}
           </div>
-        </div>
+        </aside>
       </div>
     </div>
   );
