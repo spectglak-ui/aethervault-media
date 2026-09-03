@@ -19,6 +19,9 @@ export interface PlaybackProgress {
  * périodique de la progression doit être adressée à la bonne commande
  * (`save_playback_progress` vs. `save_private_playback_progress`). Absent
  * ou `false` pour tout média public existant.
+ *
+ * 0.4.0 (AetherFy) : champs optionnels pour les médias en streaming
+ * (URLs, chaînes YouTube, métadonnées affichées dans l'UI lecteur).
  */
 export interface PlayableMedia {
   id: number;
@@ -26,6 +29,14 @@ export interface PlayableMedia {
   path: string;
   libraryId: number;
   isPrivate?: boolean;
+  /** 0.4.0 (AetherFy) : mode de lecture — "audio" pour le mini-bar, "video" pour le canvas. */
+  mode?: "audio" | "video";
+  /** 0.4.0 (AetherFy) : nom de la chaîne d'origine (YouTube, etc.). */
+  channel?: string;
+  /** 0.4.0 (AetherFy) : identifiant YouTube, utilisé pour récupérer l'aperçu. */
+  youtubeId?: string;
+  /** 0.4.0 (AetherFy) : URL de vignette personnalisée (priorité sur youtubeId). */
+  thumbnail?: string;
 }
 
 /**
@@ -62,9 +73,9 @@ export interface PlayerStateEvent {
  * n'aient à changer. Voir la documentation technique, §4.2 bis (File de
  * lecture / Queue).
  *
- * À distinguer explicitement d'une future **Playlist** : la Playlist sera
+ * À distinguer explicitement d'une future Playlist : la Playlist sera
  * une entité persistée (SQLite), nommée, créée par l'utilisateur — une
- * simple *source* parmi d'autres capable de produire un
+ * simple source parmi d'autres capable de produire un
  * `PlaybackQueueState`. La Queue, elle, reste toujours éphémère (RAM
  * uniquement, jamais écrite en base), le temps d'une session de lecture.
  */
