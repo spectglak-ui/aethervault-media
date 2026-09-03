@@ -1,6 +1,6 @@
 [package]
 name = "aethervault-media"
-version = "0.3.0"
+version = "0.4.0-alpha"
 description = "AetherVault Media — centre multimédia personnel local-first"
 edition = "2021"
 rust-version = "1.77"

@@ -31,7 +31,7 @@ pub fn get_app_status(state: tauri::State<AppState>) -> Result<AppStatus, String
 
     Ok(AppStatus {
         app_name: "AetherVault Media".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: format!("{} Alpha", env!("CARGO_PKG_VERSION")),
         database_path: state.database_path.clone(),
         log_directory: state.log_directory.clone(),
         profile_count,
