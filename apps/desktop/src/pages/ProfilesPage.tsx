@@ -6,8 +6,12 @@ import type { Profile } from "@aethervault/shared-types";
 import { useActiveProfile } from "../profile/ActiveProfileContext";
 import { ProfileFormModal } from "../features/profile/ProfileFormModal";
 import { profileApi } from "../features/profile/api";
-import { friendsApi, type Friend, type Activity } from "../features/friends/api";
+import { friendsApi, type Friend, type Activity, type RemotePresence } from "../features/friends/api";
 import { AddFriendModal } from "../features/friends/AddFriendModal";
+import { RemoteFriendCard } from "../features/friends/RemoteFriendCard";
+import { FriendCodeModal } from "../features/friends/FriendCodeModal";
+import { LibraryCatalogModal } from "../features/friends/LibraryCatalogModal";
+import { FriendRequestsNotifier } from "../features/friends/FriendRequestsNotifier";
 import "./pages.css";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -58,8 +62,7 @@ function ActivityLine({ activity }: { activity: Activity | null }) {
         {activity.title_name}
         {activity.category_key && (
           <span style={{ color: "var(--color-text-muted, #9a9aa3)", fontWeight: 400 }}>
-            {" "}
-            · {activity.category_key}
+            {" "}· {activity.category_key}
           </span>
         )}
       </div>
@@ -87,8 +90,8 @@ function ActivityLine({ activity }: { activity: Activity | null }) {
 
 /**
  * Gestion complète des profils (Étape 6a, doc §6.5) + système d'amis
- * (0.4.0) : liste d'amis avec activité en temps réel, ajout d'amis,
- * toggle de visibilité de l'activité.
+ * (0.4.0) : amis locaux avec activité en temps réel, amis distants avec
+ * présence et activité, toggle de visibilité de l'activité.
  */
 export function ProfilesPage() {
   const { activeProfile, profiles, loading, refresh, switchTo } = useActiveProfile();
@@ -99,12 +102,21 @@ export function ProfilesPage() {
   const [error, setError] = useState<string | null>(null);
   const [switching, setSwitching] = useState<number | null>(null);
 
-  // 0.4.0 : amis + activité.
+  // 0.4.0 : amis locaux + activité.
   const [friends, setFriends] = useState<Friend[]>([]);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [activityVisible, setActivityVisible] = useState(true);
   const [addFriendOpen, setAddFriendOpen] = useState(false);
   const [friendsLoading, setFriendsLoading] = useState(false);
+
+  // 0.4.0 : amis distants.
+  const [remotePresences, setRemotePresences] = useState<RemotePresence[]>([]);
+  const [codeModalOpen, setCodeModalOpen] = useState(false);
+  const [libraryTarget, setLibraryTarget] = useState<{
+    id: number;
+    name: string;
+  } | null>(null);
+  const [pinging, setPinging] = useState(false);
 
   const canManageProfiles = activeProfile?.can_manage_profiles ?? false;
 
@@ -134,6 +146,24 @@ export function ProfilesPage() {
     const interval = window.setInterval(loadFriends, 10000);
     return () => window.clearInterval(interval);
   }, [loadFriends]);
+
+  // 0.4.0 : ping présence/activité des amis distants toutes les 15 s.
+  useEffect(() => {
+    const ping = async () => {
+      setPinging(true);
+      try {
+        const p = await friendsApi.pingAll();
+        setRemotePresences(p);
+      } catch (e) {
+        console.warn("[friends] ping en échec :", e);
+      } finally {
+        setPinging(false);
+      }
+    };
+    ping();
+    const interval = window.setInterval(ping, 15000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   const handleSwitch = async (profile: Profile) => {
     if (profile.id === activeProfile?.id) return;
@@ -205,7 +235,7 @@ export function ProfilesPage() {
         <EmptyState icon={<Users size={32} />} title="Une erreur est survenue" description={error} />
       )}
 
-      {/* 0.4.0 : section Amis — visible si un profil actif est défini. */}
+      {/* 0.4.0 : section Amis LOCAUX — visible si un profil actif est défini. */}
       {activeProfile && (
         <section style={{ marginBottom: 32 }}>
           <div
@@ -329,6 +359,68 @@ export function ProfilesPage() {
         </section>
       )}
 
+      {/* 0.4.0 : section Amis DISTANTS */}
+      {activeProfile && (
+        <section style={{ marginBottom: 32 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: 12,
+            }}
+          >
+            <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>
+              Amis distants ({remotePresences.length})
+            </h2>
+            <Button variant="primary" onClick={() => setCodeModalOpen(true)}>
+              <UserPlus size={14} style={{ marginRight: 6 }} />
+              Code ami distant
+            </Button>
+          </div>
+
+          {remotePresences.length === 0 ? (
+            <EmptyState
+              icon={<UserPlus size={32} />}
+              title="Aucun ami distant"
+              description="Utilise un « code ami » pour appairer un autre utilisateur d'AetherVault Media sur sa propre machine."
+            />
+          ) : (
+            <ul
+              style={{
+                listStyle: "none",
+                padding: 0,
+                margin: 0,
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+                gap: 12,
+              }}
+            >
+              {remotePresences.map((p) => (
+                <li key={p.id}>
+                  <RemoteFriendCard
+                    presence={p}
+                    onOpenLibrary={() =>
+                      setLibraryTarget({ id: p.id, name: p.peer_name })
+                    }
+                    onRemove={async () => {
+                      if (!window.confirm(`Retirer ${p.peer_name} de tes amis distants ?`))
+                        return;
+                      try {
+                        await friendsApi.removeRemote(p.id);
+                        setRemotePresences((prev) => prev.filter((x) => x.id !== p.id));
+                      } catch (e) {
+                        setError(e instanceof Error ? e.message : "Retrait impossible.");
+                      }
+                    }}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
       {/* Section Profils existante. */}
       {!loading && profiles.length > 0 && (
         <ul className="avm-profile-list">
@@ -386,6 +478,7 @@ export function ProfilesPage() {
         onClose={() => setFormState({ open: false, profile: null })}
         onSaved={refresh}
       />
+
       <AddFriendModal
         open={addFriendOpen}
         onClose={() => setAddFriendOpen(false)}
@@ -397,6 +490,29 @@ export function ProfilesPage() {
           loadFriends();
         }}
       />
+
+      <FriendCodeModal
+        open={codeModalOpen}
+        onClose={() => setCodeModalOpen(false)}
+        onAdded={() => {
+          // Re-ping après ajout.
+          friendsApi.pingAll().then(setRemotePresences).catch(() => {});
+        }}
+      />
+
+      <LibraryCatalogModal
+        open={libraryTarget !== null}
+        friendId={libraryTarget?.id ?? null}
+        friendName={libraryTarget?.name ?? ""}
+        onClose={() => setLibraryTarget(null)}
+        onRequestSent={(titleName) => {
+          // Notification locale optionnelle — peut être branchée sur un toast.
+          console.log(`[friends] demande envoyée : ${titleName}`);
+        }}
+      />
+
+      {/* Notificateur flottant de demandes entrantes */}
+      <FriendRequestsNotifier />
     </div>
   );
 }

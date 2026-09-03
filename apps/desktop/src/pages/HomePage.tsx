@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { Info, Play } from "lucide-react";
+import { Eye, EyeOff, Info, Play } from "lucide-react";
 import { Button, PageHeader } from "@aethervault/ui-kit";
 import type { Category, TitleDetails, TitleSummary } from "@aethervault/shared-types";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -11,6 +11,15 @@ import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
 import "./pages.css";
 
+/** 0.4.0 : détection tolérante de la catégorie Animés. */
+function isAnimeCategory(c: Category): boolean {
+  return (
+    c.key === "animes" ||
+    c.key === "anime" ||
+    c.name.toLowerCase().includes("anim")
+  );
+}
+
 /**
  * Accueil v2 (Étape 7, 3 niveaux validés) :
  * - héro « à la une » : backdrop TMDB assombri + nom/méta/synopsis +
@@ -19,6 +28,10 @@ import "./pages.css";
  *   hover élévation ;
  * - rangées horizontales « style Netflix » : Ajouts récents + une rangée
  *   par catégorie publique, affiches verticales, survol nom/année.
+ *
+ * 0.4.0 : tuile AetherFy (badge « Alpha », bannière personnalisée en
+ * attendant la bannière universelle) insérée entre Animé et Privé ;
+ * option pour masquer la catégorie Privé (persistée, réversible).
  */
 export function HomePage() {
   const navigate = useNavigate();
@@ -29,7 +42,25 @@ export function HomePage() {
   const [continueItems, setContinueItems] = useState<ContinueWatchingItem[] | null>(null);
   const [hero, setHero] = useState<TitleDetails | null>(null);
   const [starting, setStarting] = useState(false);
-    const [homeBackdrop, setHomeBackdrop] = useState<string | null>(null);
+  const [homeBackdrop, setHomeBackdrop] = useState<string | null>(null);
+  // 0.4.0 : visibilité de la catégorie Privé sur l'accueil.
+  const [hidePrivate, setHidePrivate] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("avm-home-hide-private") === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  const applyHidePrivate = (hidden: boolean) => {
+    setHidePrivate(hidden);
+    try {
+      localStorage.setItem("avm-home-hide-private", hidden ? "1" : "0");
+    } catch {
+      // stockage indisponible : non bloquant
+    }
+  };
+
   useEffect(() => {
     const load = () => {
       invoke<string | null>("get_home_backdrop")
@@ -45,8 +76,7 @@ export function HomePage() {
     categoryApi.list().then(setCategories).catch(() => setCategories([]));
     titleApi.hero().then(setHero).catch(() => setHero(null));
     titleApi.recent().then(setRecent).catch(() => setRecent([]));
-	titleApi.continueWatching().then(setContinueItems).catch(() => setContinueItems([]));
-	titleApi.continueWatching().then(setContinueItems).catch(() => setContinueItems([]));
+    titleApi.continueWatching().then(setContinueItems).catch(() => setContinueItems([]));
   }, []);
 
   useEffect(() => {
@@ -63,7 +93,7 @@ export function HomePage() {
   const heroCategory =
     hero && categories ? categories.find((c) => c.id === hero.category_id) : undefined;
 
-    /** Rangée « Continuer à regarder » : le clic relance la lecture, la
+  /** Rangée « Continuer à regarder » : le clic relance la lecture, la
    * reprise de position est déjà gérée par le lecteur. */
   const handleContinuePlay = (item: ContinueWatchingItem) => {
     play({ id: item.mediaFileId, title: item.label, path: item.path, libraryId: item.libraryId });
@@ -85,7 +115,71 @@ export function HomePage() {
     if (category) navigate(`/category/${category.key}/title/${title.id}`);
   };
 
-    return (
+  /** 0.4.0 : tuile AetherFy — bannière horizontale personnalisée
+   * (dégradé) en attendant la bannière universelle ; badge « Alpha ».
+   * Pour passer à la bannière universelle : remplacer le <div> dégradé
+   * par <img src={assetUrl(...)} /> comme les autres tuiles. */
+  const aetherfyTile = (
+    <button
+      key="aetherfy"
+      type="button"
+      className="avm-home-tile"
+      onClick={() => navigate("/vaulttube")}
+      style={{ position: "relative" }}
+    >
+      <div
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          inset: 0,
+          background:
+            "linear-gradient(120deg, #140b2e 0%, #3b1d7a 50%, #7c5cff 100%)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <span
+          style={{
+            fontSize: 26,
+            fontWeight: 800,
+            letterSpacing: 1,
+            color: "#fff",
+            textShadow: "0 2px 14px rgba(0,0,0,.5)",
+          }}
+        >
+          AetherFy
+        </span>
+      </div>
+      <span className="avm-home-tile__overlay">
+        <span
+          className="avm-home-tile__name"
+          style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+        >
+          AetherFy
+          {/* 0.4.0 : sigle Alpha */}
+          <span
+            style={{
+              fontSize: 9,
+              fontWeight: 700,
+              textTransform: "uppercase",
+              letterSpacing: 0.5,
+              padding: "2px 6px",
+              borderRadius: 999,
+              background: "rgba(255,255,255,.16)",
+              border: "1px solid rgba(255,255,255,.35)",
+              color: "#fff",
+            }}
+          >
+            Alpha
+          </span>
+        </span>
+        <span className="avm-home-tile__count">Streaming en ligne</span>
+      </span>
+    </button>
+  );
+
+  return (
     <div
       style={
         homeBackdrop
@@ -148,29 +242,120 @@ export function HomePage() {
       )}
 
       {categories !== null && (
-        <div className="avm-home-tiles">
-          {categories.map((category) => (
-            <button
-              key={category.id}
-              className="avm-home-tile"
-              onClick={() =>
-                navigate(category.key === "private" ? "/private" : `/category/${category.key}`)
+        <>
+          <div className="avm-home-tiles">
+            {categories.flatMap((category) => {
+              const out: ReactNode[] = [];
+              if (category.key === "private") {
+                // 0.4.0 : Privé masquable depuis l'accueil.
+                if (!hidePrivate) {
+                  out.push(
+                    <button
+                      key={category.id}
+                      className="avm-home-tile"
+                      onClick={() => navigate("/private")}
+                      style={{ position: "relative" }}
+                    >
+                      {assetUrl(category.banner) ? (
+                        <img src={assetUrl(category.banner)} alt="" />
+                      ) : (
+                        <div className="avm-card__placeholder" aria-hidden="true" />
+                      )}
+                      <span className="avm-home-tile__overlay">
+                        <span className="avm-home-tile__name">{category.name}</span>
+                        <span className="avm-home-tile__count">
+                          {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
+                        </span>
+                      </span>
+                      {/* 0.4.0 : bouton masquer Privé (coin haut droit) */}
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        title="Masquer la catégorie Privé de l'accueil"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          applyHidePrivate(true);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.stopPropagation();
+                            applyHidePrivate(true);
+                          }
+                        }}
+                        style={{
+                          position: "absolute",
+                          top: 8,
+                          right: 8,
+                          zIndex: 2,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          width: 26,
+                          height: 26,
+                          borderRadius: 8,
+                          background: "rgba(0,0,0,.55)",
+                          color: "#fff",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <EyeOff size={13} />
+                      </span>
+                    </button>
+                  );
+                }
+                return out;
               }
-            >
-              {assetUrl(category.banner) ? (
-                <img src={assetUrl(category.banner)} alt="" />
-              ) : (
-                <div className="avm-card__placeholder" aria-hidden="true" />
-              )}
-              <span className="avm-home-tile__overlay">
-                <span className="avm-home-tile__name">{category.name}</span>
-                <span className="avm-home-tile__count">
-                  {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
-                </span>
-              </span>
-            </button>
-          ))}
-        </div>
+              out.push(
+                <button
+                  key={category.id}
+                  className="avm-home-tile"
+                  onClick={() => navigate(`/category/${category.key}`)}
+                >
+                  {assetUrl(category.banner) ? (
+                    <img src={assetUrl(category.banner)} alt="" />
+                  ) : (
+                    <div className="avm-card__placeholder" aria-hidden="true" />
+                  )}
+                  <span className="avm-home-tile__overlay">
+                    <span className="avm-home-tile__name">{category.name}</span>
+                    <span className="avm-home-tile__count">
+                      {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
+                    </span>
+                  </span>
+                </button>
+              );
+              // 0.4.0 : AetherFy juste après Animé (donc entre Animé et Privé).
+              if (isAnimeCategory(category)) out.push(aetherfyTile);
+              return out;
+            })}
+            {/* Repli : si aucune catégorie Animé, AetherFy en fin de grille. */}
+            {!categories.some(isAnimeCategory) && aetherfyTile}
+          </div>
+          {/* 0.4.0 : contrôle de restauration quand Privé est masqué. */}
+          {hidePrivate && (
+            <div style={{ display: "flex", justifyContent: "flex-end", padding: "6px 8px 0" }}>
+              <button
+                type="button"
+                onClick={() => applyHidePrivate(false)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontSize: 11,
+                  color: "var(--color-text-muted, #9a9aa3)",
+                  background: "transparent",
+                  border: "1px dashed var(--color-border, #2c2c33)",
+                  borderRadius: 8,
+                  padding: "4px 10px",
+                  cursor: "pointer",
+                }}
+              >
+                <Eye size={12} />
+                Catégorie Privé masquée — afficher
+              </button>
+            </div>
+          )}
+        </>
       )}
 
       {continueItems !== null && continueItems.length > 0 && (

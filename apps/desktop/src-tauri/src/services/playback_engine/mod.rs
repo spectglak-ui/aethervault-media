@@ -188,12 +188,14 @@ impl PlaybackEngineHandle {
     pub fn load_url(&self, url: &str) -> Result<(), String> {
         let ytdlp = locate_ytdlp().ok_or_else(|| "yt-dlp introuvable".to_string())?;
         log::info!("[playback] extraction des flux via yt-dlp : {url}");
-        let configs: &[&[&str]] = &[
-            &[],
-            &["--extractor-args", "youtube:player_client=android"],
-            &["--extractor-args", "youtube:player_client=tv"],
-            &["--extractor-args", "youtube:player_client=ios"],
-        ];
+             // 0.4.0 : le client web (défaut) est le PLUS throtté par YouTube
+     // (gel à 10-20 s). Android d'abord : flux progressifs stables.
+     let configs: &[&[&str]] = &[
+         &["--extractor-args", "youtube:player_client=android"],
+         &["--extractor-args", "youtube:player_client=ios"],
+         &[],
+         &["--extractor-args", "youtube:player_client=tv"],
+     ];
         let mut last_err = String::new();
         let mut urls: Vec<String> = Vec::new();
         for extra in configs {
