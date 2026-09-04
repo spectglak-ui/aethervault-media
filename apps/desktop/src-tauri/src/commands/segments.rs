@@ -16,7 +16,7 @@ pub fn get_episode_segments(
     state: State<AppState>,
     episode_id: i64,
 ) -> Result<Vec<SegmentRecord>, String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     ensure(&conn)?;
     segment_repository::list_for_episode(&conn, episode_id).map_err(|e| e.to_string())
 }
@@ -35,7 +35,7 @@ pub fn set_episode_segment(
     if end_seconds <= start_seconds {
         return Err("Fin du segment avant son début.".to_string());
     }
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     ensure(&conn)?;
     segment_repository::upsert(&conn, episode_id, &segment_type, start_seconds, end_seconds, "manual")
         .map_err(|e| e.to_string())
@@ -47,7 +47,7 @@ pub fn delete_episode_segment(
     episode_id: i64,
     segment_type: String,
 ) -> Result<(), String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     ensure(&conn)?;
     segment_repository::delete(&conn, episode_id, &segment_type).map_err(|e| e.to_string())
 }
@@ -186,7 +186,7 @@ pub fn get_media_segment_context(
     media_file_id: i64,
 ) -> Result<MediaSegmentContext, String> {
     use rusqlite::OptionalExtension;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     ensure(&conn)?;
         let episode_id: Option<i64> = conn
         .query_row(

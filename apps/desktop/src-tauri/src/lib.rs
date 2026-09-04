@@ -155,7 +155,12 @@ if let Some(window) = app.get_webview_window("main") {
         active_profile_id: std::sync::Mutex::new(None),
                 // `Locked` par défaut à chaque lancement — jamais restauré
                 // automatiquement (doc §6.4).
-                vault: std::sync::Mutex::new(security::vault::VaultState::Locked),
+				
+                // INVARIANT SÉCURITÉ : Le coffre DOIT TOUJOURS démarrer verrouillé.
+// Ne JAMAIS restaurer depuis persistance (par design : le secret est
+// en RAM seulement, jamais sur disque). Toute modification ici doit
+// respecter ce contrat.
+vault: std::sync::Mutex::new(security::vault::VaultState::Locked),
             });
 
             Ok(())

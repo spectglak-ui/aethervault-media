@@ -42,6 +42,10 @@ pub struct AppState {
     /// comportement existant — le basculement vers l'écran de login
     /// arrivera avec l'intro animée (6c-ii/iv). `domain::profile` est seul
     /// responsable d'y écrire.
+	/// GARDE : Ce Mutex n'a pas de timeout. Les sections protégées ne
+    /// doivent JAMAIS contenir d'opérations bloquantes longues (I/O réseau,
+    /// attente utilisateur). En cas de panic d'un thread détenteur, utiliser
+    /// `unwrap_or_else(|p| p.into_inner())` pour récupérer le verrou.
     pub active_profile_id: Mutex<Option<i64>>,
     /// État du coffre privé (Privacy/Security Manager, Étape 6a, doc
     /// §6.4/§6.4 bis) : `Locked` par défaut à chaque lancement, jamais
@@ -62,5 +66,14 @@ impl AppState {
             .lock()
             .map_err(|_| "État du profil actif inaccessible.".to_string())?;
         guard.ok_or_else(|| "Aucun profil actif — login requis.".to_string())
+    }
+}
+
+impl AppState {
+    /// Raccourci pour obtenir une connexion DB avec gestion d'erreur uniforme.
+    pub fn get_conn(
+        &self,
+    ) -> Result<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>, String> {
+        self.db_pool.get().map_err(|e| format!("DB pool error: {e}"))
     }
 }

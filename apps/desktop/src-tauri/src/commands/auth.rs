@@ -28,7 +28,7 @@ pub fn login_profile(
     password: Option<String>,
     recovery_code: Option<String>,
 ) -> Result<ProfileRecord, String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let profile = profile_repository::get_by_id(&conn, profile_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Profil introuvable.".to_string())?;
@@ -83,7 +83,7 @@ pub fn setup_first_admin(
     name: String,
     password: Option<String>,
 ) -> Result<(ProfileRecord, Option<String>), String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let existing = profile_repository::list_all(&conn).map_err(|e| e.to_string())?;
     if !existing.is_empty() {
         return Err("Un profil existe déjà.".to_string());
@@ -129,7 +129,7 @@ pub fn change_own_password(
     new_password: Option<String>,
 ) -> Result<(), String> {
     let active_profile_id = state.read_active_profile_id()?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let profile = profile_repository::get_by_id(&conn, active_profile_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Profil actif introuvable.".to_string())?;
@@ -160,7 +160,7 @@ pub fn admin_reset_password(
     new_password: Option<String>,
 ) -> Result<Option<String>, String> {
     let active_profile_id = state.read_active_profile_id()?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
 
     let active = profile_repository::get_by_id(&conn, active_profile_id)
         .map_err(|e| e.to_string())?
@@ -191,7 +191,7 @@ pub fn recover_with_code(
     recovery_code: String,
     new_password: Option<String>,
 ) -> Result<Option<String>, String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let profile = profile_repository::get_by_id(&conn, profile_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Profil introuvable.".to_string())?;

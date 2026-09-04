@@ -23,7 +23,7 @@ pub struct AppStatus {
 
 #[tauri::command]
 pub fn get_app_status(state: tauri::State<AppState>) -> Result<AppStatus, String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
 
     let profile_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))

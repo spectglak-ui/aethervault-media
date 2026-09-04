@@ -28,7 +28,7 @@ pub struct PlayerSettingsPayload {
 #[tauri::command]
 pub fn get_player_settings(app: AppHandle) -> Result<Option<PlayerSettingsPayload>, String> {
     let state = app.state::<AppState>();
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let record = player_settings_repository::get(&conn).map_err(|e| e.to_string())?;
     Ok(record.map(|r| PlayerSettingsPayload {
         volume: r.volume,
@@ -44,7 +44,7 @@ pub fn get_player_settings(app: AppHandle) -> Result<Option<PlayerSettingsPayloa
 #[tauri::command]
 pub fn save_player_settings(app: AppHandle, volume: f64, muted: bool, rate: f64) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     player_settings_repository::save(&conn, &PlayerSettingsRecord { volume, muted, rate })
         .map_err(|e| e.to_string())
 }
@@ -58,7 +58,7 @@ const POST_SHADER_PRESETS: &[&str] = &["off", "sharp", "vivid", "anime"];
 
 #[tauri::command]
 pub fn get_post_shader(state: tauri::State<AppState>) -> Result<String, String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     Ok(crate::db::repositories::settings_repository::get(&conn, "post_shader")
         .map_err(|e| e.to_string())?
         .unwrap_or_else(|| "off".to_string()))
@@ -73,7 +73,7 @@ pub fn set_post_shader(
     if !POST_SHADER_PRESETS.contains(&preset.as_str()) {
         return Err(format!("Preset de shader inconnu : {preset}"));
     }
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     crate::db::repositories::settings_repository::set(&conn, "post_shader", &preset)
         .map_err(|e| e.to_string())?;
     let _ = app.emit("post-shader-changed", preset);
