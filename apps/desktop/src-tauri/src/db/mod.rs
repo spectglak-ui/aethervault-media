@@ -46,8 +46,14 @@ pub type DbPool = r2d2::Pool<SqliteConnectionManager>;
 /// Watcher peuvent, en théorie, écrire en même temps.
 pub fn init_pool(database_path: &Path) -> Result<DbPool, Box<dyn std::error::Error>> {
     let manager = SqliteConnectionManager::file(database_path).with_init(|conn| {
-        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
+        // 0.4.1 audit : busy_timeout réduit de 5000 à 500 ms (éviter freeze
+        // de 5 s sur conflit de verrou) et pool limité à 16 connexions
+        // (prévention du crash Windows ~512 handles par process).
+        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 500;")
     });
-    let pool = r2d2::Pool::builder().build(manager)?;
+    let pool = r2d2::Pool::builder()
+        .max_size(16)
+        .min_idle(Some(2))
+        .build(manager)?;
     Ok(pool)
 }
