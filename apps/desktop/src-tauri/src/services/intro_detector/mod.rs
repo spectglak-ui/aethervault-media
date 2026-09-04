@@ -1,5 +1,5 @@
 //! Détection automatique des génériques (0.3.0) — Option A :
-//! empreintes **Chromaprint** calculées par le binaire externe `fpcalc`
+//! empreintes Chromaprint calculées par le binaire externe `fpcalc`
 //! (le même socle qu'utilise IntroSkipper/Jellyfin), comparées ENTRE
 //! épisodes d'une même série en Rust : séquences audio identiques en
 //! début d'épisode = intro, en fin = outro.
@@ -11,6 +11,7 @@
 //! → non détectables automatiquement → marquage manuel uniquement.
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use symphonia::core::audio::SampleBuffer;
@@ -77,12 +78,15 @@ fn fpcalc_path() -> Option<PathBuf> {
 /// les codecs/conteneurs, bien plus robuste que Symphonia.
 fn fingerprint_with_fpcalc(path: &Path, fpcalc: &Path) -> Option<ZoneFingerprint> {
     log::info!("[fingerprint] fpcalc sur {}", path.display());
-    let output = std::process::Command::new(fpcalc)
-        .args(["-json", "-raw", "-length", "0"])
-        .arg(path)
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW : pas de flash console
-        .output()
-        .ok()?;
+
+    // 0.5.0 (multiplateforme) : creation_flags n'existe que sur Windows.
+    let mut cmd = std::process::Command::new(fpcalc);
+    cmd.args(["-json", "-raw", "-length", "0"]);
+    cmd.arg(path);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW : pas de flash console
+    let output = cmd.output().ok()?;
+
     if !output.status.success() {
         log::warn!(
             "[fingerprint] fpcalc en échec sur {} : {}",
@@ -91,6 +95,7 @@ fn fingerprint_with_fpcalc(path: &Path, fpcalc: &Path) -> Option<ZoneFingerprint
         );
         return None;
     }
+
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     let duration = json.get("duration")?.as_f64()?;
     let frames: Vec<u32> = json
@@ -99,16 +104,19 @@ fn fingerprint_with_fpcalc(path: &Path, fpcalc: &Path) -> Option<ZoneFingerprint
         .iter()
         .filter_map(|v| v.as_u64().map(|x| x as u32))
         .collect();
+
     if frames.is_empty() || duration <= 1.0 {
         log::warn!("[fingerprint] fpcalc : empreinte vide pour {}", path.display());
         return None;
     }
+
     let fps = frames.len() as f64 / duration;
     let zone = (ZONE_SECONDS * fps) as usize;
     let head_end = zone.min(frames.len());
     let tail_start = frames.len().saturating_sub(zone);
     let head = frames[..head_end].to_vec();
     let tail = frames[tail_start..].to_vec();
+
     log::info!(
         "[fingerprint] fpcalc {} : {} trames, durée {:.1}s, fps {:.2}",
         path.display(),
@@ -116,6 +124,7 @@ fn fingerprint_with_fpcalc(path: &Path, fpcalc: &Path) -> Option<ZoneFingerprint
         duration,
         fps
     );
+
     Some(ZoneFingerprint {
         head_active: vec![true; head.len()],
         tail_active: vec![true; tail.len()],
@@ -162,6 +171,7 @@ fn fingerprint_with_symphonia(path: &Path) -> Option<ZoneFingerprint> {
             return None;
         }
     };
+
     let mut container = probed.format;
     let mut decoder_opt = None;
     let mut selected_track_id = 0;
@@ -181,12 +191,14 @@ fn fingerprint_with_symphonia(path: &Path) -> Option<ZoneFingerprint> {
             return None;
         }
     };
+
     let mut real_rate = decoder.codec_params().sample_rate.unwrap_or(48000);
     let mut zone_cap = (ZONE_SECONDS * real_rate as f64) as usize;
     let mut rate_known = decoder.codec_params().sample_rate.is_some();
     let mut head: Vec<i16> = Vec::new();
     let mut tail: std::collections::VecDeque<i16> = std::collections::VecDeque::new();
     let mut total: u64 = 0;
+
     loop {
         let packet = match container.next_packet() {
             Ok(p) => p,
@@ -229,10 +241,12 @@ fn fingerprint_with_symphonia(path: &Path) -> Option<ZoneFingerprint> {
             }
         }
     }
+
     if total == 0 {
         log::warn!("[fingerprint] {} : aucune trame audio décodée", path.display());
         return None;
     }
+
     let head_f32: Vec<f32> = resample(&head, real_rate, TARGET_RATE)
         .into_iter()
         .map(|v| v as f32 / 32767.0)
@@ -242,8 +256,10 @@ fn fingerprint_with_symphonia(path: &Path) -> Option<ZoneFingerprint> {
         .into_iter()
         .map(|v| v as f32 / 32767.0)
         .collect();
+
     let (head_fp, head_active) = fingerprint(&head_f32);
     let (tail_fp, tail_active) = fingerprint(&tail_f32);
+
     Some(ZoneFingerprint {
         head: head_fp,
         head_active,
@@ -291,10 +307,12 @@ fn fingerprint(mono: &[f32]) -> (Vec<u32>, Vec<bool>) {
         *e = (f / bin_hz) as usize;
     }
     edges[0] = 1;
+
     let frame_count = (mono.len().saturating_sub(FFT_SIZE)) / HOP + 1;
     let mut energies: Vec<[f32; BANDS]> = Vec::with_capacity(frame_count);
     let mut actives: Vec<bool> = Vec::with_capacity(frame_count);
     let mut scratch = vec![Complex::new(0.0f32, 0.0); FFT_SIZE];
+
     for t in 0..frame_count {
         let base = t * HOP;
         for (i, s) in scratch.iter_mut().enumerate() {
@@ -302,6 +320,7 @@ fn fingerprint(mono: &[f32]) -> (Vec<u32>, Vec<bool>) {
             s.im = 0.0;
         }
         fft.process(&mut scratch);
+
         let mut band_e = [0.0f32; BANDS];
         let mut total = 0.0f32;
         for (b, e) in band_e.iter_mut().enumerate() {
@@ -317,6 +336,7 @@ fn fingerprint(mono: &[f32]) -> (Vec<u32>, Vec<bool>) {
         energies.push(band_e);
         actives.push(total > 1.0);
     }
+
     let mut frames = Vec::with_capacity(energies.len().saturating_sub(1));
     for t in 0..energies.len().saturating_sub(1) {
         let (cur, nxt) = (&energies[t], &energies[t + 1]);
@@ -330,11 +350,13 @@ fn fingerprint(mono: &[f32]) -> (Vec<u32>, Vec<bool>) {
         }
         frames.push(hash);
     }
+
     let act: Vec<bool> = actives
         .iter()
         .zip(actives.iter().skip(1))
         .map(|(a, b)| *a && *b)
         .collect();
+
     (frames, act)
 }
 
@@ -355,6 +377,7 @@ fn best_run(
     let max_len = (MAX_RUN_SECONDS * fps) as usize;
     let max_gap = (2.0 * fps) as usize;
     let mut best: Option<(usize, usize, usize, f32)> = None;
+
     for off in (off_min..=off_max).step_by(2) {
         let (mut ai, mut bi) = if off >= 0 {
             (0usize, off as usize)
@@ -366,6 +389,7 @@ fn best_run(
         let mut run_matched: usize = 0;
         let mut gap: usize = 0;
         let mut in_run = false;
+
         while ai < a.len() && bi < b.len() {
             let ok = a_act[ai] && b_act[bi] && (a[ai] ^ b[bi]).count_ones() <= MAX_BER_BITS;
             if ok {
@@ -403,6 +427,7 @@ fn best_run(
             ai += 1;
             bi += 1;
         }
+
         if in_run {
             let valid_len = run_len.saturating_sub(gap).max(1);
             let len = valid_len.min(max_len);
@@ -419,6 +444,7 @@ fn best_run(
             }
         }
     }
+
     if let Some((sa, sb, len, density)) = best {
         log::info!(
             "[credits] {} : segment trouvé — {} trames ({:.1}s), densité {:.0}%",
@@ -445,6 +471,7 @@ pub fn detect_series(
         std::collections::HashMap::new();
     let mut outro: std::collections::HashMap<i64, (u32, f64, f64)> =
         std::collections::HashMap::new();
+
     for i in 0..episodes.len() {
         on_progress(i, episodes.len(), episodes[i].1.clone());
         if fps_vec[i].is_none() {
@@ -468,6 +495,7 @@ pub fn detect_series(
         let fps = fa.fps;
         let zone_frames = (ZONE_SECONDS * fps) as i64;
         let (ida, idb) = (episodes[i].0, episodes[j].0);
+
         if let Some((sa, sb, len)) = best_run(
             &fa.head,
             &fa.head_active,
@@ -484,6 +512,7 @@ pub fn detect_series(
             intro.entry(ida).and_modify(|e| e.0 += 1).or_insert((1, la, la + l));
             intro.entry(idb).and_modify(|e| e.0 += 1).or_insert((1, lb, lb + l));
         }
+
         if let Some((sa, sb, len)) = best_run(
             &fa.tail,
             &fa.tail_active,
@@ -501,6 +530,7 @@ pub fn detect_series(
             outro.entry(idb).and_modify(|e| e.0 += 1).or_insert((1, start_b, start_b + l));
         }
     }
+
     let mut out = Vec::new();
     for (id, (_, s, e)) in intro {
         out.push((id, "intro", s, e));
