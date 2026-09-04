@@ -10,6 +10,7 @@
 //! contrainte SQL est déjà la seule source de vérité.
 
 use rusqlite::Connection;
+use std::collections::HashMap;
 
 /// L'image personnalisée d'une entité pour un usage donné, si elle existe.
 pub fn get(
@@ -97,4 +98,40 @@ pub fn delete_all_for_entity(
         rusqlite::params![entity_type, entity_id],
     )?;
     Ok(())
+}
+/// Récupère les posters personnalisés pour plusieurs titles en une seule requête.
+pub fn get_batch_posters(
+    conn: &Connection,
+    title_ids: &[i64],
+) -> Result<HashMap<i64, String>, rusqlite::Error> {
+    if title_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    
+    // Construire la clause IN (?, ?, ...) dynamiquement
+    let placeholders: Vec<String> = title_ids.iter().map(|_| "?".to_string()).collect();
+    let sql = format!(
+        "SELECT resource_id, image_path 
+         FROM custom_images 
+         WHERE resource_type = 'title' 
+         AND resource_id IN ({})
+         AND image_type = 'poster'
+         LIMIT 1",
+        placeholders.join(", ")
+    );
+    
+    let mut stmt = conn.prepare(&sql)?;
+    let mut map = HashMap::new();
+    
+    let rows = stmt.query_map(rusqlite::params_from_iter(title_ids.iter()), |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    
+    for row in rows {
+        if let Ok((id, path)) = row {
+            map.insert(id, path);
+        }
+    }
+    
+    Ok(map)
 }
