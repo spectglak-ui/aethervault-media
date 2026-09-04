@@ -24,14 +24,16 @@ function isAnimeCategory(c: Category): boolean {
  * Accueil v2 (Étape 7, 3 niveaux validés) :
  * - héro « à la une » : backdrop TMDB assombri + nom/méta/synopsis +
  *   boutons Lecture (films) / Plus d'infos, change à chaque lancement ;
- * - tuiles catégories en 16:9 (plus de logos coupés), nom en overlay,
- *   hover élévation ;
+ * - tuiles catégories en 16:9, nom en overlay, hover élévation ;
  * - rangées horizontales « style Netflix » : Ajouts récents + une rangée
  *   par catégorie publique, affiches verticales, survol nom/année.
  *
  * 0.4.0 : tuile AetherFy (badge « Alpha », bannière personnalisée en
  * attendant la bannière universelle) insérée entre Animé et Privé ;
  * option pour masquer la catégorie Privé (persistée, réversible).
+ *
+ * 0.4.1 (audit UX) : erreurs de chargement affichées à l'utilisateur
+ * avec bouton « Réessayer » (plus de page vide silencieuse).
  */
 export function HomePage() {
   const navigate = useNavigate();
@@ -51,6 +53,9 @@ export function HomePage() {
       return false;
     }
   });
+  // 0.4.1 (audit UX) : erreurs de chargement visibles + rechargement.
+  const [loadingErrors, setLoadingErrors] = useState<string[]>([]);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const applyHidePrivate = (hidden: boolean) => {
     setHidePrivate(hidden);
@@ -72,12 +77,45 @@ export function HomePage() {
     return () => window.removeEventListener("avm-home-backdrop-changed", load);
   }, []);
 
+  // 0.4.1 : chaque échec de chargement est signalé à l'utilisateur.
   useEffect(() => {
-    categoryApi.list().then(setCategories).catch(() => setCategories([]));
-    titleApi.hero().then(setHero).catch(() => setHero(null));
-    titleApi.recent().then(setRecent).catch(() => setRecent([]));
-    titleApi.continueWatching().then(setContinueItems).catch(() => setContinueItems([]));
-  }, []);
+    setLoadingErrors([]);
+    setRows({});
+    const pushError = (msg: string) =>
+      setLoadingErrors((prev) => [...prev, msg]);
+
+    categoryApi
+      .list()
+      .then(setCategories)
+      .catch((err) => {
+        pushError(`Catégories indisponibles : ${String(err)}`);
+        setCategories([]);
+      });
+
+    titleApi
+      .hero()
+      .then(setHero)
+      .catch((err) => {
+        console.warn("[home] héro échoué :", err);
+        setHero(null);
+      });
+
+    titleApi
+      .recent()
+      .then(setRecent)
+      .catch((err) => {
+        pushError(`Ajouts récents indisponibles : ${String(err)}`);
+        setRecent([]);
+      });
+
+    titleApi
+      .continueWatching()
+      .then(setContinueItems)
+      .catch((err) => {
+        console.warn("[home] continuer à regarder échoué :", err);
+        setContinueItems([]);
+      });
+  }, [reloadKey]);
 
   useEffect(() => {
     if (!categories) return;
@@ -86,7 +124,9 @@ export function HomePage() {
       titleApi
         .listByCategory(category.id)
         .then((list) => setRows((prev) => ({ ...prev, [category.id]: list })))
-        .catch(() => {});
+        .catch((err) => {
+          console.warn(`[home] catégorie ${category.name} échouée :`, err);
+        });
     }
   }, [categories]);
 
@@ -132,8 +172,7 @@ export function HomePage() {
         style={{
           position: "absolute",
           inset: 0,
-          background:
-            "linear-gradient(120deg, #140b2e 0%, #3b1d7a 50%, #7c5cff 100%)",
+          background: "linear-gradient(120deg, #140b2e 0%, #3b1d7a 50%, #7c5cff 100%)",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -241,6 +280,49 @@ export function HomePage() {
         />
       )}
 
+      {/* 0.4.1 (audit UX) : erreurs de chargement visibles + Réessayer. */}
+      {loadingErrors.length > 0 && (
+        <div style={{ padding: "8px 24px 0" }}>
+          {loadingErrors.map((err, i) => (
+            <div
+              key={i}
+              role="alert"
+              style={{
+                padding: "10px 14px",
+                margin: "8px 0",
+                background: "rgba(255, 59, 48, 0.1)",
+                border: "1px solid rgba(255, 59, 48, 0.3)",
+                borderRadius: 8,
+                fontSize: 13,
+                color: "#ff6b6b",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <span>⚠️ {err}</span>
+              <button
+                type="button"
+                onClick={() => setReloadKey((k) => k + 1)}
+                style={{
+                  background: "rgba(255, 59, 48, 0.2)",
+                  border: "1px solid rgba(255, 59, 48, 0.4)",
+                  color: "#ff6b6b",
+                  cursor: "pointer",
+                  padding: "5px 10px",
+                  borderRadius: 4,
+                  fontSize: 12,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Réessayer
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {categories !== null && (
         <>
           <div className="avm-home-tiles">
@@ -271,7 +353,7 @@ export function HomePage() {
                       <span
                         role="button"
                         tabIndex={0}
-                        title="Masquer la catégorie Privé de l'accueil"
+                        aria-label="Masquer la catégorie Privé de l'accueil"
                         onClick={(e) => {
                           e.stopPropagation();
                           applyHidePrivate(true);

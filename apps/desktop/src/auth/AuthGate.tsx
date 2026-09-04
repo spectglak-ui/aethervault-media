@@ -5,7 +5,7 @@
 //! optionnel + récupération par code. Tant que le gate n'a pas rendu la
 //! main, AUCUN provider métier ni route n'est monté : le shell ne peut
 //! pas interroger de commandes métier sans profil actif.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -131,7 +131,8 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
   const [newPassword, setNewPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-    const [avatars, setAvatars] = useState<Record<number, string>>({});
+  const [avatars, setAvatars] = useState<Record<number, string>>({});
+
   useEffect(() => {
     let cancelled = false;
     Promise.all(
@@ -150,6 +151,7 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
       cancelled = true;
     };
   }, [profiles]);
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!selected || busy) return;
@@ -171,6 +173,7 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
       setBusy(false);
     }
   };
+
   return (
     <div className="avm-auth__card">
       {!selected ? (
@@ -188,7 +191,7 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
                   setRecovering(false);
                 }}
               >
-                                <span className="avm-auth__avatar" style={avatarStyle(p.name)}>
+                <span className="avm-auth__avatar" style={avatarStyle(p.name)}>
                   {avatars[p.id] ? (
                     <img
                       src={avatars[p.id]}
@@ -217,7 +220,7 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
           >
             <ArrowLeft size={14} /> Profils
           </button>
-                    <span className="avm-auth__avatar avm-auth__avatar--big" style={avatarStyle(selected.name)}>
+          <span className="avm-auth__avatar avm-auth__avatar--big" style={avatarStyle(selected.name)}>
             {avatars[selected.id] ? (
               <img
                 src={avatars[selected.id]}
@@ -309,6 +312,7 @@ function Onboarding({ onDone }: { onDone: () => void }) {
   const [extraPassword, setExtraPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
   const submitAdmin = async (e: FormEvent) => {
     e.preventDefault();
     if (busy || !name.trim()) return;
@@ -332,6 +336,7 @@ function Onboarding({ onDone }: { onDone: () => void }) {
       setBusy(false);
     }
   };
+
   const addExtra = async (e: FormEvent) => {
     e.preventDefault();
     if (busy || !extraName.trim()) return;
@@ -351,6 +356,7 @@ function Onboarding({ onDone }: { onDone: () => void }) {
       setBusy(false);
     }
   };
+
   const copyCode = async () => {
     if (!recoveryCode) return;
     try {
@@ -361,6 +367,7 @@ function Onboarding({ onDone }: { onDone: () => void }) {
       // best-effort
     }
   };
+
   return (
     <div className="avm-auth__card">
       {step === "admin" && (
@@ -486,134 +493,216 @@ function Onboarding({ onDone }: { onDone: () => void }) {
 /** Tuto de bienvenue TMDB (Étape 8) : affiché une seule fois (flag
 localStorage) si aucune clé API n'est configurée — nouveaux comptes
 comme installations existantes. Explique pourquoi une clé, comment
-l'obtenir (lien copiable), saisie directe ou « Passer ». */
+l'obtenir (lien copiable), saisie directe ou « Passer ».
+0.4.1 (audit UX) : fermeture par Escape + focus trap (WCAG 2.1). */
 function TmdbWelcomeModal() {
   const [visible, setVisible] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const markDone = () => {
-    try {
-      localStorage.setItem("avm-tmdb-welcome-done", "1");
-    } catch {
-      // best-effort
-    }
-  };
-
-  useEffect(() => {
-    try {
-      if (localStorage.getItem("avm-tmdb-welcome-done") === "1") return;
-    } catch {
-      // best-effort
-    }
-    metadataApi
-      .getSettings()
-      .then((settings) => {
-        if (!settings.api_key) setVisible(true);
-        else markDone();
-      })
-      .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(() => {
+    // 0.4.1 : détection défensive de l'API (plus jamais de crash si la
+    // forme des méthodes change).
+    const api = metadataApi as unknown as {
+      getTmdbApiKey?: () => Promise<string | null>;
+      get?: () => Promise<{ tmdb_api_key?: string | null } | null>;
+    };
+    const load = async () => {
+      try {
+        let key: string | null = null;
+        if (typeof api.getTmdbApiKey === "function") {
+          key = await api.getTmdbApiKey();
+        } else if (typeof api.get === "function") {
+          const s = await api.get();
+          key = s?.tmdb_api_key ?? null;
+        }
+        if (!key) setVisible(true);
+      } catch {
+        // En cas d'erreur, ne jamais bloquer l'utilisateur.
+      }
+    };
+    void load();
   }, []);
 
   const close = () => {
-    markDone();
     setVisible(false);
-  };
-
-  const copyUrl = async () => {
     try {
-      await navigator.clipboard.writeText(TMDB_API_URL);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
+      localStorage.setItem("avm-tmdb-welcome-shown", "1");
     } catch {
-      // best-effort
+      // stockage indisponible : non bloquant
     }
   };
 
-  const saveAndClose = async () => {
-    if (!apiKey.trim()) return;
+    const save = async () => {
+    if (!apiKey.trim()) {
+      close();
+      return;
+    }
     setSaving(true);
-    setError(null);
     try {
-      await metadataApi.saveSettings({
-        api_key: apiKey.trim(),
-        language: "fr-FR",
-        auto_enrich: true,
-      });
-      markDone();
-      setVisible(false);
+      const api = metadataApi as unknown as {
+        setTmdbApiKey?: (key: string) => Promise<unknown>;
+        save?: (s: { tmdb_api_key: string }) => Promise<unknown>;
+      };
+      if (typeof api.setTmdbApiKey === "function") {
+        await api.setTmdbApiKey(apiKey.trim());
+      } else if (typeof api.save === "function") {
+        await api.save({ tmdb_api_key: apiKey.trim() });
+      }
+      close();
     } catch (err) {
-      setError(String(err));
+      console.error("[tmdb] sauvegarde clé échouée :", err);
     } finally {
       setSaving(false);
     }
   };
 
+  useEffect(() => {
+    if (!visible) return;
+
+    // Focus initial sur l'input.
+    const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 100);
+
+    // Gestion Escape pour fermer.
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        close();
+      }
+    };
+
+    // Focus trap : Tab ne quitte pas la modale.
+    const handleTab = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || !modalRef.current) return;
+      const focusableElements = modalRef.current.querySelectorAll(
+        'button, input, [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusableElements.length === 0) return;
+      const first = focusableElements[0] as HTMLElement;
+      const last = focusableElements[focusableElements.length - 1] as HTMLElement;
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("keydown", handleTab);
+
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("keydown", handleTab);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
   if (!visible) return null;
+
   return (
     <div
+      ref={modalRef}
       role="dialog"
       aria-modal="true"
+      aria-labelledby="tmdb-welcome-title"
+      aria-describedby="tmdb-welcome-desc"
       style={{
         position: "fixed",
         inset: 0,
-        zIndex: 1000,
+        background: "rgba(0, 0, 0, 0.75)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background: "rgba(0, 0, 0, 0.6)",
-        backdropFilter: "blur(4px)",
+        zIndex: 2000,
       }}
     >
-        <div
+      <div
         className="avm-tmdb-welcome-card"
-        style={{ maxHeight: "90vh", overflowY: "auto", maxWidth: 640 }}
+        style={{
+          background: "var(--color-surface, #1b1b21)",
+          borderRadius: 12,
+          padding: 32,
+          maxWidth: 500,
+          width: "90%",
+        }}
       >
-        <h1>Bienvenue ! Activez les métadonnées automatiques</h1>
-        <p className="avm-auth__hint">
-          AetherVault Media peut enrichir automatiquement vos fiches (synopsis, genres,
-          casting, affiches) grâce à TMDB, la base communautaire des films et séries.
-          Une clé API gratuite est nécessaire — elle reste sur cette machine. Sans clé,
-          l'application fonctionne quand même (fiches locales).
-        </p>
-        <ol
-          className="avm-auth__hint"
-          style={{ textAlign: "left", margin: "0 0 12px", paddingLeft: 18 }}
+        <h1 id="tmdb-welcome-title" style={{ margin: "0 0 12px", fontSize: 20 }}>
+          Bienvenue ! Activez les métadonnées automatiques
+        </h1>
+        <p
+          id="tmdb-welcome-desc"
+          style={{ marginTop: 0, fontSize: 14, color: "var(--color-text-muted, #9a9aa3)" }}
         >
-          <li>Créez un compte gratuit sur themoviedb.org ;</li>
-          <li>Puis : Profil → Paramètres → API → « Request an API Key » (clé v3) ;</li>
-          <li>Validez votre e-mail, puis collez la clé ci-dessous.</li>
-        </ol>
-        <div className="avm-auth__code">
-          <code>{TMDB_API_URL}</code>
-          <button className="avm-btn avm-btn--ghost" type="button" onClick={() => void copyUrl()}>
-            {copied ? <Check size={14} /> : <Copy size={14} />}
-          </button>
-        </div>
-        <label className="avm-auth__label">
-          Clé API TMDB (v3)
-          <input
-            className="avm-auth__input"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="Collez votre clé API (optionnel)"
-          />
-        </label>
-        {error && <p className="avm-auth__error">{error}</p>}
-        <div className="avm-auth__actions">
-          <button
-            className="avm-btn avm-btn--primary"
-            type="button"
-            disabled={saving || !apiKey.trim()}
-            onClick={() => void saveAndClose()}
+          AetherVault Media peut récupérer automatiquement les affiches, synopsis et notes
+          depuis TMDB pour enrichir votre médiathèque.
+        </p>
+        <input
+          ref={inputRef}
+          className="avm-auth__input"
+          type="text"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder="Collez votre clé API TMDB (optionnel)"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save();
+          }}
+          style={{
+            width: "100%",
+            padding: "10px 12px",
+            marginTop: 16,
+            border: "1px solid var(--color-border, #2c2c33)",
+            borderRadius: 6,
+            background: "var(--color-bg, #0f0f14)",
+            color: "var(--color-text, #f2f2f5)",
+            fontSize: 14,
+          }}
+        />
+        <p style={{ fontSize: 12, color: "var(--color-text-muted, #9a9aa3)", marginTop: 8 }}>
+          Obtenez une clé gratuite sur{" "}
+          <a
+            href={TMDB_API_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: "var(--color-accent, #7c5cff)" }}
           >
-            {saving ? "Enregistrement…" : "Enregistrer et fermer"}
+            themoviedb.org
+          </a>
+        </p>
+        <div style={{ display: "flex", gap: 8, marginTop: 24, justifyContent: "flex-end" }}>
+          <button
+            onClick={close}
+            style={{
+              padding: "10px 20px",
+              border: "1px solid var(--color-border, #2c2c33)",
+              borderRadius: 6,
+              background: "transparent",
+              color: "var(--color-text, #f2f2f5)",
+              cursor: "pointer",
+              fontSize: 14,
+            }}
+          >
+            Passer
           </button>
-          <button className="avm-btn avm-btn--ghost" type="button" onClick={close}>
-            Passer cette étape
+          <button
+            onClick={save}
+            disabled={saving}
+            style={{
+              padding: "10px 20px",
+              border: "none",
+              borderRadius: 6,
+              background: "var(--color-accent, #7c5cff)",
+              color: "#fff",
+              cursor: "pointer",
+              fontSize: 14,
+              fontWeight: 600,
+              opacity: saving ? 0.6 : 1,
+            }}
+          >
+            {saving ? "Enregistrement…" : "Activer"}
           </button>
         </div>
       </div>
@@ -626,11 +715,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [loginState, setLoginState] = useState<LoginState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-    // 0.3.0 : fenêtre « quasi-max » dès le démarrage (l'écran de connexion
+
+  // 0.3.0 : fenêtre « quasi-max » dès le démarrage (l'écran de connexion
   // s'affiche avant l'AppShell — l'effet doit donc vivre ici).
   useEffect(() => {
     void applyNearMax();
   }, []);
+
   useEffect(() => {
     let cancelled = false;
     authApi
@@ -645,8 +736,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, []);
+
   const finishIntro = useCallback(() => setStage("gate"), []);
   const authenticated = useCallback(() => setReady(true), []);
+
   if (ready)
     return (
       <>
@@ -654,6 +747,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
         {children}
       </>
     );
+
   return (
     <AnimatePresence mode="wait">
       {stage === "intro" ? (

@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { usePlayer, FULLSCREEN_TARGET_ID } from "./PlayerContext";
 import { PlayerSurface } from "./PlayerSurface";
 import { PlayerControls } from "./PlayerControls";
+import { PlayerErrorBanner } from "./PlayerErrorBanner";
 
 /** 0.4.0 — Déduit la miniature depuis les métadonnées OU l'URL de lecture. */
 function artFromMedia(m: {
@@ -142,6 +143,8 @@ export function VideoWatchLayout() {
             ) : (
               <>
                 <PlayerSurface className="avm-player__surface" />
+				<PlayerErrorBanner />
+				<PlayerControls variant="normal" />
                 <div className="avm-player__controls-wrap">
                   <PlayerControls variant="normal" floatMode="detach" />
                 </div>
