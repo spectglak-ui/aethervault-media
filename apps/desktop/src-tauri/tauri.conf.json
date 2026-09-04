@@ -10,20 +10,20 @@
     "frontendDist": "../dist"
   },
   "app": {
-	"withGlobalTauri": true,
+    "withGlobalTauri": true,
     "windows": [
-          {
-  "label": "main",
-  "title": "AetherVault Media",
-  "width": 1100,
-  "height": 720,
-  "minWidth": 900,
-  "minHeight": 600,
-  "resizable": true,
-  "center": true,
-  "decorations": false,
-  "additionalBrowserArgs": "--ignore-gpu-blocklist"
-},
+      {
+        "label": "main",
+        "title": "AetherVault Media",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true,
+        "decorations": false,
+        "additionalBrowserArgs": "--ignore-gpu-blocklist"
+      },
       {
         "label": "player",
         "title": "AetherVault Media — Lecteur",
@@ -47,9 +47,9 @@
       }
     }
   },
-          "bundle": {
+  "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": ["nsis", "deb", "appimage", "dmg"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -57,7 +57,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["fpcalc.exe", "libmpv-2.dll", "yt-dlp.exe"],
+    "resources": [],
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",
