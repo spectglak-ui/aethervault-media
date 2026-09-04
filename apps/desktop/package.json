@@ -1,7 +1,7 @@
 {
   "name": "@aethervault/desktop",
   "private": true,
-  "version": "0.4.1-alpha",
+  "version": "0.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
