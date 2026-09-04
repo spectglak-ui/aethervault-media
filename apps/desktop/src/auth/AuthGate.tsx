@@ -490,11 +490,10 @@ function Onboarding({ onDone }: { onDone: () => void }) {
   );
 }
 
-/** Tuto de bienvenue TMDB (Étape 8) : affiché une seule fois (flag
-localStorage) si aucune clé API n'est configurée — nouveaux comptes
-comme installations existantes. Explique pourquoi une clé, comment
-l'obtenir (lien copiable), saisie directe ou « Passer ».
-0.4.1 (audit UX) : fermeture par Escape + focus trap (WCAG 2.1). */
+/** Tuto de bienvenue TMDB (Étape 8) : affiché à chaque connexion si
+ * aucune clé API n'est configurée. Si l'utilisateur clique "Passer",
+ * la modale réapparaîtra à la prochaine connexion (pas de flag localStorage).
+ * Si l'utilisateur enregistre une clé, la modale ne s'affichera plus. */
 function TmdbWelcomeModal() {
   const [visible, setVisible] = useState(false);
   const [apiKey, setApiKey] = useState("");
@@ -502,15 +501,15 @@ function TmdbWelcomeModal() {
   const modalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-    useEffect(() => {
-    // 0.4.1 : détection défensive de l'API (plus jamais de crash si la
-    // forme des méthodes change).
-    const api = metadataApi as unknown as {
-      getTmdbApiKey?: () => Promise<string | null>;
-      get?: () => Promise<{ tmdb_api_key?: string | null } | null>;
-    };
-    const load = async () => {
+  useEffect(() => {
+    // Vérifie si une clé API TMDB est déjà configurée
+    const checkApiKey = async () => {
       try {
+        const api = metadataApi as unknown as {
+          getTmdbApiKey?: () => Promise<string | null>;
+          get?: () => Promise<{ tmdb_api_key?: string | null } | null>;
+        };
+        
         let key: string | null = null;
         if (typeof api.getTmdbApiKey === "function") {
           key = await api.getTmdbApiKey();
@@ -518,24 +517,27 @@ function TmdbWelcomeModal() {
           const s = await api.get();
           key = s?.tmdb_api_key ?? null;
         }
-        if (!key) setVisible(true);
-      } catch {
-        // En cas d'erreur, ne jamais bloquer l'utilisateur.
+        
+        // Affiche la modale uniquement si aucune clé n'est configurée
+        if (!key) {
+          setVisible(true);
+        }
+      } catch (err) {
+        console.warn("[tmdb] vérification clé échouée :", err);
+        // En cas d'erreur, ne pas bloquer l'utilisateur
       }
     };
-    void load();
+    
+    void checkApiKey();
   }, []);
 
   const close = () => {
     setVisible(false);
-    try {
-      localStorage.setItem("avm-tmdb-welcome-shown", "1");
-    } catch {
-      // stockage indisponible : non bloquant
-    }
+    // NE PAS poser de flag localStorage ici : la modale doit réapparaître
+    // à la prochaine connexion si la clé n'est toujours pas renseignée
   };
 
-    const save = async () => {
+  const save = async () => {
     if (!apiKey.trim()) {
       close();
       return;
@@ -546,11 +548,14 @@ function TmdbWelcomeModal() {
         setTmdbApiKey?: (key: string) => Promise<unknown>;
         save?: (s: { tmdb_api_key: string }) => Promise<unknown>;
       };
+      
       if (typeof api.setTmdbApiKey === "function") {
         await api.setTmdbApiKey(apiKey.trim());
       } else if (typeof api.save === "function") {
         await api.save({ tmdb_api_key: apiKey.trim() });
       }
+      
+      // Clé enregistrée avec succès : la modale ne s'affichera plus
       close();
     } catch (err) {
       console.error("[tmdb] sauvegarde clé échouée :", err);
@@ -598,7 +603,6 @@ function TmdbWelcomeModal() {
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("keydown", handleTab);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
   if (!visible) return null;
@@ -664,7 +668,7 @@ function TmdbWelcomeModal() {
         <p style={{ fontSize: 12, color: "var(--color-text-muted, #9a9aa3)", marginTop: 8 }}>
           Obtenez une clé gratuite sur{" "}
           <a
-            href={TMDB_API_URL}
+            href="https://www.themoviedb.org/settings/api"
             target="_blank"
             rel="noopener noreferrer"
             style={{ color: "var(--color-accent, #7c5cff)" }}
