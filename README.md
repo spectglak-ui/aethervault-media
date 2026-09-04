@@ -8,48 +8,48 @@
 
 ---
 
-## 🎯 Fonctionnalités principales
+##  Fonctionnalités principales
 
-### 📚 Gestion de bibliothèque avancée
+###  Gestion de bibliothèque avancée
 - **Catalogue public** : films, séries et anime avec détection automatique des saisons et épisodes
 - **Coffre privé chiffré** : vidéos et galeries d'images protégées en **AES-256-GCM**
 - **Métadonnées enrichies** : intégration TMDB (synopsis, affiches, casting, genres, notes)
 - **Profils multi-utilisateurs** : authentification avec intro animée et sélection de profil
 - **Watcher automatique** : détecte les nouveaux fichiers médias en temps réel
 
-### 🎬 Lecteur multimédia haute performance
+###  Lecteur multimédia haute performance
 - **Moteur libmpv intégré** : support complet des formats/codecs via FFmpeg
 - **Rendu OpenGL headless** : performance optimale, accélération matérielle multiplateforme
 - **Modes de lecture** : lecteur plein écran, mode flottant, interface intégrée
 - **Shaders de post-traitement** : 4 presets WebGL (Désactivé, Netteté, Couleurs vives, Anime4K-lite)
 - **Informations techniques** : résolution, codecs, langues audio et sous-titres en direct
 
-### 🔍 Exploration et recherche intelligente
+###  Exploration et recherche intelligente
 - **Explorateur multicritère** : recherchez par titre, catégorie, année, genre, acteur, réalisateur, résolution, codec, langue
 - **Facets intelligentes** : navigation intuitive avec compteur de résultats en temps réel
 - **Barre de recherche globale** : accès rapide via raccourci shell
 - **Fonds d'écran dynamiques** : bannières TMDB automatiquement appliquées aux pages titre
 
-### 🎨 Interface utilisateur moderne
+###  Interface utilisateur moderne
 - **Accueil v2** : héro à la une avec synopsis et boutons d'action, rangées style Netflix
 - **Fenêtre frameless** : design moderne sans barre de titre native, draggable
 - **Thème sombre cohérent** : scrollbars personnalisées et adaptation complète
 - **Maximisée au démarrage** : expérience immersive dès le lancement
 - **Animations fluides** : transitions Framer Motion pour une UI premium
 
-### 🔐 Partage sécurisé
+###  Partage sécurisé
 - **Partage via code** : générez un code partageable pour inviter d'autres utilisateurs
 - **Chiffrement bout-à-bout** : SHA-256 + AES-256-GCM pour les données partagées
 - **Ouverture de port UPnP** : support optionnel pour le LAN (configurable)
 - **Isolation réseau** : jamais d'exposition non contrôlée des données
 
-### 📸 Galeries d'images privées
+###  Galeries d'images privées
 - **Stockage chiffré** : images protégées en **AES-256-GCM**, jamais en clair sur disque
 - **Formats supportés** : JPEG, PNG, WebP, GIF, BMP, TIFF
 - **Métadonnées EXIF** : date de prise de vue et modèle d'appareil préservés (GPS volontairement exclu pour la confidentialité)
 - **Scan parallélisé** : analyse ultra-rapide avec Rayon, même sur les grandes collections
 
-### ⚡ Performance et sécurité
+###  Performance et sécurité
 - **Vignettes d'aperçu automatiques** : extraites efficacement à ~1s de chaque épisode
 - **Scan d'images parallélisé** : performance optimale sur multi-cœurs via Rayon
 - **Barre de progression du scan** : suivi en temps réel (analyse → appariement → vignettes)
@@ -59,7 +59,7 @@
 
 ---
 
-## 🛠️ Prérequis (Windows)
+##  Prérequis (Windows)
 
 ### Outils obligatoires
 - **Rust** — installez via [rustup](https://rustup.rs) (1.77+)
@@ -72,7 +72,7 @@
 - **Microsoft C++ Build Tools** — depuis Visual Studio Installer (charge de travail : *Desktop development with C++*)
 - **WebView2 Runtime** — préinstallé sur Windows 11 ; à [installer manuellement](https://developer.microsoft.com/microsoft-edge/webview2/) sur Windows 10
 
-### 🎥 libmpv-2.dll (crucial)
+###  libmpv-2.dll (crucial)
 Le lecteur multimédia nécessite **libmpv-2.dll** (build LGPL, non modifié) :
 
 #### Mode développement
@@ -97,7 +97,7 @@ cp libmpv-2.dll apps/desktop/src-tauri/libs/
 
 ---
 
-## 📦 Installation et utilisation
+##  Installation et utilisation
 
 ### Mode développement (hot-reload)
 
@@ -134,7 +134,7 @@ apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault\ Media_0.4.0-alpha
 
 ---
 
-## 🏗️ Architecture
+##  Architecture
 
 ### Stack technologique
 
@@ -235,7 +235,7 @@ Mise à jour du frontend (React State)
 
 ---
 
-## 📜 Licence
+##  Licence
 
 AetherVault Media est publié sous la **Licence MIT**.
 
@@ -243,15 +243,15 @@ AetherVault Media est publié sous la **Licence MIT**.
 
 ---
 
-## 📖 Documentation complète
+##  Documentation complète
 
 Pour l'architecture détaillée, le plan de développement (roadmap), les choix techniques et les étapes de livraison :
 
-👉 **[docs/AetherVault-Media-Documentation-Technique.md](docs/AetherVault-Media-Documentation-Technique.md)**
+ **[docs/AetherVault-Media-Documentation-Technique.md](docs/AetherVault-Media-Documentation-Technique.md)**
 
 ---
 
-## 🤝 Contribution
+##  Contribution
 
 Ce projet est en développement actif sous Tauri 2. Les contributions sont bienvenues — consultez la documentation technique pour comprendre l'architecture avant de soumettre des pull requests.
 
@@ -263,7 +263,7 @@ Points chauds pour les contributeurs :
 
 ---
 
-## 📬 Support et retours
+##  Support et retours
 
 Pour les questions, bugs ou suggestions d'amélioration, ouvrez les issues sur GitHub.
 
