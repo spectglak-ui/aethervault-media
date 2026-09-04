@@ -701,15 +701,12 @@ fn locate_library() -> Result<PathBuf, String> {
         .and_then(|path| path.parent().map(|p| p.to_path_buf()))
         .ok_or_else(|| "Impossible de déterminer le dossier de l'exécutable".to_string())?;
 
-    // Utilise platform::resolve_mpv() qui gère tous les OS
-    let candidates = platform::mpv_lib_candidates();
     let resolved = platform::resolve_mpv(&exe_dir, Some(&exe_dir.join("resources")));
 
     if resolved.exists() {
         return Ok(resolved);
     }
 
-    // Message d'erreur avec instructions spécifiques à l'OS
     Err(format!(
         "Aucune libmpv trouvée. {} (recherché dans : {}, ressources)",
         platform::mpv_install_hint(),

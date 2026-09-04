@@ -501,42 +501,23 @@ function TmdbWelcomeModal() {
   const modalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // 0.4.1 : détection via la VRAIE API (metadataApi.getSettings → api_key).
+  // La modale ne s'affiche QUE si aucune clé n'est configurée.
   useEffect(() => {
-    // Vérifie si une clé API TMDB est déjà configurée
-    const checkApiKey = async () => {
-      try {
-        const api = metadataApi as unknown as {
-          getTmdbApiKey?: () => Promise<string | null>;
-          get?: () => Promise<{ tmdb_api_key?: string | null } | null>;
-        };
-        
-        let key: string | null = null;
-        if (typeof api.getTmdbApiKey === "function") {
-          key = await api.getTmdbApiKey();
-        } else if (typeof api.get === "function") {
-          const s = await api.get();
-          key = s?.tmdb_api_key ?? null;
-        }
-        
-        // Affiche la modale uniquement si aucune clé n'est configurée
-        if (!key) {
-          setVisible(true);
-        }
-      } catch (err) {
-        console.warn("[tmdb] vérification clé échouée :", err);
-        // En cas d'erreur, ne pas bloquer l'utilisateur
-      }
-    };
-    
-    void checkApiKey();
+    metadataApi
+      .getSettings()
+      .then((settings) => {
+        if (!settings.api_key || !settings.api_key.trim()) setVisible(true);
+      })
+      .catch(() => {
+        // En cas d'erreur, ne pas bloquer l'utilisateur avec la modale.
+      });
   }, []);
 
-  const close = () => {
-    setVisible(false);
-    // NE PAS poser de flag localStorage ici : la modale doit réapparaître
-    // à la prochaine connexion si la clé n'est toujours pas renseignée
-  };
+  // « Passer » : ferme sans mémoriser → reviendra à la prochaine connexion.
+  const close = () => setVisible(false);
 
+  // « Activer » : enregistre la clé (en conservant langue + auto_enrich).
   const save = async () => {
     if (!apiKey.trim()) {
       close();
@@ -544,18 +525,8 @@ function TmdbWelcomeModal() {
     }
     setSaving(true);
     try {
-      const api = metadataApi as unknown as {
-        setTmdbApiKey?: (key: string) => Promise<unknown>;
-        save?: (s: { tmdb_api_key: string }) => Promise<unknown>;
-      };
-      
-      if (typeof api.setTmdbApiKey === "function") {
-        await api.setTmdbApiKey(apiKey.trim());
-      } else if (typeof api.save === "function") {
-        await api.save({ tmdb_api_key: apiKey.trim() });
-      }
-      
-      // Clé enregistrée avec succès : la modale ne s'affichera plus
+      const settings = await metadataApi.getSettings();
+      await metadataApi.saveSettings({ ...settings, api_key: apiKey.trim() });
       close();
     } catch (err) {
       console.error("[tmdb] sauvegarde clé échouée :", err);
@@ -566,26 +537,18 @@ function TmdbWelcomeModal() {
 
   useEffect(() => {
     if (!visible) return;
-
-    // Focus initial sur l'input.
     const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 100);
-
-    // Gestion Escape pour fermer.
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        close();
-      }
+      if (e.key === "Escape") close();
     };
-
-    // Focus trap : Tab ne quitte pas la modale.
     const handleTab = (e: KeyboardEvent) => {
       if (e.key !== "Tab" || !modalRef.current) return;
-      const focusableElements = modalRef.current.querySelectorAll(
+      const focusable = modalRef.current.querySelectorAll(
         'button, input, [tabindex]:not([tabindex="-1"])'
       );
-      if (focusableElements.length === 0) return;
-      const first = focusableElements[0] as HTMLElement;
-      const last = focusableElements[focusableElements.length - 1] as HTMLElement;
+      if (focusable.length === 0) return;
+      const first = focusable[0] as HTMLElement;
+      const last = focusable[focusable.length - 1] as HTMLElement;
       if (e.shiftKey && document.activeElement === first) {
         e.preventDefault();
         last.focus();
@@ -594,10 +557,8 @@ function TmdbWelcomeModal() {
         first.focus();
       }
     };
-
     document.addEventListener("keydown", handleKeyDown);
     document.addEventListener("keydown", handleTab);
-
     return () => {
       window.clearTimeout(focusTimer);
       document.removeEventListener("keydown", handleKeyDown);
@@ -606,8 +567,8 @@ function TmdbWelcomeModal() {
   }, [visible]);
 
   if (!visible) return null;
-
   return (
+    // ... garde le JSX existant (le <div ref={modalRef} ...> jusqu'à la fin)
     <div
       ref={modalRef}
       role="dialog"
