@@ -652,6 +652,39 @@ function ThemeColorsSection() {
     </section>
   );
 }
+/** 0.4.1 : visibilité de la catégorie Privé sur l'accueil — option
+déplacée ici depuis l'accueil (contrôle centralisé). */
+function HomePrivateVisibilitySection() {
+  const [hidePrivate, setHidePrivate] = useState(() => {
+    try {
+      return localStorage.getItem("avm-home-hide-private") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggle = (value: boolean) => {
+    setHidePrivate(value);
+    try {
+      localStorage.setItem("avm-home-hide-private", value ? "1" : "0");
+    } catch {
+      // best-effort
+    }
+    window.dispatchEvent(new Event("avm-home-hide-private-changed"));
+  };
+  return (
+    <section className="avm-settings-section">
+      <h2>Accueil — catégorie Privé</h2>
+      <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input type="checkbox" checked={hidePrivate} onChange={(e) => toggle(e.target.checked)} />
+        Masquer la catégorie Privé de la page d'accueil
+      </label>
+      <p className="avm-settings-muted">
+        La catégorie Privé reste accessible depuis la barre latérale ; cette option
+        retire seulement sa tuile de l'accueil.
+      </p>
+    </section>
+  );
+}
 export function SettingsPage() {
   return (
     <div>
@@ -659,11 +692,12 @@ export function SettingsPage() {
         title="Paramètres"
         description="Apparence, sécurité du coffre privé et informations système."
       />
-	  <ProfileAvatarSection />
-	  <HomeBackdropSection />
-	  <SkipSettingsSection />
+      <ProfileAvatarSection />
+      <HomeBackdropSection />
+      <HomePrivateVisibilitySection />
+      <SkipSettingsSection />
       <AppearanceSection />
-	  <ThemeColorsSection />
+      <ThemeColorsSection />
       <TmdbSection />
       <SecuritySection />
       <ExperimentalPlayerSection />

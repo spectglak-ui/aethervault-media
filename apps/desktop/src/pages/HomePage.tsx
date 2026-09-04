@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { Eye, EyeOff, Info, Play } from "lucide-react";
+import { Info, Play } from "lucide-react";
 import { Button, PageHeader } from "@aethervault/ui-kit";
 import type { Category, TitleDetails, TitleSummary } from "@aethervault/shared-types";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -21,19 +21,11 @@ function isAnimeCategory(c: Category): boolean {
 }
 
 /**
- * Accueil v2 (Étape 7, 3 niveaux validés) :
- * - héro « à la une » : backdrop TMDB assombri + nom/méta/synopsis +
- *   boutons Lecture (films) / Plus d'infos, change à chaque lancement ;
- * - tuiles catégories en 16:9, nom en overlay, hover élévation ;
- * - rangées horizontales « style Netflix » : Ajouts récents + une rangée
- *   par catégorie publique, affiches verticales, survol nom/année.
- *
- * 0.4.0 : tuile AetherFy (badge « Alpha », bannière personnalisée en
- * attendant la bannière universelle) insérée entre Animé et Privé ;
- * option pour masquer la catégorie Privé (persistée, réversible).
- *
- * 0.4.1 (audit UX) : erreurs de chargement affichées à l'utilisateur
- * avec bouton « Réessayer » (plus de page vide silencieuse).
+ * Accueil v2 : héro « à la une », tuiles catégories 16:9, rangées
+ * horizontales style Netflix.
+ * 0.4.0 : tuile AetherFy (badge Alpha) entre Animé et Privé.
+ * 0.4.1 : masquage de Privé piloté depuis les Paramètres (plus aucun
+ * contrôle sur l'accueil).
  */
 export function HomePage() {
   const navigate = useNavigate();
@@ -45,7 +37,6 @@ export function HomePage() {
   const [hero, setHero] = useState<TitleDetails | null>(null);
   const [starting, setStarting] = useState(false);
   const [homeBackdrop, setHomeBackdrop] = useState<string | null>(null);
-  // 0.4.0 : visibilité de la catégorie Privé sur l'accueil.
   const [hidePrivate, setHidePrivate] = useState<boolean>(() => {
     try {
       return localStorage.getItem("avm-home-hide-private") === "1";
@@ -53,18 +44,20 @@ export function HomePage() {
       return false;
     }
   });
-  // 0.4.1 (audit UX) : erreurs de chargement visibles + rechargement.
-  const [loadingErrors, setLoadingErrors] = useState<string[]>([]);
-  const [reloadKey, setReloadKey] = useState(0);
 
-  const applyHidePrivate = (hidden: boolean) => {
-    setHidePrivate(hidden);
-    try {
-      localStorage.setItem("avm-home-hide-private", hidden ? "1" : "0");
-    } catch {
-      // stockage indisponible : non bloquant
-    }
-  };
+  // 0.4.1 : l'option vit dans les Paramètres — écoute du changement
+  // pour mettre à jour l'accueil sans rechargement.
+  useEffect(() => {
+    const sync = () => {
+      try {
+        setHidePrivate(localStorage.getItem("avm-home-hide-private") === "1");
+      } catch {
+        // best-effort
+      }
+    };
+    window.addEventListener("avm-home-hide-private-changed", sync);
+    return () => window.removeEventListener("avm-home-hide-private-changed", sync);
+  }, []);
 
   useEffect(() => {
     const load = () => {
@@ -77,45 +70,12 @@ export function HomePage() {
     return () => window.removeEventListener("avm-home-backdrop-changed", load);
   }, []);
 
-  // 0.4.1 : chaque échec de chargement est signalé à l'utilisateur.
   useEffect(() => {
-    setLoadingErrors([]);
-    setRows({});
-    const pushError = (msg: string) =>
-      setLoadingErrors((prev) => [...prev, msg]);
-
-    categoryApi
-      .list()
-      .then(setCategories)
-      .catch((err) => {
-        pushError(`Catégories indisponibles : ${String(err)}`);
-        setCategories([]);
-      });
-
-    titleApi
-      .hero()
-      .then(setHero)
-      .catch((err) => {
-        console.warn("[home] héro échoué :", err);
-        setHero(null);
-      });
-
-    titleApi
-      .recent()
-      .then(setRecent)
-      .catch((err) => {
-        pushError(`Ajouts récents indisponibles : ${String(err)}`);
-        setRecent([]);
-      });
-
-    titleApi
-      .continueWatching()
-      .then(setContinueItems)
-      .catch((err) => {
-        console.warn("[home] continuer à regarder échoué :", err);
-        setContinueItems([]);
-      });
-  }, [reloadKey]);
+    categoryApi.list().then(setCategories).catch(() => setCategories([]));
+    titleApi.hero().then(setHero).catch(() => setHero(null));
+    titleApi.recent().then(setRecent).catch(() => setRecent([]));
+    titleApi.continueWatching().then(setContinueItems).catch(() => setContinueItems([]));
+  }, []);
 
   useEffect(() => {
     if (!categories) return;
@@ -124,17 +84,13 @@ export function HomePage() {
       titleApi
         .listByCategory(category.id)
         .then((list) => setRows((prev) => ({ ...prev, [category.id]: list })))
-        .catch((err) => {
-          console.warn(`[home] catégorie ${category.name} échouée :`, err);
-        });
+        .catch(() => {});
     }
   }, [categories]);
 
   const heroCategory =
     hero && categories ? categories.find((c) => c.id === hero.category_id) : undefined;
 
-  /** Rangée « Continuer à regarder » : le clic relance la lecture, la
-   * reprise de position est déjà gérée par le lecteur. */
   const handleContinuePlay = (item: ContinueWatchingItem) => {
     play({ id: item.mediaFileId, title: item.label, path: item.path, libraryId: item.libraryId });
   };
@@ -155,10 +111,6 @@ export function HomePage() {
     if (category) navigate(`/category/${category.key}/title/${title.id}`);
   };
 
-  /** 0.4.0 : tuile AetherFy — bannière horizontale personnalisée
-   * (dégradé) en attendant la bannière universelle ; badge « Alpha ».
-   * Pour passer à la bannière universelle : remplacer le <div> dégradé
-   * par <img src={assetUrl(...)} /> comme les autres tuiles. */
   const aetherfyTile = (
     <button
       key="aetherfy"
@@ -196,7 +148,6 @@ export function HomePage() {
           style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
         >
           AetherFy
-          {/* 0.4.0 : sigle Alpha */}
           <span
             style={{
               fontSize: 9,
@@ -280,164 +231,59 @@ export function HomePage() {
         />
       )}
 
-      {/* 0.4.1 (audit UX) : erreurs de chargement visibles + Réessayer. */}
-      {loadingErrors.length > 0 && (
-        <div style={{ padding: "8px 24px 0" }}>
-          {loadingErrors.map((err, i) => (
-            <div
-              key={i}
-              role="alert"
-              style={{
-                padding: "10px 14px",
-                margin: "8px 0",
-                background: "rgba(255, 59, 48, 0.1)",
-                border: "1px solid rgba(255, 59, 48, 0.3)",
-                borderRadius: 8,
-                fontSize: 13,
-                color: "#ff6b6b",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-              }}
-            >
-              <span>⚠️ {err}</span>
-              <button
-                type="button"
-                onClick={() => setReloadKey((k) => k + 1)}
-                style={{
-                  background: "rgba(255, 59, 48, 0.2)",
-                  border: "1px solid rgba(255, 59, 48, 0.4)",
-                  color: "#ff6b6b",
-                  cursor: "pointer",
-                  padding: "5px 10px",
-                  borderRadius: 4,
-                  fontSize: 12,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                Réessayer
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
       {categories !== null && (
-        <>
-          <div className="avm-home-tiles">
-            {categories.flatMap((category) => {
-              const out: ReactNode[] = [];
-              if (category.key === "private") {
-                // 0.4.0 : Privé masquable depuis l'accueil.
-                if (!hidePrivate) {
-                  out.push(
-                    <button
-                      key={category.id}
-                      className="avm-home-tile"
-                      onClick={() => navigate("/private")}
-                      style={{ position: "relative" }}
-                    >
-                      {assetUrl(category.banner) ? (
-                        <img src={assetUrl(category.banner)} alt="" />
-                      ) : (
-                        <div className="avm-card__placeholder" aria-hidden="true" />
-                      )}
-                      <span className="avm-home-tile__overlay">
-                        <span className="avm-home-tile__name">{category.name}</span>
-                        <span className="avm-home-tile__count">
-                          {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
-                        </span>
+        <div className="avm-home-tiles">
+          {categories.flatMap((category) => {
+            const out: ReactNode[] = [];
+            if (category.key === "private") {
+              // 0.4.1 : Privé masquable uniquement depuis les Paramètres.
+              if (!hidePrivate) {
+                out.push(
+                  <button
+                    key={category.id}
+                    className="avm-home-tile"
+                    onClick={() => navigate("/private")}
+                  >
+                    {assetUrl(category.banner) ? (
+                      <img src={assetUrl(category.banner)} alt="" />
+                    ) : (
+                      <div className="avm-card__placeholder" aria-hidden="true" />
+                    )}
+                    <span className="avm-home-tile__overlay">
+                      <span className="avm-home-tile__name">{category.name}</span>
+                      <span className="avm-home-tile__count">
+                        {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
                       </span>
-                      {/* 0.4.0 : bouton masquer Privé (coin haut droit) */}
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        aria-label="Masquer la catégorie Privé de l'accueil"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          applyHidePrivate(true);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.stopPropagation();
-                            applyHidePrivate(true);
-                          }
-                        }}
-                        style={{
-                          position: "absolute",
-                          top: 8,
-                          right: 8,
-                          zIndex: 2,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          width: 26,
-                          height: 26,
-                          borderRadius: 8,
-                          background: "rgba(0,0,0,.55)",
-                          color: "#fff",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <EyeOff size={13} />
-                      </span>
-                    </button>
-                  );
-                }
-                return out;
-              }
-              out.push(
-                <button
-                  key={category.id}
-                  className="avm-home-tile"
-                  onClick={() => navigate(`/category/${category.key}`)}
-                >
-                  {assetUrl(category.banner) ? (
-                    <img src={assetUrl(category.banner)} alt="" />
-                  ) : (
-                    <div className="avm-card__placeholder" aria-hidden="true" />
-                  )}
-                  <span className="avm-home-tile__overlay">
-                    <span className="avm-home-tile__name">{category.name}</span>
-                    <span className="avm-home-tile__count">
-                      {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
                     </span>
-                  </span>
-                </button>
-              );
-              // 0.4.0 : AetherFy juste après Animé (donc entre Animé et Privé).
-              if (isAnimeCategory(category)) out.push(aetherfyTile);
+                  </button>
+                );
+              }
               return out;
-            })}
-            {/* Repli : si aucune catégorie Animé, AetherFy en fin de grille. */}
-            {!categories.some(isAnimeCategory) && aetherfyTile}
-          </div>
-          {/* 0.4.0 : contrôle de restauration quand Privé est masqué. */}
-          {hidePrivate && (
-            <div style={{ display: "flex", justifyContent: "flex-end", padding: "6px 8px 0" }}>
+            }
+            out.push(
               <button
-                type="button"
-                onClick={() => applyHidePrivate(false)}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  fontSize: 11,
-                  color: "var(--color-text-muted, #9a9aa3)",
-                  background: "transparent",
-                  border: "1px dashed var(--color-border, #2c2c33)",
-                  borderRadius: 8,
-                  padding: "4px 10px",
-                  cursor: "pointer",
-                }}
+                key={category.id}
+                className="avm-home-tile"
+                onClick={() => navigate(`/category/${category.key}`)}
               >
-                <Eye size={12} />
-                Catégorie Privé masquée — afficher
+                {assetUrl(category.banner) ? (
+                  <img src={assetUrl(category.banner)} alt="" />
+                ) : (
+                  <div className="avm-card__placeholder" aria-hidden="true" />
+                )}
+                <span className="avm-home-tile__overlay">
+                  <span className="avm-home-tile__name">{category.name}</span>
+                  <span className="avm-home-tile__count">
+                    {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
+                  </span>
+                </span>
               </button>
-            </div>
-          )}
-        </>
+            );
+            if (isAnimeCategory(category)) out.push(aetherfyTile);
+            return out;
+          })}
+          {!categories.some(isAnimeCategory) && aetherfyTile}
+        </div>
       )}
 
       {continueItems !== null && continueItems.length > 0 && (
