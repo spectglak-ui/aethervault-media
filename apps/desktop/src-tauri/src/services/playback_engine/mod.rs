@@ -2,7 +2,6 @@
 //! (abandon du rendu Win32/OpenGL natif au profit du rendu logiciel +
 //! `<canvas>`, voir le rapport de transmission "écran noir" et la
 //! discussion qui a suivi).
-
 pub(crate) mod mpv_ffi;
 mod sw_render;
 
@@ -55,7 +54,6 @@ pub struct ExtractedMedia {
 
 #[derive(Clone, Copy)]
 struct MpvHandlePtr(*mut c_void);
-
 unsafe impl Send for MpvHandlePtr {}
 unsafe impl Sync for MpvHandlePtr {}
 
@@ -65,7 +63,7 @@ struct SurfaceState {
     size: Arc<(AtomicI32, AtomicI32)>,
     in_flight_frames: Arc<AtomicI32>,
     /// Repli PiP : dernière image rendue, partagée avec le thread de rendu
-    /// (`sw_render.rs`) et lue par la commande `player_pull_frame` pour les
+    /// ( `sw_render.rs` ) et lue par la commande  `player_pull_frame`  pour les
     /// fenêtres dont le canal Tauri est muet (fenêtre détachée).
     latest_frame: Arc<Mutex<Vec<u8>>>,
 }
@@ -103,6 +101,7 @@ impl PlaybackEngineHandle {
 
     pub fn start(app_handle: AppHandle) -> Result<Arc<Self>, String> {
         let library_path = locate_library()?;
+
         if let Some(ytdlp) = locate_ytdlp() {
             if let Some(dir) = ytdlp.parent() {
                 let old_path = std::env::var("PATH").unwrap_or_default();
@@ -116,6 +115,7 @@ impl PlaybackEngineHandle {
         } else {
             log::info!("[playback] yt-dlp introuvable — lecture d'URLs désactivée");
         }
+
         let functions =
             Arc::new(MpvFunctions::load(&library_path).map_err(|err| err.to_string())?);
         let mpv_ptr = unsafe { (functions.create)() };
@@ -123,10 +123,12 @@ impl PlaybackEngineHandle {
             return Err("mpv_create a échoué".to_string());
         }
         let mpv = MpvHandlePtr(mpv_ptr);
+
         set_option(&functions, mpv, "vo", "libmpv")?;
         set_option(&functions, mpv, "hwdec", "auto-safe")?;
         set_option(&functions, mpv, "video-timing-offset", "0.150")?;
         set_option(&functions, mpv, "keep-open", "yes")?;
+
         let _ = set_option(&functions, mpv, "ytdl", "yes");
         let _ = set_option(
             &functions,
@@ -134,39 +136,46 @@ impl PlaybackEngineHandle {
             "ytdl-format",
             "bv*[height<=1080][vcodec^=avc1]+ba/b[height<=1080]",
         );
+
         // 0.4.0 : fiabilité streaming AetherFy — gros cache qui DEVANCE la
         // lecture (60 s / 512 Mio) pour absorber le throttling YouTube,
         // buffer de flux 4 Mio, cache seekable = retour arrière instantané.
-             let _ = set_option(&functions, mpv, "cache", "yes");
+        let _ = set_option(&functions, mpv, "cache", "yes");
         let _ = set_option(&functions, mpv, "demuxer-max-bytes", "512MiB");
         let _ = set_option(&functions, mpv, "demuxer-max-back-bytes", "256MiB");
         let _ = set_option(&functions, mpv, "network-timeout", "60");
         let _ = set_option(&functions, mpv, "hr-seek", "yes");
-		let _ = set_option(&functions, mpv, "demuxer-cache-wait", "yes");
+        let _ = set_option(&functions, mpv, "demuxer-cache-wait", "yes");
         let _ = set_option(&functions, mpv, "cache-pause-initial", "yes");
         let _ = set_option(&functions, mpv, "cache-pause-wait", "10");
-		let _ = set_option(&functions, mpv, "video-sync", "display-resample");
+        let _ = set_option(&functions, mpv, "video-sync", "display-resample");
         let _ = set_option(&functions, mpv, "hr-seek-framedrop", "no");
         let _ = set_option(&functions, mpv, "video-sync-max-video-change", "5");
         let _ = set_option(&functions, mpv, "video-sync-max-audio-change", "0.1");
+
         let rc = unsafe { (functions.initialize)(mpv.0) };
         if rc < 0 {
             return Err(error_string(&functions, rc));
         }
+
         observe(&functions, mpv, "time-pos", MpvFormat::Double);
         observe(&functions, mpv, "duration", MpvFormat::Double);
         observe(&functions, mpv, "pause", MpvFormat::Flag);
         observe(&functions, mpv, "demuxer-cache-time", MpvFormat::Double);
+
         let handle = Arc::new(Self {
             functions: functions.clone(),
             mpv,
             surface: Mutex::new(None),
         });
+
         std::thread::spawn(move || run_event_thread(functions, mpv, app_handle));
+
         log::info!(
             "Playback Engine Bridge démarré (libmpv chargée depuis {})",
             library_path.display()
         );
+
         Ok(handle)
     }
 
@@ -188,16 +197,19 @@ impl PlaybackEngineHandle {
     pub fn load_url(&self, url: &str) -> Result<(), String> {
         let ytdlp = locate_ytdlp().ok_or_else(|| "yt-dlp introuvable".to_string())?;
         log::info!("[playback] extraction des flux via yt-dlp : {url}");
-             // 0.4.0 : le client web (défaut) est le PLUS throtté par YouTube
-     // (gel à 10-20 s). Android d'abord : flux progressifs stables.
-     let configs: &[&[&str]] = &[
-         &["--extractor-args", "youtube:player_client=android"],
-         &["--extractor-args", "youtube:player_client=ios"],
-         &[],
-         &["--extractor-args", "youtube:player_client=tv"],
-     ];
+
+        // 0.4.0 : le client web (défaut) est le PLUS throtté par YouTube
+        // (gel à 10-20 s). Android d'abord : flux progressifs stables.
+        let configs: &[&[&str]] = &[
+            &["--extractor-args", "youtube:player_client=android"],
+            &["--extractor-args", "youtube:player_client=ios"],
+            &[],
+            &["--extractor-args", "youtube:player_client=tv"],
+        ];
+
         let mut last_err = String::new();
         let mut urls: Vec<String> = Vec::new();
+
         for extra in configs {
             let mut cmd = std::process::Command::new(&ytdlp);
             cmd.args([
@@ -208,8 +220,10 @@ impl PlaybackEngineHandle {
             ]);
             cmd.args(*extra);
             cmd.arg(url);
+
             #[cfg(windows)]
             cmd.creation_flags(0x08000000);
+
             match cmd.output() {
                 Ok(output) if output.status.success() => {
                     let found: Vec<String> = String::from_utf8_lossy(&output.stdout)
@@ -218,6 +232,7 @@ impl PlaybackEngineHandle {
                         .filter(|l| !l.is_empty())
                         .map(str::to_string)
                         .collect();
+
                     if !found.is_empty() {
                         log::info!(
                             "[playback] flux extraits via client {:?} ({} URL(s))",
@@ -236,13 +251,16 @@ impl PlaybackEngineHandle {
                 Err(e) => last_err = e.to_string(),
             }
         }
+
         if urls.is_empty() {
             return Err(format!("yt-dlp en échec : {last_err}"));
         }
+
         let video = urls[0].clone();
         if urls.len() == 1 {
             return self.load_direct(&video);
         }
+
         let opts = format!("audio-file={}", urls[1]);
         if self
             .command(&["loadfile", &video, "replace", "0", &opts])
@@ -251,6 +269,7 @@ impl PlaybackEngineHandle {
             log::warn!("[playback] options loadfile non supportées — vidéo seule");
             self.load_direct(&video)?;
         }
+
         self.set_paused(false)
     }
 
@@ -259,12 +278,15 @@ impl PlaybackEngineHandle {
     pub fn extract_media(&self, url: &str) -> Result<ExtractedMedia, String> {
         let ytdlp = locate_ytdlp().ok_or_else(|| "yt-dlp introuvable".to_string())?;
         log::info!("[playback] extraction hybride (HTML5/mpv) : {url}");
+
         let configs: &[&[&str]] = &[
             &[],
             &["--extractor-args", "youtube:player_client=android"],
             &["--extractor-args", "youtube:player_client=tv"],
         ];
+
         let mut last_err = String::new();
+
         for extra in configs {
             let mut cmd = std::process::Command::new(&ytdlp);
             cmd.args([
@@ -275,8 +297,10 @@ impl PlaybackEngineHandle {
             ]);
             cmd.args(*extra);
             cmd.arg(url);
+
             #[cfg(windows)]
             cmd.creation_flags(0x08000000);
+
             match cmd.output() {
                 Ok(output) if output.status.success() => {
                     let urls: Vec<String> = String::from_utf8_lossy(&output.stdout)
@@ -285,10 +309,12 @@ impl PlaybackEngineHandle {
                         .filter(|l| !l.is_empty())
                         .map(str::to_string)
                         .collect();
+
                     if urls.is_empty() {
                         last_err = "aucun flux extrait".to_string();
                         continue;
                     }
+
                     return Ok(if urls.len() == 1 {
                         ExtractedMedia {
                             kind: "merged".into(),
@@ -309,6 +335,7 @@ impl PlaybackEngineHandle {
                 Err(e) => last_err = e.to_string(),
             }
         }
+
         Err(format!("yt-dlp en échec : {last_err}"))
     }
 
@@ -354,15 +381,19 @@ impl PlaybackEngineHandle {
             .get_property_int64("track-list/count")
             .unwrap_or(0)
             .max(0);
+
         let mut list = TrackList::default();
+
         for index in 0..count {
             let Ok(id) = self.get_property_int64(&format!("track-list/{index}/id")) else {
                 continue;
             };
+
             let Some(track_type) = self.get_property_string_opt(&format!("track-list/{index}/type"))
             else {
                 continue;
             };
+
             let track = PlayerTrack {
                 id,
                 lang: self.get_property_string_opt(&format!("track-list/{index}/lang")),
@@ -371,12 +402,14 @@ impl PlaybackEngineHandle {
                     .get_property_flag(&format!("track-list/{index}/selected"))
                     .unwrap_or(false),
             };
+
             match track_type.as_str() {
                 "audio" => list.audio.push(track),
                 "sub" => list.subtitles.push(track),
                 _ => {}
             }
         }
+
         Ok(list)
     }
 
@@ -394,29 +427,33 @@ impl PlaybackEngineHandle {
         self.command(&["screenshot-to-file", target_path, "video"])
     }
 
-         pub fn attach_surface(
-         &self,
-         channel: Channel<InvokeResponseBody>,
-         width: i32,
-         height: i32,
-     ) -> Result<(), String> {
+    pub fn attach_surface(
+        &self,
+        channel: Channel<InvokeResponseBody>,
+        width: i32,
+        height: i32,
+    ) -> Result<(), String> {
         let mut guard = self.surface.lock().unwrap_or_else(|p| p.into_inner());
+
         if let Some(mut previous) = guard.take() {
             previous.stop_flag.store(true, Ordering::Relaxed);
             if let Some(render_thread) = previous.render_thread.take() {
                 let _ = render_thread.join();
             }
         }
+
         let size = Arc::new((AtomicI32::new(width), AtomicI32::new(height)));
         let stop_flag = Arc::new(AtomicBool::new(false));
         let in_flight_frames = Arc::new(AtomicI32::new(0));
         let latest_frame = Arc::new(Mutex::new(Vec::new()));
+
         let functions = self.functions.clone();
         let mpv = sw_render::MpvHandlePtr(self.mpv.0);
         let render_stop_flag = stop_flag.clone();
         let render_size = size.clone();
         let render_in_flight = in_flight_frames.clone();
         let render_latest_frame = latest_frame.clone();
+
         let render_thread = std::thread::spawn(move || {
             sw_render::run(
                 functions,
@@ -428,6 +465,7 @@ impl PlaybackEngineHandle {
                 render_latest_frame,
             );
         });
+
         *guard = Some(SurfaceState {
             stop_flag,
             render_thread: Some(render_thread),
@@ -435,9 +473,12 @@ impl PlaybackEngineHandle {
             in_flight_frames,
             latest_frame,
         });
+
         let _ = self.command(&["seek", "0", "relative"]);
+
         let functions_for_redraw = self.functions.clone();
         let mpv_addr = self.mpv.0 as usize;
+
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(300));
             let c_args = ["seek", "0", "relative"]
@@ -446,11 +487,13 @@ impl PlaybackEngineHandle {
                 .collect::<Vec<_>>();
             let mut ptrs: Vec<*const c_char> = c_args.iter().map(|a| a.as_ptr()).collect();
             ptrs.push(std::ptr::null());
+
             let mpv_ptr = mpv_addr as *mut c_void;
             unsafe {
                 (functions_for_redraw.command)(mpv_ptr, ptrs.as_ptr());
             }
         });
+
         Ok(())
     }
 
@@ -483,6 +526,7 @@ impl PlaybackEngineHandle {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take();
+
         if let Some(mut state) = previous {
             state.stop_flag.store(true, Ordering::Relaxed);
             if let Some(render_thread) = state.render_thread.take() {
@@ -499,7 +543,9 @@ impl PlaybackEngineHandle {
         let mut ptrs: Vec<*const std::os::raw::c_char> =
             c_args.iter().map(|arg| arg.as_ptr()).collect();
         ptrs.push(std::ptr::null());
+
         let rc = unsafe { (self.functions.command)(self.mpv.0, ptrs.as_ptr()) };
+
         if rc < 0 {
             Err(error_string(&self.functions, rc))
         } else {
@@ -510,6 +556,7 @@ impl PlaybackEngineHandle {
     fn set_property_flag(&self, name: &str, value: bool) -> Result<(), String> {
         let cname = CString::new(name).unwrap_or_default();
         let mut raw: c_int = if value { 1 } else { 0 };
+
         let rc = unsafe {
             (self.functions.set_property)(
                 self.mpv.0,
@@ -518,6 +565,7 @@ impl PlaybackEngineHandle {
                 &mut raw as *mut _ as *mut c_void,
             )
         };
+
         if rc < 0 {
             Err(error_string(&self.functions, rc))
         } else {
@@ -528,6 +576,7 @@ impl PlaybackEngineHandle {
     fn set_property_double(&self, name: &str, value: f64) -> Result<(), String> {
         let cname = CString::new(name).unwrap_or_default();
         let mut raw = value;
+
         let rc = unsafe {
             (self.functions.set_property)(
                 self.mpv.0,
@@ -536,6 +585,7 @@ impl PlaybackEngineHandle {
                 &mut raw as *mut _ as *mut c_void,
             )
         };
+
         if rc < 0 {
             Err(error_string(&self.functions, rc))
         } else {
@@ -546,6 +596,7 @@ impl PlaybackEngineHandle {
     fn get_property_int64(&self, name: &str) -> Result<i64, String> {
         let cname = CString::new(name).unwrap_or_default();
         let mut value: i64 = 0;
+
         let rc = unsafe {
             (self.functions.get_property)(
                 self.mpv.0,
@@ -554,6 +605,7 @@ impl PlaybackEngineHandle {
                 &mut value as *mut _ as *mut c_void,
             )
         };
+
         if rc < 0 {
             Err(error_string(&self.functions, rc))
         } else {
@@ -564,6 +616,7 @@ impl PlaybackEngineHandle {
     fn get_property_flag(&self, name: &str) -> Result<bool, String> {
         let cname = CString::new(name).unwrap_or_default();
         let mut value: c_int = 0;
+
         let rc = unsafe {
             (self.functions.get_property)(
                 self.mpv.0,
@@ -572,6 +625,7 @@ impl PlaybackEngineHandle {
                 &mut value as *mut _ as *mut c_void,
             )
         };
+
         if rc < 0 {
             Err(error_string(&self.functions, rc))
         } else {
@@ -582,6 +636,7 @@ impl PlaybackEngineHandle {
     fn get_property_string_opt(&self, name: &str) -> Option<String> {
         let cname = CString::new(name).ok()?;
         let mut ptr: *mut c_char = std::ptr::null_mut();
+
         let rc = unsafe {
             (self.functions.get_property)(
                 self.mpv.0,
@@ -590,9 +645,11 @@ impl PlaybackEngineHandle {
                 &mut ptr as *mut _ as *mut c_void,
             )
         };
+
         if rc < 0 || ptr.is_null() {
             return None;
         }
+
         let value = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().to_string();
         unsafe { (self.functions.free)(ptr as *mut c_void) };
         Some(value)
@@ -608,6 +665,7 @@ fn set_option(
     let cname = CString::new(name).unwrap_or_default();
     let cvalue = CString::new(value).unwrap_or_default();
     let rc = unsafe { (functions.set_option_string)(mpv.0, cname.as_ptr(), cvalue.as_ptr()) };
+
     if rc < 0 {
         Err(error_string(functions, rc))
     } else {
@@ -633,71 +691,76 @@ fn error_string(functions: &MpvFunctions, code: c_int) -> String {
     }
 }
 
+/// 0.5.0 (multiplateforme) : résolution de libmpv via le module platform.
+/// Ordre de recherche : AVM_BIN_DIR → ressources Tauri → dossier exe → PATH.
 fn locate_library() -> Result<PathBuf, String> {
+    use crate::services::platform;
+
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(|p| p.to_path_buf()))
         .ok_or_else(|| "Impossible de déterminer le dossier de l'exécutable".to_string())?;
-    const CANDIDATES: &[&str] = &["libmpv-2.dll", "mpv-2.dll", "libmpv.dll"];
-    let dirs = [exe_dir.clone(), exe_dir.join("resources")];
-    for name in CANDIDATES {
-        for dir in &dirs {
-            let candidate = dir.join(name);
-            if candidate.exists() {
-                return Ok(candidate);
-            }
-        }
+
+    // Utilise platform::resolve_mpv() qui gère tous les OS
+    let candidates = platform::mpv_lib_candidates();
+    let resolved = platform::resolve_mpv(&exe_dir, Some(&exe_dir.join("resources")));
+
+    if resolved.exists() {
+        return Ok(resolved);
     }
+
+    // Message d'erreur avec instructions spécifiques à l'OS
     Err(format!(
-        "Aucune libmpv trouvée à côté de l'exécutable ({}). Le binaire redistribuable (build LGPL) doit être déposé là par l'installateur — voir doc §4.2.",
+        "Aucune libmpv trouvée. {} (recherché dans : {}, ressources)",
+        platform::mpv_install_hint(),
         exe_dir.display()
     ))
 }
 
+/// 0.5.0 (multiplateforme) : résolution de yt-dlp via le module platform.
 fn locate_ytdlp() -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            dirs.push(dir.to_path_buf());
-            dirs.push(dir.join("resources"));
-        }
+    use crate::services::platform;
+
+    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let resolved = platform::resolve_yt_dlp(&exe_dir, Some(&exe_dir.join("resources")));
+
+    if resolved.exists() {
+        Some(resolved)
+    } else {
+        None
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        dirs.push(cwd);
-    }
-    for dir in dirs {
-        for name in ["yt-dlp.exe", "yt-dlp"] {
-            let candidate = dir.join(name);
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
 }
 
 fn run_event_thread(functions: Arc<MpvFunctions>, mpv: MpvHandlePtr, app_handle: AppHandle) {
     loop {
         let event_ptr = unsafe { (functions.wait_event)(mpv.0, -1.0) };
+
         if event_ptr.is_null() {
             continue;
         }
+
         let event = unsafe { &*event_ptr };
+
         match event.event_id {
             id if id == mpv_ffi::event_id::SHUTDOWN => {
                 log::info!("Playback Engine Bridge : arrêt du moteur mpv");
                 break;
             }
+
             id if id == mpv_ffi::event_id::PROPERTY_CHANGE => {
                 if event.data.is_null() {
                     continue;
                 }
+
                 let prop = unsafe { &*(event.data as *const mpv_ffi::mpv_event_property) };
+
                 if prop.name.is_null() || prop.data.is_null() {
                     continue;
                 }
+
                 let name = unsafe { CStr::from_ptr(prop.name) }.to_string_lossy();
                 let mut payload = PlayerStateEvent::default();
+
                 match name.as_ref() {
                     "demuxer-cache-time" if prop.format == MpvFormat::Double as c_int => {
                         payload.buffered_seconds = Some(unsafe { *(prop.data as *const f64) });
@@ -714,26 +777,32 @@ fn run_event_thread(functions: Arc<MpvFunctions>, mpv: MpvHandlePtr, app_handle:
                     }
                     _ => continue,
                 }
+
                 let _ = app_handle.emit("player-state", payload);
             }
+
             id if id == mpv_ffi::event_id::END_FILE => {
                 let end_file = if event.data.is_null() {
                     None
                 } else {
                     Some(unsafe { &*(event.data as *const mpv_ffi::mpv_event_end_file) })
                 };
+
                 let reason = end_file.map(|ef| ef.reason);
                 let is_real_end = matches!(
                     reason,
                     Some(mpv_ffi::end_file_reason::EOF) | Some(mpv_ffi::end_file_reason::ERROR)
                 );
+
                 log::info!("[playback] END_FILE reason={reason:?} is_real_end={is_real_end}");
+
                 let error = match (reason, end_file) {
                     (Some(mpv_ffi::end_file_reason::ERROR), Some(ef)) => {
                         Some(error_string(&functions, ef.error))
                     }
                     _ => None,
                 };
+
                 let _ = app_handle.emit(
                     "player-state",
                     PlayerStateEvent {
@@ -744,6 +813,7 @@ fn run_event_thread(functions: Arc<MpvFunctions>, mpv: MpvHandlePtr, app_handle:
                     },
                 );
             }
+
             _ => {}
         }
     }
