@@ -2,6 +2,11 @@
 //! aperçu bibliothèque (titres + IDs TMDB uniquement) et demandes de
 //! média.
 //!
+//! 0.4.1 (audit Copilot) : tokens aléatoires cryptographiques
+//! (getrandom), récupération des mutex empoisonnés, timeouts paramétrés
+//! par type de requête, logs des erreurs réseau, whitelist des noms de
+//! tables, et lecture d'activité/visibilité sur le VRAI profil actif.
+//!
 //! Principe absolu : AUCUNE connexion permanente. Le listener TCP est
 //! passif ; des connexions sortantes éphémères ne sont ouvertes que
 //! pour : appairage, ping de présence, aperçu bibliothèque, demande de
@@ -10,12 +15,17 @@
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket, ToSocketAddrs};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-const TIMEOUT: Duration = Duration::from_millis(2000);
+/// Timeout E/S côté serveur (lecture/écriture des connexions entrantes).
+const TIMEOUT_IO: Duration = Duration::from_millis(2000);
+/// 0.4.1 : timeouts clients par type de requête.
+const TIMEOUT_PAIR: Duration = Duration::from_millis(3000);
+const TIMEOUT_PING: Duration = Duration::from_millis(1500);
+const TIMEOUT_CATALOG: Duration = Duration::from_millis(6000);
 const MAGIC: &str = "AVM1-";
 
 // ---------------------------------------------------------------------
@@ -37,7 +47,7 @@ pub struct CatalogItem {
     pub kind: String,
     pub category_name: String,
     pub tmdb_id: Option<i64>,
-	pub poster_path: Option<String>,
+    pub poster_path: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -105,6 +115,8 @@ struct ListenerState {
     port: u16,
     pairing_token: Option<String>,
     own_name: String,
+    /// 0.4.1 : profil actif courant (pour activité + visibilité).
+    active_id: Option<i64>,
 }
 
 static LISTENER: OnceLock<Arc<Mutex<ListenerState>>> = OnceLock::new();
@@ -116,9 +128,43 @@ fn listener_state() -> Arc<Mutex<ListenerState>> {
                 port: 0,
                 pairing_token: None,
                 own_name: String::new(),
+                active_id: None,
             }))
         })
         .clone()
+}
+
+/// 0.4.1 : récupération si mutex empoisonné (jamais de panic).
+fn lock_listener(state: &Arc<Mutex<ListenerState>>) -> MutexGuard<'_, ListenerState> {
+    state.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// 0.4.1 : remet à jour nom + profil actif dans l'état du listener.
+fn sync_identity(state: &tauri::State<'_, AppState>) {
+    let active = state
+        .active_profile_id
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let own_name = match *active {
+        Some(id) => state
+            .db_pool
+            .get()
+            .ok()
+            .and_then(|conn| {
+                conn.query_row(
+                    "SELECT name FROM profiles WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+            })
+            .unwrap_or_else(|| "Ami".into()),
+        None => "Ami".into(),
+    };
+    let state = listener_state();
+    let mut guard = lock_listener(&state);
+    guard.own_name = own_name;
+    guard.active_id = *active;
 }
 
 /// Adresse IP locale (astuce UDP, sans dépendance).
@@ -135,29 +181,32 @@ fn local_ip() -> String {
 fn ensure_listener(pool: crate::db::DbPool, app: AppHandle) -> Result<u16, String> {
     let state = listener_state();
     {
-        let guard = state.lock().unwrap();
+        let guard = lock_listener(&state);
         if guard.port != 0 {
             return Ok(guard.port);
         }
     }
     let listener = TcpListener::bind("0.0.0.0:0")
         .map_err(|e| format!("Impossible d'ouvrir le listener amis : {e}"))?;
-    let port = listener
-        .local_addr()
-        .map_err(|e| e.to_string())?
-        .port();
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     {
-        let mut guard = state.lock().unwrap();
+        let mut guard = lock_listener(&state);
         guard.port = port;
     }
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            if let Ok(stream) = stream {
-                let pool = pool.clone();
-                let app = app.clone();
-                std::thread::spawn(move || {
-                    let _ = handle_conn(stream, pool, app);
-                });
+            match stream {
+                Ok(stream) => {
+                    let pool = pool.clone();
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        // 0.4.1 : plus d'erreur silencieuse.
+                        if let Err(e) = handle_conn(stream, pool, app) {
+                            log::warn!("[friends] connexion entrante rejetée : {e}");
+                        }
+                    });
+                }
+                Err(e) => log::warn!("[friends] accept() en échec : {e}"),
             }
         }
     });
@@ -169,25 +218,32 @@ fn handle_conn(
     pool: crate::db::DbPool,
     app: AppHandle,
 ) -> Result<(), String> {
-    let _ = stream.set_read_timeout(Some(TIMEOUT));
-    let _ = stream.set_write_timeout(Some(TIMEOUT));
+    let _ = stream.set_read_timeout(Some(TIMEOUT_IO));
+    let _ = stream.set_write_timeout(Some(TIMEOUT_IO));
     let peer_addr = stream.peer_addr().ok();
     let mut reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
     let mut line = String::new();
     reader
         .read_line(&mut line)
         .map_err(|e| format!("lecture impossible : {e}"))?;
-    let msg: Msg = serde_json::from_str(&line).map_err(|e| format!("message invalide : {e}"))?;
+    let msg: Msg =
+        serde_json::from_str(&line).map_err(|e| format!("message invalide : {e}"))?;
 
     let state = listener_state();
-    let (own_name, my_host, my_port) = {
-        let guard = state.lock().unwrap();
-        (guard.own_name.clone(), local_ip(), guard.port)
+    let (own_name, my_host, my_port, active_id) = {
+        let guard = lock_listener(&state);
+        (
+            guard.own_name.clone(),
+            local_ip(),
+            guard.port,
+            guard.active_id,
+        )
     };
 
     let reply = match msg {
+        // Appairage entrant : le pair présente NOTRE jeton de code.
         Msg::Hello { token, name, host, port } => {
-            let expected = state.lock().unwrap().pairing_token.clone();
+            let expected = lock_listener(&state).pairing_token.clone();
             if expected.as_deref() != Some(token.as_str()) {
                 Msg::Error { message: "code ami invalide ou expiré".into() }
             } else {
@@ -205,18 +261,24 @@ fn handle_conn(
                     name: own_name.clone(),
                     host: my_host,
                     port: my_port,
-                    activity: own_activity(&pool),
+                    activity: own_activity(&pool, active_id),
                 }
             }
         }
+        // Ping de présence.
         Msg::Status { token } => match friend_by_token(&pool, &token) {
-            Some(_) => Msg::StatusAck { name: own_name.clone(), activity: own_activity(&pool) },
+            Some(_) => Msg::StatusAck {
+                name: own_name.clone(),
+                activity: own_activity(&pool, active_id),
+            },
             None => Msg::Error { message: "non autorisé".into() },
         },
+        // Aperçu bibliothèque : titres + IDs TMDB uniquement.
         Msg::Catalog { token } => match friend_by_token(&pool, &token) {
             Some(_) => Msg::CatalogAck { items: catalog_items(&pool) },
             None => Msg::Error { message: "non autorisé".into() },
         },
+        // Demande de média entrante.
         Msg::Request { token, title_name, tmdb_id, media_type, poster_path } => {
             match friend_by_token(&pool, &token) {
                 Some((friend_id, peer_name)) => {
@@ -273,13 +335,16 @@ fn friend_by_token(pool: &crate::db::DbPool, token: &str) -> Option<(i64, String
     .ok()
 }
 
-fn own_activity(pool: &crate::db::DbPool) -> Option<ActivityWire> {
+/// 0.4.1 : activité + visibilité lues sur le VRAI profil actif
+/// (l'ancienne requête pointait vers une vue inexistante).
+fn own_activity(pool: &crate::db::DbPool, active_id: Option<i64>) -> Option<ActivityWire> {
+    let id = active_id?;
     let conn = pool.get().ok()?;
     let visible: i32 = conn
         .query_row(
             "SELECT COALESCE((SELECT activity_visibility FROM profile_settings
-              WHERE profile_id = (SELECT value FROM active_profile_view)), 1)",
-            [],
+              WHERE profile_id = ?1), 1)",
+            rusqlite::params![id],
             |row| row.get(0),
         )
         .unwrap_or(1);
@@ -288,8 +353,8 @@ fn own_activity(pool: &crate::db::DbPool) -> Option<ActivityWire> {
     }
     conn.query_row(
         "SELECT title_name, category_key, position_seconds, duration_seconds
-         FROM profile_activity LIMIT 1",
-        [],
+         FROM profile_activity WHERE profile_id = ?1",
+        rusqlite::params![id],
         |row| {
             Ok(ActivityWire {
                 title_name: row.get(0)?,
@@ -303,7 +368,11 @@ fn own_activity(pool: &crate::db::DbPool) -> Option<ActivityWire> {
     .filter(|a: &ActivityWire| a.title_name.is_some())
 }
 
+/// 0.4.1 : whitelist stricte — aucun nom de table interpolé hors liste.
 fn table_columns(conn: &rusqlite::Connection, table: &str) -> Vec<String> {
+    if !matches!(table, "titles" | "categories" | "profiles" | "media_files") {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     if let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info({table})")) {
         if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(1)) {
@@ -315,6 +384,8 @@ fn table_columns(conn: &rusqlite::Connection, table: &str) -> Vec<String> {
     out
 }
 
+/// Aperçu bibliothèque : UNIQUEMENT titres + IDs TMDB (+ affiche locale
+/// éventuelle). Aucun pixel de média ne transite entre les machines.
 fn catalog_items(pool: &crate::db::DbPool) -> Vec<CatalogItem> {
     let Ok(conn) = pool.get() else { return Vec::new() };
     let tcols = table_columns(&conn, "titles");
@@ -349,16 +420,16 @@ fn catalog_items(pool: &crate::db::DbPool) -> Vec<CatalogItem> {
 // Client éphémère (une connexion = une requête)
 // ---------------------------------------------------------------------
 
-fn rpc(host: &str, port: u16, msg: &Msg) -> Result<Msg, String> {
+fn rpc(host: &str, port: u16, msg: &Msg, timeout: Duration) -> Result<Msg, String> {
     let addr: SocketAddr = (host, port)
         .to_socket_addrs()
         .map_err(|e| format!("adresse invalide : {e}"))?
         .next()
         .ok_or_else(|| "adresse introuvable".to_string())?;
-    let stream = TcpStream::connect_timeout(&addr, TIMEOUT)
+    let stream = TcpStream::connect_timeout(&addr, timeout)
         .map_err(|_| "ami injoignable (hors ligne ou NAT fermé)".to_string())?;
-    let _ = stream.set_read_timeout(Some(TIMEOUT));
-    let _ = stream.set_write_timeout(Some(TIMEOUT));
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
     let payload = serde_json::to_string(msg).map_err(|e| e.to_string())?;
     let mut s = stream.try_clone().map_err(|e| e.to_string())?;
     s.write_all(payload.as_bytes()).map_err(|e| e.to_string())?;
@@ -376,46 +447,31 @@ fn rpc(host: &str, port: u16, msg: &Msg) -> Result<Msg, String> {
 // Commandes Tauri
 // ---------------------------------------------------------------------
 
+/// Démarre le listener passif et renvoie « Mon code ami » actuel.
 #[tauri::command]
 pub fn friends_generate_code(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     let pool = state.db_pool.clone();
-    let own_name = {
-        let active = state.active_profile_id.lock().unwrap();
-        let conn = pool.get().map_err(|e| e.to_string())?;
-        match *active {
-            Some(id) => conn
-                .query_row("SELECT name FROM profiles WHERE id = ?1", rusqlite::params![id], |r| {
-                    r.get::<_, String>(0)
-                })
-                .unwrap_or_else(|_| "Ami".into()),
-            None => "Ami".into(),
-        }
-    };
+    sync_identity(&state);
     let port = ensure_listener(pool.clone(), app)?;
-    let token = {
-        let mut bytes = [0u8; 16];
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(1);
-        for (i, b) in bytes.iter_mut().enumerate() {
-            *b = (seed >> (i % 16 * 4)) as u8 ^ (i as u8).wrapping_mul(37);
-        }
-        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    };
-    let state_arc = listener_state();
+    // 0.4.1 : 16 octets aléatoires CRYPTOGRAPHIQUES (getrandom).
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|e| format!("Génération aléatoire impossible : {e}"))?;
+    let token = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     {
-        let mut guard = state_arc.lock().unwrap();
+        let state = listener_state();
+        let mut guard = lock_listener(&state);
         guard.pairing_token = Some(token.clone());
-        guard.own_name = own_name;
     }
     let ticket = serde_json::json!({ "host": local_ip(), "port": port, "token": token });
     Ok(format!("{MAGIC}{}", b64_encode(ticket.to_string().as_bytes())))
 }
 
+/// Appairage sortant : entre un code ami, échange les identités et
+/// enregistre l'ami des deux côtés.
 #[tauri::command]
 pub fn friends_add_by_code(
     app: AppHandle,
@@ -436,28 +492,19 @@ pub fn friends_add_by_code(
     if host.is_empty() || port == 0 || token.is_empty() {
         return Err("Code incomplet.".into());
     }
+    sync_identity(&state);
     let my_port = ensure_listener(pool.clone(), app)?;
-    let own_name = {
-        let active = state.active_profile_id.lock().unwrap();
-        let conn = pool.get().map_err(|e| e.to_string())?;
-        match *active {
-            Some(id) => conn
-                .query_row("SELECT name FROM profiles WHERE id = ?1", rusqlite::params![id], |r| {
-                    r.get::<_, String>(0)
-                })
-                .unwrap_or_else(|_| "Ami".into()),
-            None => "Ami".into(),
-        }
-    };
-    let state_arc = listener_state();
-    {
-        let mut guard = state_arc.lock().unwrap();
-        guard.own_name = own_name.clone();
-    }
+        let own_name = lock_listener(&listener_state()).own_name.clone();
     let reply = rpc(
         &host,
         port,
-        &Msg::Hello { token: token.clone(), name: own_name.clone(), host: local_ip(), port: my_port },
+        &Msg::Hello {
+            token: token.clone(),
+            name: own_name.clone(),
+            host: local_ip(),
+            port: my_port,
+        },
+        TIMEOUT_PAIR,
     )?;
     let Msg::Ack { name, host: peer_host, port: peer_port, .. } = reply else {
         return Err("L'ami a refusé l'appairage (code invalide ?).".into());
@@ -481,8 +528,18 @@ pub fn friends_add_by_code(
     })
 }
 
+// Petits helpers pour garder la lisibilité de add_by_code.
+fn my_host_or(_port: u16, _unused: u16) -> String {
+    local_ip()
+}
+fn my_port_unused() -> u16 {
+    0
+}
+
 #[tauri::command]
-pub fn friends_list_remote(state: tauri::State<'_, AppState>) -> Result<Vec<RemoteFriendDto>, String> {
+pub fn friends_list_remote(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<RemoteFriendDto>, String> {
     let conn = state.db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT id, peer_name, host, port, last_seen FROM remote_friends ORDER BY peer_name")
@@ -509,13 +566,22 @@ pub fn friends_remove_remote(state: tauri::State<'_, AppState>, id: i64) -> Resu
     Ok(())
 }
 
+/// Présence : un ping éphémère par ami (connexion ouverte/fermée
+/// immédiatement). Jamais de connexion persistante.
 #[tauri::command]
-pub fn friends_ping_all(state: tauri::State<'_, AppState>) -> Result<Vec<RemotePresence>, String> {
+pub fn friends_ping_all(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<RemotePresence>, String> {
     let friends = friends_list_remote(state.clone())?;
     let pool = state.db_pool.clone();
     let mut out = Vec::new();
     for f in friends {
-        let presence = match rpc(&f.host, f.port, &Msg::Status { token: token_of(&pool, f.id) }) {
+        let presence = match rpc(
+            &f.host,
+            f.port,
+            &Msg::Status { token: token_of(&pool, f.id) },
+            TIMEOUT_PING,
+        ) {
             Ok(Msg::StatusAck { name, activity }) => {
                 if let Ok(conn) = pool.get() {
                     let _ = conn.execute(
@@ -536,14 +602,17 @@ fn token_of(pool: &crate::db::DbPool, id: i64) -> String {
     pool.get()
         .ok()
         .and_then(|conn| {
-            conn.query_row("SELECT token FROM remote_friends WHERE id = ?1", rusqlite::params![id], |r| {
-                r.get::<_, String>(0)
-            })
+            conn.query_row(
+                "SELECT token FROM remote_friends WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get::<_, String>(0),
+            )
             .ok()
         })
         .unwrap_or_default()
 }
 
+/// Aperçu bibliothèque chez un ami (titres + IDs TMDB uniquement).
 #[tauri::command]
 pub fn friends_fetch_catalog(
     state: tauri::State<'_, AppState>,
@@ -559,13 +628,19 @@ pub fn friends_fetch_catalog(
         )
         .map_err(|_| "Ami introuvable.".to_string())?
     };
-    match rpc(&host, port, &Msg::Catalog { token: token_of(&pool, friend_id) })? {
+    match rpc(
+        &host,
+        port,
+        &Msg::Catalog { token: token_of(&pool, friend_id) },
+        TIMEOUT_CATALOG,
+    )? {
         Msg::CatalogAck { items } => Ok(items),
         Msg::Error { message } => Err(message),
         _ => Err("Réponse inattendue.".into()),
     }
 }
 
+/// Envoie une demande de média à un ami.
 #[tauri::command]
 pub fn friends_send_request(
     state: tauri::State<'_, AppState>,
@@ -590,8 +665,9 @@ pub fn friends_send_request(
             title_name: item.name.clone(),
             tmdb_id: item.tmdb_id,
             media_type: Some(item.kind.clone()),
-            poster_path: None,
+            poster_path: item.poster_path.clone(),
         },
+        TIMEOUT_PAIR,
     )? {
         Msg::RequestAck => Ok(()),
         Msg::Error { message } => Err(message),
@@ -600,7 +676,9 @@ pub fn friends_send_request(
 }
 
 #[tauri::command]
-pub fn friends_list_requests(state: tauri::State<'_, AppState>) -> Result<Vec<FriendRequestDto>, String> {
+pub fn friends_list_requests(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<FriendRequestDto>, String> {
     let conn = state.db_pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(

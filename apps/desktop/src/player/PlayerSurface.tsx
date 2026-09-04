@@ -29,14 +29,19 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
         if (!disposed) shaderModeRef.current = SHADER_MODES[preset] ?? 0;
       })
       .catch(() => {});
-    let unlisten: (() => void) | undefined;
+        let unlisten: (() => void) | undefined;
+    let shaderDisposed = false;
     void listen<string>("post-shader-changed", (event) => {
       shaderModeRef.current = SHADER_MODES[event.payload] ?? 0;
     }).then((fn) => {
-      unlisten = fn;
+      // 0.4.1 audit : si le composant est déjà démonté quand la promesse
+      // se résout, on détache IMMÉDIATEMENT l'écouteur (sinon il fuit).
+      if (shaderDisposed) fn();
+      else unlisten = fn;
     });
     return () => {
       disposed = true;
+	  shaderDisposed = true;
       unlisten?.();
     };
   }, []);
