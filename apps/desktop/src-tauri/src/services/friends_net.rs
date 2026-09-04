@@ -528,14 +528,6 @@ pub fn friends_add_by_code(
     })
 }
 
-// Petits helpers pour garder la lisibilité de add_by_code.
-fn my_host_or(_port: u16, _unused: u16) -> String {
-    local_ip()
-}
-fn my_port_unused() -> u16 {
-    0
-}
-
 #[tauri::command]
 pub fn friends_list_remote(
     state: tauri::State<'_, AppState>,
