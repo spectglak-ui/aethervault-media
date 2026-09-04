@@ -26,6 +26,7 @@ use crate::services::playback_engine::TrackList;
 use crate::state::AppState;
 use tauri::{AppHandle, Manager};
 use crate::domain::title::TitleSummary;
+use std::collections::HashMap;
 
 #[tauri::command]
 pub fn get_playback_progress(
@@ -243,16 +244,24 @@ pub struct ContinueWatchingItem {
 pub fn list_continue_watching(
     state: tauri::State<AppState>,
 ) -> Result<Vec<ContinueWatchingItem>, String> {
-    let active_profile_id = state.read_active_profile_id()?;
     let conn = state.get_conn()?;
-    let rows =
-        crate::db::repositories::playback_repository::list_continue_watching(&conn, active_profile_id)
-            .map_err(|e| e.to_string())?;
+    let active_profile_id = state
+        .active_profile_id
+        .lock()
+        .unwrap()
+        .ok_or_else(|| "Aucun profil actif".to_string())?;
+    
+    let rows = crate::db::repositories::playback_repository::list_continue_watching(&conn, active_profile_id)
+        .map_err(|e| e.to_string())?;
+    
+    // 0.4.1 : batch récupération des posters personnalisés
+    let title_ids: Vec<i64> = rows.iter().map(|r| r.title_id).collect();
+    let custom_posters = crate::db::repositories::custom_image_repository::get_batch_posters(&conn, &title_ids)
+        .map_err(|e| e.to_string())?;
+    
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
-        let custom_poster =
-            crate::db::repositories::custom_image_repository::get(&conn, "title", row.title_id, "poster")
-                .map_err(|e| e.to_string())?;
+        let custom_poster = custom_posters.get(&row.title_id).cloned();
         let label = match (row.season_number, row.episode_number) {
             (Some(season), Some(episode)) => {
                 format!("{} S{:02}E{:02}", row.title_name, season, episode)
@@ -322,20 +331,22 @@ pub fn get_top_genres(
 
 /// Top titres (Time Capsule + "Parce que vous avez regardé…").
 #[tauri::command]
-pub fn get_top_titles(
-    state: tauri::State<AppState>,
-    limit: Option<i64>,
-) -> Result<Vec<TitleSummary>, String> {
-    let active_profile_id = state.read_active_profile_id()?;
+pub fn get_top_titles(state: tauri::State<AppState>, limit: usize) -> Result<Vec<TitleSummary>, String> {
     let conn = state.get_conn()?;
-    let rows = crate::db::repositories::playback_repository::top_titles(&conn, active_profile_id, limit.unwrap_or(12))
+    let active_profile_id = state.read_active_profile_id()?;
+    let rows = crate::db::repositories::playback_repository::top_titles(&conn, active_profile_id, limit as i64)
         .map_err(|e| e.to_string())?;
+    
+    // 0.4.1 : batch posters
+    let title_ids: Vec<i64> = rows.iter().map(|r| r.0).collect();
+    let custom_posters = crate::db::repositories::custom_image_repository::get_batch_posters(&conn, &title_ids)
+        .map_err(|e| e.to_string())?;
+    
     let mut summaries = Vec::with_capacity(rows.len());
     for (id, category_key, kind, name, poster_path, year, _count) in rows {
-        let custom_poster =
-            crate::db::repositories::custom_image_repository::get(&conn, "title", id, "poster")
-                .map_err(|e| e.to_string())?;
+        let custom_poster = custom_posters.get(&id).cloned();
         let category = crate::db::repositories::category_repository::get_by_key(&conn, &category_key)
+        // ... reste du code inchangé
     .map_err(|e| e.to_string())?
     .ok_or_else(|| format!("Catégorie {} introuvable", category_key))?;
 summaries.push(TitleSummary {
@@ -380,14 +391,20 @@ pub fn reset_watch_stats(state: tauri::State<AppState>) -> Result<(), String> {
 pub fn list_similar_titles(
     state: tauri::State<AppState>,
     title_id: i64,
-    limit: Option<i64>,
+    limit: usize,
 ) -> Result<Vec<TitleSummary>, String> {
     let conn = state.get_conn()?;
-    let rows = crate::db::repositories::playback_repository::similar_titles(&conn, title_id, limit.unwrap_or(12))
+    let rows = crate::db::repositories::playback_repository::similar_titles(&conn, title_id, limit as i64)
         .map_err(|e| e.to_string())?;
+    
+    // 0.4.1 : batch posters
+    let title_ids: Vec<i64> = rows.iter().map(|r| r.0).collect();
+    let custom_posters = crate::db::repositories::custom_image_repository::get_batch_posters(&conn, &title_ids)
+        .map_err(|e| e.to_string())?;
+    
     let mut summaries = Vec::with_capacity(rows.len());
     for (id, category_id, kind, name, poster_path, year, _score) in rows {
-        let custom_poster =
+        let custom_poster = custom_posters.get(&id).cloned();
             crate::db::repositories::custom_image_repository::get(&conn, "title", id, "poster")
                 .map_err(|e| e.to_string())?;
         summaries.push(TitleSummary {

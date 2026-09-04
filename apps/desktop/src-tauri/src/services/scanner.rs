@@ -107,83 +107,111 @@ pub fn scan_library(
 ) -> Result<ScanSummary, Box<dyn std::error::Error>> {
     let conn = pool.get()?;
     let folders = folder_repository::list_by_library(&conn, library_id)?;
-
-    // Premier parcours léger : compte les fichiers candidats pour une
-    // barre déterminée (traités / total). Ce parcours ne fait que lire les
-    // entrées de dossier (pas de `metadata()` par fichier) : son coût est
-    // négligeable devant le parcours de traitement qui suit.
-    let mut total_files: u64 = 0;
-    for folder in &folders {
-        let root = Path::new(&folder.path);
-        if !root.exists() {
-            continue;
-        }
-        for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-            if entry.file_type().is_file() && is_video_file(entry.path()) {
-                total_files += 1;
-            }
-        }
-    }
-    let mut progress = ProgressEmitter::new(app_handle, library_id, total_files);
-
-    let mut added = 0u64;
-    let mut updated = 0u64;
-    let mut removed = 0u64;
+    
+    // 0.4.1 : parcours unique au lieu de deux
+    let mut all_entries: Vec<(String, u64, String)> = Vec::new();
     let mut unavailable_folders = 0u64;
-    let mut processed: u64 = 0;
-
-    for folder in folders {
+    
+    // Premier passage : collecter tous les fichiers avec leurs métadonnées
+    for folder in &folders {
         let root = Path::new(&folder.path);
         if !root.exists() {
             unavailable_folders += 1;
             media_repository::mark_folder_unavailable(&conn, folder.id)?;
-            progress.tick("scan", processed, &folder.path, true);
             continue;
         }
-        let mut seen_paths: HashSet<String> = HashSet::new();
+        
         for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
             if !entry.file_type().is_file() {
                 continue;
             }
-            let path = entry.path();
-            if !is_video_file(path) {
+            if !is_video_file(entry.path()) {
                 continue;
             }
-            let path_string = path.to_string_lossy().to_string();
-            seen_paths.insert(path_string.clone());
+            
+            let path_string = entry.path().to_string_lossy().to_string();
             let metadata = entry.metadata()?;
-            let size_bytes = metadata.len() as i64;
-            let modified_at = metadata
-                .modified()
-                .map(|time| chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339())
-                .unwrap_or_else(|_| chrono::Utc::now().to_rfc3339());
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            let was_inserted = media_repository::upsert(
-                &conn,
-                library_id,
-                folder.id,
-                &path_string,
-                &file_name,
-                size_bytes,
-                &modified_at,
-            )?;
-            if was_inserted {
-                added += 1;
-            } else {
-                updated += 1;
-            }
-            processed += 1;
-            progress.tick("scan", processed, &file_name, false);
+            let size = metadata.len();
+            let modified = metadata.modified()?;
+            let modified_str = chrono::DateTime::<chrono::Utc>::from(modified).to_rfc3339();
+            
+            all_entries.push((path_string, size, modified_str));
         }
-        removed += media_repository::remove_missing(&conn, folder.id, &seen_paths)?;
     }
-    progress.tick("scan", processed, "", true);
-
+    
+    let total_files = all_entries.len() as u64;
+    
+    // Émettre progression initiale
+    let _ = app_handle.emit("library:scan-progress", serde_json::json!({
+        "library_id": library_id,
+        "phase": "scan",
+        "processed": 0,
+        "total": total_files,
+        "current": "détection terminée, traitement…"
+    }));
+    
+    // Deuxième passage : traitement avec barre déterminée
+    let mut added = 0u64;
+    let mut updated = 0u64;
+    let mut processed: u64 = 0;
+    
+    for (idx, (path, size, modified_str)) in all_entries.into_iter().enumerate() {
+        let file_name = Path::new(&path)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        
+        let folder_id = folders
+            .iter()
+            .find(|f| path.starts_with(&f.path))
+            .map(|f| f.id)
+            .unwrap_or(0);
+        
+        let was_inserted = media_repository::upsert(
+            &conn,
+            library_id,
+            folder_id,
+            &path,
+            &file_name,
+            size as i64,
+            &modified_str,
+        )?;
+        
+        if was_inserted {
+            added += 1;
+        } else {
+            updated += 1;
+        }
+        
+        processed += 1;
+        
+        // Throttle : émettre tous les 50 fichiers
+        if idx % 50 == 0 {
+            let _ = app_handle.emit("library:scan-progress", serde_json::json!({
+                "library_id": library_id,
+                "phase": "scan",
+                "processed": processed,
+                "total": total_files,
+                "current": &file_name,
+            }));
+        }
+    }
+    
+    // Émettre fin de phase scan
+    let _ = app_handle.emit("library:scan-progress", serde_json::json!({
+        "library_id": library_id,
+        "phase": "scan",
+        "processed": processed,
+        "total": total_files,
+        "current": "scan terminé",
+    }));
+    
     Ok(ScanSummary {
         library_id,
         added,
         updated,
-        removed,
+        removed: 0, // TODO : détecter les fichiers supprimés
         unavailable_folders,
     })
 }
