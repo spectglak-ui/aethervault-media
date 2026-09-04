@@ -45,12 +45,13 @@ dependencies = [
 
 [[package]]
 name = "aethervault-media"
-version = "0.3.0"
+version = "0.4.0-alpha"
 dependencies = [
  "aes-gcm",
  "argon2",
  "base64 0.22.1",
  "chrono",
+ "getrandom 0.2.17",
  "igd",
  "image",
  "kamadak-exif",
