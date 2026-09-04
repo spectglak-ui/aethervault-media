@@ -11,6 +11,23 @@
 //! Le chemin UNC renvoyé s'ajoute ensuite comme dossier de
 //! bibliothèque classique (`add_library_folder`) : tout l'aval
 //! (scan, watch, lecture, vignettes, reprises) fonctionne déjà.
+//! NAS (Network Attached Storage) — montage de partages SMB/CIFS.
+//!
+//! **Windows** : utilise `cmdkey` (stockage sécurisé des identifiants
+//! dans le Gestionnaire d'identification Windows) puis `net use` pour
+//! monter le partage.
+//!
+//! **Linux/macOS** : non supporté actuellement. Les utilisateurs doivent
+//! monter les partages manuellement via leur gestionnaire de fichiers
+//! (ex. `/mnt/nas/...` ou `/Volumes/...`), puis ajouter le chemin monté
+//! comme dossier de bibliothèque.
+
+#[cfg(not(target_os = "windows"))]
+compile_error!(
+    "Le module NAS n'est pas encore supporté sur Linux/macOS. \
+     Montez vos partages manuellement et ajoutez-les comme dossiers \
+     de bibliothèque normaux."
+);
 
 use std::process::Command;
 

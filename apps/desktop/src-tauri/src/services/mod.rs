@@ -15,3 +15,4 @@ pub mod share;
 pub mod intro_detector;
 pub mod vaulttube;
 pub mod friends_net;
+pub mod platform;

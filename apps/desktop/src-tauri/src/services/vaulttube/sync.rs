@@ -2,6 +2,10 @@
 //! playlists liées, aperçus sans sauvegarde, recherche multi-sources.
 //! Extension AetherFy : détection multi-source (YouTube, Dailymotion,
 //! Vimeo, PeerTube, sites génériques).
+//!
+//! 0.5.0 (multiplateforme) : résolution de yt-dlp via le module platform
+//! (noms et chemins par OS).
+
 use super::models::{SearchResult, VaultTubeSubscription, VaultTubeVideo};
 use super::repository::VaultTubeRepository;
 use std::path::PathBuf;
@@ -47,13 +51,15 @@ fn entry_thumbnail(entry: &serde_json::Value) -> Option<String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .or_else(|| {
-            entry.get("thumbnails").and_then(|t| {
-                t.as_array().and_then(|arr| {
-                    arr.last()
-                        .and_then(|last| last.get("url").and_then(|u| u.as_str()))
+            entry
+                .get("thumbnails")
+                .and_then(|t| {
+                    t.as_array().and_then(|arr| {
+                        arr.last()
+                            .and_then(|last| last.get("url").and_then(|u| u.as_str()))
+                    })
                 })
-            })
-            .map(|s| s.to_string())
+                .map(|s| s.to_string())
         })
 }
 
@@ -460,25 +466,17 @@ impl VaultTubeSync {
     }
 }
 
-/// Localise yt-dlp (même logique que playback_engine).
+/// 0.5.0 (multiplateforme) : résolution de yt-dlp via le module platform.
+/// Ordre de recherche : AVM_BIN_DIR → ressources Tauri → dossier exe → PATH.
 fn locate_ytdlp() -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            dirs.push(dir.to_path_buf());
-            dirs.push(dir.join("resources"));
-        }
+    use crate::services::platform;
+
+    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let resolved = platform::resolve_yt_dlp(&exe_dir, Some(&exe_dir.join("resources")));
+
+    if resolved.exists() {
+        Some(resolved)
+    } else {
+        None
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        dirs.push(cwd);
-    }
-    for dir in dirs {
-        for name in ["yt-dlp.exe", "yt-dlp"] {
-            let candidate = dir.join(name);
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
 }
