@@ -100,38 +100,46 @@ pub fn delete_all_for_entity(
     Ok(())
 }
 /// Récupère les posters personnalisés pour plusieurs titles en une seule requête.
+/// Récupère les posters personnalisés pour plusieurs titres.
+/// 0.4.1 : tentative en UNE requête ; si le schéma diffère, repli
+/// automatique sur get() (toujours compatible).
 pub fn get_batch_posters(
     conn: &Connection,
     title_ids: &[i64],
 ) -> Result<HashMap<i64, String>, rusqlite::Error> {
+    let mut map = HashMap::new();
     if title_ids.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(map);
     }
-    
-    // Construire la clause IN (?, ?, ...) dynamiquement
     let placeholders: Vec<String> = title_ids.iter().map(|_| "?".to_string()).collect();
     let sql = format!(
-        "SELECT resource_id, image_path 
-         FROM custom_images 
-         WHERE resource_type = 'title' 
-         AND resource_id IN ({})
-         AND image_type = 'poster'
-         LIMIT 1",
+        "SELECT resource_id, image_path FROM custom_images
+         WHERE resource_type = 'title' AND resource_id IN ({}) AND image_type = 'poster'",
         placeholders.join(", ")
     );
-    
-    let mut stmt = conn.prepare(&sql)?;
-    let mut map = HashMap::new();
-    
-    let rows = stmt.query_map(rusqlite::params_from_iter(title_ids.iter()), |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-    })?;
-    
-    for row in rows {
-        if let Ok((id, path)) = row {
-            map.insert(id, path);
+    let batch = conn
+        .prepare(&sql)
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map(rusqlite::params_from_iter(title_ids.iter()), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()
+        })
+        .ok();
+    match batch {
+        Some(rows) => {
+            for (id, path) in rows {
+                map.insert(id, path);
+            }
+        }
+        None => {
+            // Repli : un get() par titre (fonctionne avec le schéma réel).
+            for id in title_ids {
+                if let Some(path) = get(conn, "title", *id, "poster")? {
+                    map.insert(*id, path);
+                }
+            }
         }
     }
-    
     Ok(map)
 }
