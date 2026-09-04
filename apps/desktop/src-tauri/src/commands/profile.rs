@@ -31,7 +31,7 @@ pub fn switch_active_profile(
     profile_id: i64,
     password: Option<String>,
 ) -> Result<ProfileRecord, String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let target = profile_repository::get_by_id(&conn, profile_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Profil introuvable.".to_string())?;
@@ -121,7 +121,7 @@ pub fn set_profile_avatar(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let target = dir.join(format!("profile_{active_profile_id}.{ext}"));
     std::fs::write(&target, bytes).map_err(|e| e.to_string())?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     conn.execute(
         "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -140,7 +140,7 @@ pub fn get_profile_avatar(
     profile_id: i64,
 ) -> Result<Option<String>, String> {
     use rusqlite::OptionalExtension;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     conn.query_row(
         "SELECT value FROM app_settings WHERE key = ?1",
         rusqlite::params![format!("profile_avatar_{profile_id}")],
@@ -156,7 +156,7 @@ pub fn get_profile_avatar(
 pub fn clear_profile_avatar(state: tauri::State<AppState>) -> Result<(), String> {
     use rusqlite::OptionalExtension;
     let active_profile_id = state.read_active_profile_id()?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     // 1) Lit le chemin actuel (s'il existe) pour supprimer le fichier.
     let existing: Option<String> = conn
         .query_row(

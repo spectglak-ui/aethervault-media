@@ -5,7 +5,7 @@ use crate::state::AppState;
 
 #[tauri::command]
 pub fn get_metadata_settings(state: tauri::State<AppState>) -> Result<MetadataSettings, String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     Ok(tmdb::load_settings(&conn))
 }
 
@@ -14,7 +14,7 @@ pub fn save_metadata_settings(
     state: tauri::State<AppState>,
     settings: MetadataSettings,
 ) -> Result<(), String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     tmdb::save_settings(&conn, &settings)
 }
 
@@ -46,7 +46,7 @@ pub fn set_home_backdrop(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let target = dir.join(format!("home_backdrop.{ext}"));
     std::fs::write(&target, bytes).map_err(|e| e.to_string())?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     conn.execute(
         "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -60,7 +60,7 @@ pub fn set_home_backdrop(
 #[tauri::command]
 pub fn get_home_backdrop(state: tauri::State<crate::state::AppState>) -> Result<Option<String>, String> {
     use rusqlite::OptionalExtension;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     conn.query_row(
         "SELECT value FROM app_settings WHERE key = ?1",
         rusqlite::params!["home_backdrop"],
@@ -74,7 +74,7 @@ pub fn get_home_backdrop(state: tauri::State<crate::state::AppState>) -> Result<
 #[tauri::command]
 pub fn clear_home_backdrop(state: tauri::State<crate::state::AppState>) -> Result<(), String> {
     use rusqlite::OptionalExtension;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let existing: Option<String> = conn
         .query_row(
             "SELECT value FROM app_settings WHERE key = ?1",
@@ -105,7 +105,7 @@ pub fn get_title_trailer(
     title_id: i64,
 ) -> Result<Vec<String>, String> {
     use rusqlite::OptionalExtension;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     
     let (kind, tmdb_id): (String, Option<i64>) = conn
         .query_row(

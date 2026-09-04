@@ -244,7 +244,7 @@ pub fn list_continue_watching(
     state: tauri::State<AppState>,
 ) -> Result<Vec<ContinueWatchingItem>, String> {
     let active_profile_id = state.read_active_profile_id()?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let rows =
         crate::db::repositories::playback_repository::list_continue_watching(&conn, active_profile_id)
             .map_err(|e| e.to_string())?;
@@ -303,7 +303,7 @@ pub fn get_watch_stats(
     state: tauri::State<AppState>,
 ) -> Result<crate::db::repositories::playback_repository::WatchStats, String> {
     let active_profile_id = state.read_active_profile_id()?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     crate::db::repositories::playback_repository::watch_stats(&conn, active_profile_id)
         .map_err(|e| e.to_string())
 }
@@ -315,7 +315,7 @@ pub fn get_top_genres(
     limit: Option<i64>,
 ) -> Result<Vec<(String, i64)>, String> {
     let active_profile_id = state.read_active_profile_id()?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     crate::db::repositories::playback_repository::top_genres(&conn, active_profile_id, limit.unwrap_or(6))
         .map_err(|e| e.to_string())
 }
@@ -327,7 +327,7 @@ pub fn get_top_titles(
     limit: Option<i64>,
 ) -> Result<Vec<TitleSummary>, String> {
     let active_profile_id = state.read_active_profile_id()?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let rows = crate::db::repositories::playback_repository::top_titles(&conn, active_profile_id, limit.unwrap_or(12))
         .map_err(|e| e.to_string())?;
     let mut summaries = Vec::with_capacity(rows.len());
@@ -358,7 +358,7 @@ pub fn get_watch_sessions(
     to: String,
 ) -> Result<Vec<crate::db::repositories::playback_repository::WatchSession>, String> {
     let active_profile_id = state.read_active_profile_id()?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     crate::db::repositories::playback_repository::watch_sessions_in(&conn, active_profile_id, &from, &to)
         .map_err(|e| e.to_string())
 }
@@ -367,7 +367,7 @@ pub fn get_watch_sessions(
 #[tauri::command]
 pub fn reset_watch_stats(state: tauri::State<AppState>) -> Result<(), String> {
     let active_profile_id = state.read_active_profile_id()?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     conn.execute(
         "DELETE FROM watch_history WHERE profile_id = ?1",
         rusqlite::params![active_profile_id],
@@ -382,7 +382,7 @@ pub fn list_similar_titles(
     title_id: i64,
     limit: Option<i64>,
 ) -> Result<Vec<TitleSummary>, String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let rows = crate::db::repositories::playback_repository::similar_titles(&conn, title_id, limit.unwrap_or(12))
         .map_err(|e| e.to_string())?;
     let mut summaries = Vec::with_capacity(rows.len());

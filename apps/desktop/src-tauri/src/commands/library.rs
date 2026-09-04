@@ -114,7 +114,7 @@ pub fn list_media_files(
     state: tauri::State<AppState>,
     library_id: i64,
 ) -> Result<Vec<MediaFileRecord>, String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     media_repository::list_by_library(&conn, library_id).map_err(|e| e.to_string())
 }
 
@@ -127,7 +127,7 @@ pub fn get_media_file(
     state: tauri::State<AppState>,
     media_file_id: i64,
 ) -> Result<MediaFileRecord, String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     media_repository::get(&conn, media_file_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Fichier média {media_file_id} introuvable"))

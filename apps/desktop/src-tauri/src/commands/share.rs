@@ -22,7 +22,7 @@ pub fn share_start(
     media_file_id: i64,
     lan_only: bool,
 ) -> Result<ShareOfferDto, String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let path: String = conn
         .query_row(
             "SELECT path FROM media_files WHERE id = ?1 AND is_available = 1",

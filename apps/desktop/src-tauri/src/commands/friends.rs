@@ -49,7 +49,7 @@ pub fn add_friend(
     if profile_id == friend_profile_id {
         return Err("Impossible de s'ajouter soi-même comme ami".to_string());
     }
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     conn.execute(
         "INSERT OR IGNORE INTO friends (profile_id, friend_profile_id) VALUES (?1, ?2)",
         rusqlite::params![profile_id, friend_profile_id],
@@ -66,7 +66,7 @@ pub fn remove_friend(state: tauri::State<AppState>, friend_profile_id: i64) -> R
         .lock()
         .unwrap()
         .ok_or_else(|| "Aucun profil actif".to_string())?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     conn.execute(
         "DELETE FROM friends WHERE profile_id = ?1 AND friend_profile_id = ?2",
         rusqlite::params![profile_id, friend_profile_id],
@@ -83,7 +83,7 @@ pub fn list_friends(state: tauri::State<AppState>) -> Result<Vec<FriendDto>, Str
         .lock()
         .unwrap()
         .ok_or_else(|| "Aucun profil actif".to_string())?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let mut stmt = conn
         .prepare(
             "SELECT f.friend_profile_id, p.name, a.path, f.created_at
@@ -119,7 +119,7 @@ pub fn get_friends_activity(state: tauri::State<AppState>) -> Result<Vec<Activit
         .lock()
         .unwrap()
         .ok_or_else(|| "Aucun profil actif".to_string())?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let mut stmt = conn
         .prepare(
             "SELECT a.profile_id, p.name, av.path, a.title_id, a.title_name, a.poster,
@@ -167,7 +167,7 @@ pub fn update_activity(
         .lock()
         .unwrap()
         .ok_or_else(|| "Aucun profil actif".to_string())?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     conn.execute(
         "INSERT OR REPLACE INTO profile_activity
          (profile_id, title_id, title_name, poster, category_key, position_seconds, duration_seconds, updated_at)
@@ -194,7 +194,7 @@ pub fn clear_activity(state: tauri::State<AppState>) -> Result<(), String> {
         .lock()
         .unwrap()
         .ok_or_else(|| "Aucun profil actif".to_string())?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     conn.execute(
         "DELETE FROM profile_activity WHERE profile_id = ?1",
         rusqlite::params![profile_id],
@@ -214,7 +214,7 @@ pub fn set_activity_visibility(
         .lock()
         .unwrap()
         .ok_or_else(|| "Aucun profil actif".to_string())?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     conn.execute(
         "INSERT OR REPLACE INTO profile_settings (profile_id, activity_visibility)
          VALUES (?1, ?2)",
@@ -232,7 +232,7 @@ pub fn get_activity_visibility(state: tauri::State<AppState>) -> Result<bool, St
         .lock()
         .unwrap()
         .ok_or_else(|| "Aucun profil actif".to_string())?;
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let visible: i32 = conn
         .query_row(
             "SELECT COALESCE(activity_visibility, 1) FROM profile_settings WHERE profile_id = ?1",

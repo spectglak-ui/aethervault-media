@@ -144,7 +144,7 @@ fn resolve_geometry(app: &AppHandle) -> Result<(f64, f64, f64, f64), String> {
     let (screen_width, screen_height) = primary_monitor_logical_size(app)?;
     let saved = {
         let state = app.state::<AppState>();
-        let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+        let conn = state.get_conn()?;
         window_state_repository::get(&conn).map_err(|e| e.to_string())?
     };
     if let Some(saved) = saved {

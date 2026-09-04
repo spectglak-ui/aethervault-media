@@ -109,7 +109,7 @@ pub fn create_collection(state: tauri::State<AppState>, name: String) -> Result<
     if trimmed.is_empty() {
         return Err("Le nom de la collection ne peut pas être vide.".to_string());
     }
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     crate::db::repositories::title_repository::create_collection(&conn, trimmed)
         .map_err(|e| e.to_string())
 }
@@ -118,13 +118,13 @@ pub fn create_collection(state: tauri::State<AppState>, name: String) -> Result<
 pub fn list_collections(
     state: tauri::State<AppState>,
 ) -> Result<Vec<crate::db::repositories::title_repository::CollectionRecord>, String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     crate::db::repositories::title_repository::list_collections(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn delete_collection(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     crate::db::repositories::title_repository::delete_collection(&conn, id).map_err(|e| e.to_string())
 }
 
@@ -134,7 +134,7 @@ pub fn add_to_collection(
     collection_id: i64,
     title_id: i64,
 ) -> Result<(), String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     crate::db::repositories::title_repository::add_to_collection(&conn, collection_id, title_id)
         .map_err(|e| e.to_string())
 }
@@ -145,7 +145,7 @@ pub fn remove_from_collection(
     collection_id: i64,
     title_id: i64,
 ) -> Result<(), String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     crate::db::repositories::title_repository::remove_from_collection(&conn, collection_id, title_id)
         .map_err(|e| e.to_string())
 }
@@ -155,7 +155,7 @@ pub fn list_collections_for_title(
     state: tauri::State<AppState>,
     title_id: i64,
 ) -> Result<Vec<i64>, String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     crate::db::repositories::title_repository::list_collections_for_title(&conn, title_id)
         .map_err(|e| e.to_string())
 }
@@ -165,7 +165,7 @@ pub fn list_collection_titles(
     state: tauri::State<AppState>,
     collection_id: i64,
 ) -> Result<Vec<TitleSummary>, String> {
-    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let conn = state.get_conn()?;
     let rows =
         crate::db::repositories::title_repository::list_collection_titles(&conn, collection_id)
             .map_err(|e| e.to_string())?;
