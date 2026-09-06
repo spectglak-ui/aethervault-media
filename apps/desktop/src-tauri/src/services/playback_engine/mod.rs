@@ -12,7 +12,7 @@ use mpv_ffi::MpvFormat;
 pub use mpv_ffi::MpvFunctions;
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::{c_char, c_int};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -52,6 +52,14 @@ pub struct ExtractedMedia {
     pub audio_url: Option<String>,
 }
 
+/// 0.5.0 : option de qualité proposée au sélecteur AetherFy.
+#[derive(Clone, serde::Serialize)]
+pub struct QualityOption {
+    pub height: i64,
+    pub label: String,
+    pub has_audio: bool,
+}
+
 #[derive(Clone, Copy)]
 struct MpvHandlePtr(*mut c_void);
 unsafe impl Send for MpvHandlePtr {}
@@ -63,7 +71,7 @@ struct SurfaceState {
     size: Arc<(AtomicI32, AtomicI32)>,
     in_flight_frames: Arc<AtomicI32>,
     /// Repli PiP : dernière image rendue, partagée avec le thread de rendu
-    /// ( `sw_render.rs` ) et lue par la commande  `player_pull_frame`  pour les
+    /// (`sw_render.rs`) et lue par la commande `player_pull_frame` pour les
     /// fenêtres dont le canal Tauri est muet (fenêtre détachée).
     latest_frame: Arc<Mutex<Vec<u8>>>,
 }
@@ -72,6 +80,13 @@ pub struct PlaybackEngineHandle {
     functions: Arc<MpvFunctions>,
     mpv: MpvHandlePtr,
     surface: Mutex<Option<SurfaceState>>,
+    /// 0.5.0 : dernière source chargée (vidéo, audio séparé éventuel) —
+    /// permet de forcer un rechargement après création du contexte de
+    /// rendu (course VO libmpv / render context).
+    last_source: Mutex<Option<(String, Option<String>)>>,
+    /// 0.5.0 : qualité préférée (bouton AetherFy). `None` = auto.
+    /// Appliquée automatiquement à chaque `load_url`.
+    preferred_quality: Mutex<Option<i64>>,
 }
 
 pub enum PlaybackEngineState {
@@ -130,16 +145,17 @@ impl PlaybackEngineHandle {
         set_option(&functions, mpv, "keep-open", "yes")?;
 
         let _ = set_option(&functions, mpv, "ytdl", "yes");
+        // 0.5.0 : auto-qualité — 1080p d'abord (tous codecs : vp9/av01 inclus),
+        // puis 720p, puis meilleur ≤ 1080p.
         let _ = set_option(
             &functions,
             mpv,
             "ytdl-format",
-            "bv*[height<=1080][vcodec^=avc1]+ba/b[height<=1080]",
+            "bv*[height=1080]+ba/bv*[height=720]+ba/bv*[height<=1080]+ba/b[height<=1080]",
         );
 
         // 0.4.0 : fiabilité streaming AetherFy — gros cache qui DEVANCE la
-        // lecture (60 s / 512 Mio) pour absorber le throttling YouTube,
-        // buffer de flux 4 Mio, cache seekable = retour arrière instantané.
+        // lecture (60 s / 512 Mio) pour absorber le throttling YouTube.
         let _ = set_option(&functions, mpv, "cache", "yes");
         let _ = set_option(&functions, mpv, "demuxer-max-bytes", "512MiB");
         let _ = set_option(&functions, mpv, "demuxer-max-back-bytes", "256MiB");
@@ -147,7 +163,9 @@ impl PlaybackEngineHandle {
         let _ = set_option(&functions, mpv, "hr-seek", "yes");
         let _ = set_option(&functions, mpv, "demuxer-cache-wait", "yes");
         let _ = set_option(&functions, mpv, "cache-pause-initial", "yes");
-        let _ = set_option(&functions, mpv, "cache-pause-wait", "10");
+        // 0.5.0 : démarrage rapide — 3 s de buffer suffisent avec les flux
+        // Cobalt/Android/TV non throttés.
+        let _ = set_option(&functions, mpv, "cache-pause-wait", "3");
         let _ = set_option(&functions, mpv, "video-sync", "display-resample");
         let _ = set_option(&functions, mpv, "hr-seek-framedrop", "no");
         let _ = set_option(&functions, mpv, "video-sync-max-video-change", "5");
@@ -167,6 +185,8 @@ impl PlaybackEngineHandle {
             functions: functions.clone(),
             mpv,
             surface: Mutex::new(None),
+            last_source: Mutex::new(None),
+            preferred_quality: Mutex::new(None),
         });
 
         std::thread::spawn(move || run_event_thread(functions, mpv, app_handle));
@@ -180,7 +200,7 @@ impl PlaybackEngineHandle {
     }
 
     /// Point d'entrée unique de chargement : les URLs http(s) passent par
-    /// l'extraction yt-dlp (`load_url`), tout le reste (fichiers locaux,
+    /// l'extraction Cobalt/yt-dlp (`load_url`), tout le reste (fichiers locaux,
     /// flux directs déjà extraits) passe par `load_direct`.
     pub fn load(&self, path: &str) -> Result<(), String> {
         if path.starts_with("http://") || path.starts_with("https://") {
@@ -190,34 +210,91 @@ impl PlaybackEngineHandle {
     }
 
     fn load_direct(&self, path: &str) -> Result<(), String> {
+        *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((path.to_string(), None));
         self.command(&["loadfile", path, "replace"])?;
         self.set_paused(false)
     }
 
+    /// 0.5.0 : lit une URL en appliquant la qualité préférée mémorisée
+    /// (`preferred_quality`), avec repli auto si indisponible.
     pub fn load_url(&self, url: &str) -> Result<(), String> {
-        let ytdlp = locate_ytdlp().ok_or_else(|| "yt-dlp introuvable".to_string())?;
-        log::info!("[playback] extraction des flux via yt-dlp : {url}");
+        let pref = *self
+            .preferred_quality
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        self.load_url_quality(url, pref)
+    }
 
-        // 0.4.0 : le client web (défaut) est le PLUS throtté par YouTube
-        // (gel à 10-20 s). Android d'abord : flux progressifs stables.
-        let configs: &[&[&str]] = &[
-            &["--extractor-args", "youtube:player_client=android"],
-            &["--extractor-args", "youtube:player_client=ios"],
-            &[],
+    /// 0.5.0 : chargement avec choix de résolution.
+    /// **Cobalt d'ABORD** (flux muxés non-throttés, 1 requête HTTP).
+    /// Repli yt-dlp si Cobalt indisponible.
+    /// `None` = auto RAPIDE (`-g`, Android d'abord).
+    /// `Some(h)` = sélection EXACTE vérifiée (`-J`, TV d'abord), avec
+    /// reprise de position et fallback auto si la résolution n'existe pas.
+    pub fn load_url_quality(&self, url: &str, height: Option<i64>) -> Result<(), String> {
+        log::info!(
+            "[playback] extraction des flux : {url} (qualité : {:?})",
+            height
+        );
+
+        // 0.5.0 : Cobalt d'ABORD — flux muxés non-throttés.
+        if let Some(cobalt_url) = cobalt_extract(url, height) {
+            log::info!("[playback] lecture via Cobalt (qualité {:?})", height);
+            return self.load_split(&cobalt_url, None);
+        }
+        log::warn!("[playback] Cobalt indisponible — repli yt-dlp");
+
+        let ytdlp = locate_ytdlp().ok_or_else(|| "yt-dlp introuvable".to_string())?;
+
+        // TV d'abord pour la sélection exacte (1080p H.264 non throttée),
+        // Android ensuite, Web en dernier (1080p VP9).
+        let exact_configs: &[&[&str]] = &[
             &["--extractor-args", "youtube:player_client=tv"],
+            &["--extractor-args", "youtube:player_client=android"],
+            &[],
+            &["--extractor-args", "youtube:player_client=ios"],
+        ];
+
+        // ----- Sélection exacte (bouton Qualité / préférence) -----
+        if let Some(h) = height {
+            // Mémorise la position pour reprendre exactement là après le
+            // changement de flux.
+            let resume = self.get_property_double("time-pos").unwrap_or(0.0);
+            let sel = format!("bv*[height={h}]+ba/b[height={h}][acodec!=none]");
+            for extra in exact_configs {
+                if let Some(json) = ytdlp_json(&ytdlp, url, &sel, extra) {
+                    if json.get("height").and_then(|v| v.as_i64()) == Some(h) {
+                        let (video, audio) = urls_from_json(&json);
+                        log::info!("[playback] {h}p exacte via client {:?}", extra);
+                        self.load_split(&video, audio.as_deref())?;
+                        if resume > 1.0 {
+                            let _ = self.command(&["seek", &format!("{resume:.3}"), "absolute"]);
+                        }
+                        return self.set_paused(false);
+                    }
+                }
+            }
+            // Fallback : résolution indisponible partout → bascule en auto
+            // (sinon la vidéo reste muette).
+            log::warn!("[playback] {h}p indisponible — fallback auto");
+        }
+
+        // ----- Auto : RAPIDE (-g), Android d'abord (non throtté) -----
+        let format_sel = "bv*[height=1080]+ba/bv*[height=720]+ba/bv*[height<=1080]+ba/b[height<=1080][acodec!=none]";
+        let auto_configs: &[&[&str]] = &[
+            &["--extractor-args", "youtube:player_client=android"],
+            &["--extractor-args", "youtube:player_client=tv"],
+            &[],
+            &["--extractor-args", "youtube:player_client=ios"],
         ];
 
         let mut last_err = String::new();
         let mut urls: Vec<String> = Vec::new();
 
-        for extra in configs {
+        for extra in auto_configs {
             let mut cmd = std::process::Command::new(&ytdlp);
-            cmd.args([
-                "-f",
-                "b[vcodec^=avc1][height<=1080][acodec!=none]/bv*[vcodec^=avc1][height<=1080]+ba/b",
-                "-g",
-                "--no-warnings",
-            ]);
+            cmd.args(["-f", &format_sel, "-g", "--no-warnings"]);
             cmd.args(*extra);
             cmd.arg(url);
 
@@ -235,7 +312,7 @@ impl PlaybackEngineHandle {
 
                     if !found.is_empty() {
                         log::info!(
-                            "[playback] flux extraits via client {:?} ({} URL(s))",
+                            "[playback] auto : flux via client {:?} ({} URL(s))",
                             extra,
                             found.len()
                         );
@@ -257,20 +334,78 @@ impl PlaybackEngineHandle {
         }
 
         let video = urls[0].clone();
-        if urls.len() == 1 {
-            return self.load_direct(&video);
+        let audio = urls.get(1).cloned();
+        self.load_split(&video, audio.as_deref())
+    }
+
+    /// Charge un flux vidéo (+ piste audio séparée éventuelle).
+    fn load_split(&self, video: &str, audio: Option<&str>) -> Result<(), String> {
+        *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((video.to_string(), audio.map(|s| s.to_string())));
+        match audio {
+            Some(a) => {
+                let opts = format!("audio-file={a}");
+                if self
+                    .command(&["loadfile", video, "replace", "0", &opts])
+                    .is_err()
+                {
+                    log::warn!("[playback] options loadfile non supportées — vidéo seule");
+                    self.load_direct(video)?;
+                }
+                Ok(())
+            }
+            None => self.load_direct(video),
+        }
+    }
+
+    /// 0.5.0 : liste les résolutions disponibles (tous codecs, ≤ 1080p).
+    pub fn list_qualities(&self, url: &str) -> Result<Vec<QualityOption>, String> {
+        let ytdlp = locate_ytdlp().ok_or_else(|| "yt-dlp introuvable".to_string())?;
+        let mut cmd = std::process::Command::new(&ytdlp);
+        cmd.args(["-J", "--no-warnings", url]);
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000);
+        let output = cmd.output().map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        let json: serde_json::Value =
+            serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+
+        let mut seen: std::collections::BTreeSet<(i64, bool)> = std::collections::BTreeSet::new();
+        if let Some(formats) = json.get("formats").and_then(|f| f.as_array()) {
+            for f in formats {
+                // Tous les codecs vidéo (avc1/vp9/av01) — mpv les lit tous.
+                let vcodec = f.get("vcodec").and_then(|v| v.as_str()).unwrap_or("none");
+                if vcodec == "none" {
+                    continue;
+                }
+                let h = f.get("height").and_then(|v| v.as_i64()).unwrap_or(0);
+                if h <= 0 || h > 1080 {
+                    continue;
+                }
+                let has_audio = f
+                    .get("acodec")
+                    .and_then(|v| v.as_str())
+                    .map(|a| a != "none")
+                    .unwrap_or(false);
+                seen.insert((h, has_audio));
+            }
         }
 
-        let opts = format!("audio-file={}", urls[1]);
-        if self
-            .command(&["loadfile", &video, "replace", "0", &opts])
-            .is_err()
-        {
-            log::warn!("[playback] options loadfile non supportées — vidéo seule");
-            self.load_direct(&video)?;
-        }
+        let mut heights: Vec<i64> = seen.iter().map(|(h, _)| *h).collect();
+        heights.sort_unstable();
+        heights.dedup();
+        heights.reverse();
 
-        self.set_paused(false)
+        Ok(heights
+            .into_iter()
+            .map(|h| QualityOption {
+                has_audio: seen.contains(&(h, true)),
+                label: format!("{h}p"),
+                height: h,
+            })
+            .collect())
     }
 
     /// 0.4.0 (lecteur hybride) : extraction SANS lecture. Renvoie un flux
@@ -389,7 +524,8 @@ impl PlaybackEngineHandle {
                 continue;
             };
 
-            let Some(track_type) = self.get_property_string_opt(&format!("track-list/{index}/type"))
+            let Some(track_type) =
+                self.get_property_string_opt(&format!("track-list/{index}/type"))
             else {
                 continue;
             };
@@ -474,23 +610,72 @@ impl PlaybackEngineHandle {
             latest_frame,
         });
 
-        let _ = self.command(&["seek", "0", "relative"]);
+        // 0.5.0 (correctif écran noir) : le VO libmpv de mpv a pu démarrer
+        // AVANT que ce contexte de rendu existe (course au chargement) →
+        // il ne produirait alors JAMAIS de trames. On force un rechargement
+        // complet de la source 300 ms plus tard : le VO se réinitialise
+        // AVEC le contexte de rendu présent → l'image coule.
+        let source = self
+            .last_source
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
 
-        let functions_for_redraw = self.functions.clone();
+        let functions_for_reload = self.functions.clone();
         let mpv_addr = self.mpv.0 as usize;
 
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(300));
-            let c_args = ["seek", "0", "relative"]
-                .iter()
-                .map(|arg| CString::new(*arg).unwrap_or_default())
-                .collect::<Vec<_>>();
+            let Some((video, audio)) = source else {
+                return;
+            };
+
+            let mpv_ptr = mpv_addr as *mut c_void;
+
+            // Reprend la position courante pour que le rechargement
+            // correctif ne remette PAS la lecture à zéro.
+            let resume_cname = CString::new("time-pos").unwrap_or_default();
+            let mut resume_val: f64 = 0.0;
+            let rc = unsafe {
+                (functions_for_reload.get_property)(
+                    mpv_ptr,
+                    resume_cname.as_ptr(),
+                    MpvFormat::Double as c_int,
+                    &mut resume_val as *mut _ as *mut c_void,
+                )
+            };
+            let resume = if rc < 0 { 0.0 } else { resume_val };
+
+            let mut c_args = vec![
+                CString::new("loadfile").unwrap_or_default(),
+                CString::new(video.as_str()).unwrap_or_default(),
+                CString::new("replace").unwrap_or_default(),
+                CString::new("0").unwrap_or_default(),
+            ];
+            let audio_opt = audio.map(|a| format!("audio-file={a}"));
+            if let Some(opts) = &audio_opt {
+                c_args.push(CString::new(opts.as_str()).unwrap_or_default());
+            }
+
             let mut ptrs: Vec<*const c_char> = c_args.iter().map(|a| a.as_ptr()).collect();
             ptrs.push(std::ptr::null());
 
-            let mpv_ptr = mpv_addr as *mut c_void;
             unsafe {
-                (functions_for_redraw.command)(mpv_ptr, ptrs.as_ptr());
+                (functions_for_reload.command)(mpv_ptr, ptrs.as_ptr());
+            }
+
+            if resume > 1.0 {
+                let r = format!("{resume:.3}");
+                let c_seek = vec![
+                    CString::new("seek").unwrap_or_default(),
+                    CString::new(r.as_str()).unwrap_or_default(),
+                    CString::new("absolute").unwrap_or_default(),
+                ];
+                let mut sptrs: Vec<*const c_char> = c_seek.iter().map(|a| a.as_ptr()).collect();
+                sptrs.push(std::ptr::null());
+                unsafe {
+                    (functions_for_reload.command)(mpv_ptr, sptrs.as_ptr());
+                }
             }
         });
 
@@ -633,6 +818,24 @@ impl PlaybackEngineHandle {
         }
     }
 
+    fn get_property_double(&self, name: &str) -> Result<f64, String> {
+        let cname = CString::new(name).unwrap_or_default();
+        let mut value: f64 = 0.0;
+        let rc = unsafe {
+            (self.functions.get_property)(
+                self.mpv.0,
+                cname.as_ptr(),
+                MpvFormat::Double as c_int,
+                &mut value as *mut _ as *mut c_void,
+            )
+        };
+        if rc < 0 {
+            Err(error_string(&self.functions, rc))
+        } else {
+            Ok(value)
+        }
+    }
+
     fn get_property_string_opt(&self, name: &str) -> Option<String> {
         let cname = CString::new(name).ok()?;
         let mut ptr: *mut c_char = std::ptr::null_mut();
@@ -689,6 +892,136 @@ fn error_string(functions: &MpvFunctions, code: c_int) -> String {
             CStr::from_ptr(ptr).to_string_lossy().to_string()
         }
     }
+}
+
+/// 0.5.0 : extraction via Cobalt (API self-host ou publique) — flux muxés
+/// (vidéo+audio) NON throttés, en une seule requête HTTP. Renvoie l'URL
+/// directe (tunnel ou redirect). Instance configurable via COBALT_API.
+fn cobalt_extract(url: &str, height: Option<i64>) -> Option<String> {
+    let instances: Vec<String> = std::env::var("COBALT_API")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| vec![s.trim().trim_end_matches('/').to_string()])
+        .unwrap_or_else(|| {
+            vec![
+                "http://127.0.0.1:9000".into(),
+                "https://cobalt-api.meow.lol".into(),
+                "https://api.cobalt.tools".into(),
+            ]
+        });
+
+    // Qualité demandée (Cobalt plafonne au mieux dispo).
+    let quality = match height {
+        Some(h) => h.to_string(),
+        None => "1080".to_string(),
+    };
+
+    for base in instances {
+        let body = ureq::json!({
+            "url": url,
+            "videoQuality": quality,
+            "downloadMode": "auto",
+            "filenameStyle": "basic",
+        });
+        let res = ureq::post(&format!("{base}/"))
+            .set("Accept", "application/json")
+            .set("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(10))
+            .send_json(body);
+        match res {
+            Ok(resp) => {
+                if let Ok(json) = resp.into_json::<serde_json::Value>() {
+                    let status = json.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                    if (status == "tunnel" || status == "redirect")
+                        && json.get("url").and_then(|u| u.as_str()).is_some()
+                    {
+                        let u = json["url"].as_str().unwrap().to_string();
+                        log::info!("[playback] cobalt OK via {base} ({status})");
+                        return Some(u);
+                    }
+                    log::warn!("[playback] cobalt {base} : réponse sans URL");
+                }
+            }
+            Err(e) => log::warn!("[playback] cobalt {base} en échec : {e}"),
+        }
+    }
+    None
+}
+
+/// Exécute yt-dlp `-J -f <sel>` et renvoie le JSON décrit.
+fn ytdlp_json(
+    ytdlp: &Path,
+    url: &str,
+    format_sel: &str,
+    extra: &[&str],
+) -> Option<serde_json::Value> {
+    let mut cmd = std::process::Command::new(ytdlp);
+    cmd.args(["-J", "-f", format_sel, "--no-warnings"]);
+    cmd.args(extra);
+    cmd.arg(url);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&output.stdout).ok()
+}
+
+/// Extrait (url vidéo, url audio) d'un JSON yt-dlp `-J`
+/// (gère `requested_formats` pour les flux séparés).
+fn urls_from_json(json: &serde_json::Value) -> (String, Option<String>) {
+    if let Some(formats) = json.get("requested_formats").and_then(|f| f.as_array()) {
+        let mut video: Option<String> = None;
+        let mut audio: Option<String> = None;
+        for f in formats {
+            let vcodec = f.get("vcodec").and_then(|v| v.as_str()).unwrap_or("none");
+            let u = f.get("url").and_then(|u| u.as_str()).map(|s| s.to_string());
+            if vcodec != "none" {
+                if video.is_none() {
+                    video = u;
+                }
+            } else if audio.is_none() {
+                audio = u;
+            }
+        }
+        if let Some(v) = video {
+            return (v, audio);
+        }
+    }
+    (
+        json.get("url")
+            .and_then(|u| u.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        None,
+    )
+}
+
+/// 0.5.1 : **id YouTube** d'une bande-annonce via recherche LOCALE
+/// (yt-dlp) — repli quand TMDB est injoignable (box/FAI filtrant,
+/// IPv6 cassé, pas de VPN). Renvoie l'ID (utilisable en `videoId`
+/// par l'iframe YouTube du frontend), pas une URL complète.
+fn find_trailer_ytdlp(title: &str) -> Option<String> {
+    let ytdlp = locate_ytdlp()?;
+    let query = format!("ytsearch1:{title} official trailer");
+    let mut cmd = std::process::Command::new(&ytdlp);
+    cmd.args(["-J", "--flat-playlist", "--no-warnings", &query]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let first = json.get("entries")?.as_array()?.first()?;
+    if let Some(id) = first.get("id").and_then(|v| v.as_str()) {
+        return Some(id.to_string());
+    }
+    first
+        .get("url")
+        .and_then(|v| v.as_str())
+        .and_then(|u| u.split("v=").last().map(|s| s.to_string()))
 }
 
 /// 0.5.0 (multiplateforme) : résolution de libmpv via le module platform.
@@ -816,6 +1149,17 @@ fn run_event_thread(functions: Arc<MpvFunctions>, mpv: MpvHandlePtr, app_handle:
     }
 }
 
+/// 0.5.1 : commande frontend — **id YouTube** de bande-annonce via
+/// repli YouTube local (yt-dlp), sans dépendre de TMDB.
+#[tauri::command]
+pub fn player_find_trailer(
+    state: tauri::State<'_, crate::state::AppState>,
+    title: String,
+) -> Result<Option<String>, String> {
+    let _ = state;
+    Ok(find_trailer_ytdlp(&title))
+}
+
 /// ⚠️ Commande de repli PiP (canal Tauri muet dans les fenêtres
 /// secondaires) : la fenêtre détachée « tire » la dernière image rendue.
 #[tauri::command]
@@ -828,13 +1172,28 @@ pub fn player_pull_frame(
 }
 
 /// 0.4.0 (VaultTube, jalon 1) : lit directement une URL (YouTube, etc.)
-/// en extrayant les flux via yt-dlp.
+/// en extrayant les flux via Cobalt/yt-dlp.
 #[tauri::command]
 pub fn player_load_url(
     state: tauri::State<'_, crate::state::AppState>,
     url: String,
 ) -> Result<(), String> {
     state.playback_engine.handle()?.load_url(&url)
+}
+
+/// 0.5.0 : mémorise la qualité préférée (appliquée à chaque load_url).
+#[tauri::command]
+pub fn player_set_preferred_quality(
+    state: tauri::State<'_, crate::state::AppState>,
+    height: Option<i64>,
+) -> Result<(), String> {
+    *state
+        .playback_engine
+        .handle()?
+        .preferred_quality
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = height;
+    Ok(())
 }
 
 #[tauri::command]
@@ -850,4 +1209,24 @@ pub fn player_unload(
     state: tauri::State<'_, crate::state::AppState>,
 ) -> Result<(), String> {
     state.playback_engine.handle()?.unload()
+}
+
+/// 0.5.0 : résolutions disponibles pour une URL AetherFy.
+#[tauri::command]
+pub fn player_list_qualities(
+    state: tauri::State<'_, crate::state::AppState>,
+    url: String,
+) -> Result<Vec<QualityOption>, String> {
+    state.playback_engine.handle()?.list_qualities(&url)
+}
+
+/// 0.5.0 : (re)charge une URL AetherFy à la résolution demandée
+/// (`height = null` → auto).
+#[tauri::command]
+pub fn player_load_url_quality(
+    state: tauri::State<'_, crate::state::AppState>,
+    url: String,
+    height: Option<i64>,
+) -> Result<(), String> {
+    state.playback_engine.handle()?.load_url_quality(&url, height)
 }

@@ -1,0 +1,5 @@
+{
+  "bundle": {
+    "resources": ["fpcalc.exe", "libmpv-2.dll", "yt-dlp.exe"]
+  }
+}
