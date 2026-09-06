@@ -188,18 +188,37 @@ export function TitleDetailPage() {
     }
   }, [refresh, titleId]);
 
-    useEffect(() => {
+      // 0.5.1 : TMDB d'abord ; si injoignable (box sans VPN), repli recherche
+  // YouTube LOCALE via yt-dlp → l'option « bande-annonce en arrière-plan »
+  // apparaît même sans VPN.
+  const titleName = title?.name ?? null;
+  useEffect(() => {
     if (!titleId) return;
+    let alive = true;
+
+    const fallback = async (): Promise<string[]> => {
+      if (!titleName) return [];
+      try {
+        const id = await invoke<string | null>("player_find_trailer", { title: titleName });
+        return id ? [id] : [];
+      } catch {
+        return [];
+      }
+    };
+
     invoke<string[]>("get_title_trailer", { titleId: Number(titleId) })
+      .then(async (keys) => (keys && keys.length > 0 ? keys : fallback()))
+      .catch(() => fallback())
       .then((keys) => {
+        if (!alive) return;
         setTrailerKeys(keys);
         setTrailerKeyIndex(0);
-      })
-      .catch(() => {
-        setTrailerKeys([]);
-        setTrailerKeyIndex(0);
       });
-  }, [titleId]);
+
+    return () => {
+      alive = false;
+    };
+  }, [titleId, titleName]);
 
   const handlePlay = async () => {
     if (!title || title.media_file_id === null) return;
