@@ -1,4 +1,5 @@
 name: Release
+
 on:
   push:
     tags:
@@ -22,17 +23,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          lfs: true   # <-- nécessaire pour télécharger libmpv-2.dll (123 Mo)
+          lfs: true   # télécharge libmpv-2.dll (123 Mo) stockée en Git LFS
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
+      # ⚠️ PAS de clé "version" ici : la version de pnpm vient du champ
+      # "packageManager" du package.json racine (pnpm@9.0.0).
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
