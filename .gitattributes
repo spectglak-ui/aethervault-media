@@ -1,1 +1,2 @@
 apps/desktop/src-tauri/libs/libmpv-2.dll filter=lfs diff=lfs merge=lfs -text
+apps/desktop/src-tauri/libmpv-2.dll filter=lfs diff=lfs merge=lfs -text

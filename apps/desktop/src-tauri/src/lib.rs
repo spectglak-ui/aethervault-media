@@ -60,6 +60,8 @@ pub fn run() {
          // au tout premier lancement sur une base neuve (ex. .deb Linux).
          // create_tables() est idempotent (CREATE TABLE IF NOT EXISTS) :
          // aucun effet sur une base existante déjà à jour.
+                  // 0.5.1 (correctif installation fraîche) : les tables VaultTube
+         // DOIVENT exister AVANT que les migrations 18→21 ne les modifient.
          services::vaulttube::VaultTubeRepository::new(pool.clone())
              .create_tables()
              .expect("impossible de créer les tables VaultTube");
