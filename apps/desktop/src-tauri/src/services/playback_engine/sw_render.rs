@@ -1,4 +1,4 @@
-//! Thread de rendu — backend **logiciel** de libmpv (`MPV_RENDER_API_TYPE_SW`,
+//! Thread de rendu — backend logiciel de libmpv (`MPV_RENDER_API_TYPE_SW`,
 //! `render.h`).
 //!
 //! Remplace entièrement `windows.rs` (`SurfaceWindow`/`GlContext`, WGL) et
@@ -95,6 +95,7 @@ unsafe impl Sync for MpvHandlePtr {}
 /// besoin de le corriger nous-mêmes à chaque image.
 const SW_FORMAT: &[u8] = b"rgb0\0";
 const BYTES_PER_PIXEL: usize = 4;
+
 /// Alignement requis par mpv pour le pointeur ET le stride passés au
 /// backend logiciel (voir la note ci-dessous sur `RenderTarget`).
 const MPV_SW_ALIGNMENT: usize = 64;
@@ -231,35 +232,32 @@ extern "C" fn wake_trampoline(ctx: *mut c_void) {
 /// d'un rattrapage en rafale, précisément le cas qui posait problème.
 const MIN_REPORT_SWAP_INTERVAL: Duration = Duration::from_micros(4_166); // ~240 Hz
 
-/// ⚠️ Correctif (désynchronisation A/V CROISSANTE, confirmée par un test
-/// réel — voir l'échange associé : à la pause, l'audio s'arrête net mais
-/// l'image continue d'avancer un instant avant de s'arrêter là où l'audio
-/// s'est arrêté, preuve directe d'une file d'images accumulée quelque
-/// part entre mpv et l'écran). `tauri::ipc::Channel::send` est documenté
-/// "fire-and-forget" par Tauri lui-même — rien ne garantissait jusqu'ici
-/// que le frontend avait fini de dessiner une image avant que la suivante
-/// ne soit poussée. Sans limite, une file invisible (côté WebView2/Tauri,
-/// hors de notre contrôle direct) pouvait s'accumuler dès que le dessin
-/// JS prenait ne serait-ce que ponctuellement du retard sur le rythme
-/// réel de la vidéo — exactement le symptôme observé, qui s'aggrave avec
-/// le temps plutôt que de rester un décalage fixe.
+/// ⚠️ Correctif 0.5.4 (désynchronisation A/V CROISSANTE + vidéo qui
+/// continuait après la pause, confirmés par test réel) : contre-pression
+/// STRICTE. `tauri::ipc::Channel::send` est documenté "fire-and-forget" par
+/// Tauri lui-même — rien ne garantit que le frontend a fini de dessiner une
+/// image avant que la suivante ne soit poussée. L'ANCIENNE logique
+/// contenait une échappatoire : dès qu'aucun accusé n'arrivait pendant
+/// 500 ms (`ACK_TIMEOUT`), le compteur `in_flight` était REMIS À ZÉRO et
+/// TOUTES les trames suivantes étaient poussées dans le canal — une file
+/// invisible (côté WebView2/Tauri) gonflait alors : la vidéo prenait du
+/// retard sur l'audio (ralenti + sauts) et continuait de se vider après la
+/// pause. C'était exactement le symptôme observé.
+///
+/// Nouvelle règle, sans exception :
+/// - `in_flight < MAX_IN_FLIGHT_FRAMES` → envoi normal ;
+/// - file pleine → trame SAUTÉE (jamais mise en file, jamais bloquée) ;
+/// - file pleine ET aucun accusé depuis `ACK_TIMEOUT` → UNE SEULE trame de
+///   sonde par fenêtre de 500 ms (le frontend est peut-être passé en mode
+///   tirage ou son event loop est bloqué ; si les accusés reprennent, le
+///   régime normal redémarre de lui-même). Plus JAMAIS d'inondation.
 ///
 /// `MAX_IN_FLIGHT_FRAMES` : nombre d'images autorisées à être en route
 /// vers le frontend sans accusé de réception (voir
 /// `PlaybackEngineHandle::ack_frame`, appelée par `PlayerSurface.tsx`
-/// juste après CHAQUE dessin réel — pas à la réception du message). Une
-/// fois cette limite atteinte, l'image suivante est simplement SAUTÉE
-/// (jamais mise en attente ni bloquée, voir `run()` plus bas) plutôt que
-/// d'agrandir une file qui finirait par créer le même problème sous une
-/// autre forme. 2 laisse une petite marge d'absorption pour le jitter
-/// normal sans jamais laisser un vrai retard s'accumuler.
-///
-/// `ACK_TIMEOUT` : filet de sécurité — si aucun accusé de réception
-/// n'arrive pendant ce délai alors que des images sont "en vol" (accusé
-/// perdu, fenêtre fermée en plein transfert...), le compteur est
-/// réinitialisé et la contre-pression temporairement abandonnée plutôt
-/// que de geler la vidéo indéfiniment. Dégrade au pire vers le
-/// comportement d'avant ce correctif, jamais pire.
+/// juste après CHAQUE dessin réel — pas à la réception du message).
+/// 2 laisse une petite marge d'absorption pour le jitter normal sans
+/// jamais laisser un vrai retard s'accumuler.
 const MAX_IN_FLIGHT_FRAMES: i32 = 2;
 const ACK_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -298,7 +296,6 @@ pub fn run(
             data: std::ptr::null_mut(),
         },
     ];
-
     let mut render_ctx: *mut mpv_ffi::mpv_render_context = std::ptr::null_mut();
     let rc =
         unsafe { (functions.render_context_create)(&mut render_ctx, mpv.0, params.as_mut_ptr()) };
@@ -342,8 +339,8 @@ pub fn run(
     unsafe {
         (functions.render_context_set_update_callback)(render_ctx, wake_trampoline, wake_ctx);
     }
-	
-	    // ⚠️ Correctif image FIGÉE du PiP (prouvé en test réel : la fenêtre PiP
+
+    // ⚠️ Correctif image FIGÉE du PiP (prouvé en test réel : la fenêtre PiP
     // affichait une image fixe pendant que le son continuait). Quand ce
     // contexte de rendu est créé EN COURS de lecture (transfert de surface
     // vers le PiP), mpv considère la frame courante comme déjà « présentée »
@@ -364,7 +361,7 @@ pub fn run(
         ptrs.push(std::ptr::null());
         unsafe { (functions.command)(mpv.0, ptrs.as_ptr()) };
     }
-        let functions_for_redraw = functions.clone();
+    let functions_for_redraw = functions.clone();
     // ⚠️ L'adresse est passée sous forme de `usize` (toujours `Send`)
     // plutôt que le pointeur brut `*mut c_void` (qui ne l'est pas) :
     // ce thread compile donc à coup sûr, et le pointeur est reconstitué
@@ -390,7 +387,7 @@ pub fn run(
     let mut last_swap_report: Option<Instant> = None;
     // Correctif contre-pression — voir `MAX_IN_FLIGHT_FRAMES` ci-dessus.
     let mut last_frame_sent: Option<Instant> = None;
-	let mut first_frame_logged = false;
+    let mut first_frame_logged = false;
 
     while !stop_flag.load(Ordering::Relaxed) {
         // Attente passive : le thread ne consomme aucun CPU tant que mpv ne
@@ -415,7 +412,6 @@ pub fn run(
             }
         }
         wake_state.dirty.store(false, Ordering::Release);
-
         if stop_flag.load(Ordering::Relaxed) {
             break;
         }
@@ -429,15 +425,15 @@ pub fn run(
         }
 
         let raw_width = size.0.load(Ordering::Relaxed).max(1) as usize;
-let raw_height = size.1.load(Ordering::Relaxed).max(1) as usize;
-// ⚠️ Optimisation performance (plein écran 1080p saccadé) : plafonnement
-// du rendu logiciel à 720p (1280x720). Le GPU du compositeur Windows
-// (DWM) upscale gratuitement ensuite — imperceptible à l'œil nu sur un
-// écran 1080p, mais ~2.25× moins de travail CPU pour mpv.
-const MAX_RENDER_WIDTH: usize = 1280;
-const MAX_RENDER_HEIGHT: usize = 720;
-let width = raw_width.min(MAX_RENDER_WIDTH);
-let height = raw_height.min(MAX_RENDER_HEIGHT);
+        let raw_height = size.1.load(Ordering::Relaxed).max(1) as usize;
+        // ⚠️ Optimisation performance (plein écran 1080p saccadé) : plafonnement
+        // du rendu logiciel à 720p (1280x720). Le GPU du compositeur Windows
+        // (DWM) upscale gratuitement ensuite — imperceptible à l'œil nu sur un
+        // écran 1080p, mais ~2,25× moins de travail CPU pour mpv.
+        const MAX_RENDER_WIDTH: usize = 1280;
+        const MAX_RENDER_HEIGHT: usize = 720;
+        let width = raw_width.min(MAX_RENDER_WIDTH);
+        let height = raw_height.min(MAX_RENDER_HEIGHT);
 
         // Buffer dédié au rendu mpv, aligné à 64 octets (voir
         // `RenderTarget`) — recréé seulement si la taille a changé, jamais
@@ -468,7 +464,6 @@ let height = raw_height.min(MAX_RENDER_HEIGHT);
         let mut sw_size: [c_int; 2] = [width as c_int, height as c_int];
         let mut stride_value: usize = stride;
         let pixel_ptr = render_target.as_mut_ptr() as *mut c_void;
-
         let mut render_params = [
             mpv_ffi::mpv_render_param {
                 param_type: mpv_ffi::render_param_type::SW_SIZE,
@@ -491,7 +486,6 @@ let height = raw_height.min(MAX_RENDER_HEIGHT);
                 data: std::ptr::null_mut(),
             },
         ];
-
         let render_rc =
             unsafe { (functions.render_context_render)(render_ctx, render_params.as_mut_ptr()) };
 
@@ -536,7 +530,6 @@ let height = raw_height.min(MAX_RENDER_HEIGHT);
             .as_mut()
             .map(|dump| dump.should_sample())
             .unwrap_or(false);
-
         if should_sample {
             if let Some(dump) = frame_dump.as_ref() {
                 dump.dump_bmp(rendered, stride, width, height);
@@ -561,19 +554,20 @@ let height = raw_height.min(MAX_RENDER_HEIGHT);
             let start = row * stride;
             buffer.extend_from_slice(&rendered[start..start + row_bytes]);
         }
-		    // ⚠️ Repli PiP (canal Tauri muet dans les fenêtres secondaires,
-    // prouvé en test réel) : copie de la dernière image partagée avec la
-    // commande `player_pull_frame` (voir mod.rs) — la fenêtre détachée
-    // « tire » ce buffer au lieu de le recevoir par le canal.
-    *latest_frame.lock().unwrap_or_else(|p| p.into_inner()) = buffer.clone();
-    *LATEST_FRAME.lock().unwrap_or_else(|p| p.into_inner()) = buffer.clone();
-    if !first_frame_logged {
-        first_frame_logged = true;
-        log::info!(
-            "[playback_engine] première image rendue et mémorisée pour le repli PiP ({} octets)",
-            buffer.len()
-        );
-    }
+
+        // ⚠️ Repli PiP (canal Tauri muet dans les fenêtres secondaires,
+        // prouvé en test réel) : copie de la dernière image partagée avec la
+        // commande `player_pull_frame` (voir mod.rs) — la fenêtre détachée
+        // « tire » ce buffer au lieu de le recevoir par le canal.
+        *latest_frame.lock().unwrap_or_else(|p| p.into_inner()) = buffer.clone();
+        *LATEST_FRAME.lock().unwrap_or_else(|p| p.into_inner()) = buffer.clone();
+        if !first_frame_logged {
+            first_frame_logged = true;
+            log::info!(
+                "[playback_engine] première image rendue et mémorisée pour le repli PiP ({} octets)",
+                buffer.len()
+            );
+        }
 
         // Instrumentation [AV-DIAG] : logge, pour CETTE image précise,
         // l'état exact du buffer qui va être remis à `channel.send`
@@ -594,44 +588,30 @@ let height = raw_height.min(MAX_RENDER_HEIGHT);
             }
         }
 
-        // ⚠️ Correctif contre-pression (voir `MAX_IN_FLIGHT_FRAMES` en tête
-        // de fichier). Ce test intervient volontairement APRÈS la capture
-        // diagnostique [AV-DIAG] ci-dessus, pas avant : une image sautée
-        // ici n'aura donc pas de log JS correspondant côté
-        // `PlayerSurface.tsx` — à garder en tête en cas de comparaison
-        // manuelle des deux séries de logs. `frame_index` (juste en
-        // dessous) continue d'avancer normalement même pour une image
-        // sautée : c'est un simple compteur de boucle, sans lien avec
-        // l'envoi.
+        // ⚠️ Correctif 0.5.4 — contre-pression STRICTE (voir
+        // `MAX_IN_FLIGHT_FRAMES` en tête de fichier). Plus JAMAIS
+        // d'inondation du canal Tauri : l'ancienne échappatoire
+        // `|| ack_stalled` remettait le compteur à 0 et poussait TOUTES
+        // les trames, créant la file qui désynchronisait la vidéo de
+        // l'audio et continuait de se vider après la pause.
+        // Ce test intervient volontairement APRÈS la capture diagnostique
+        // [AV-DIAG] ci-dessus, pas avant : une image sautée ici n'aura
+        // donc pas de log JS correspondant côté `PlayerSurface.tsx` — à
+        // garder en tête en cas de comparaison manuelle des deux séries
+        // de logs. `frame_index` (juste en dessous) continue d'avancer
+        // normalement même pour une image sautée : c'est un simple
+        // compteur de boucle, sans lien avec l'envoi.
         let in_flight_now = in_flight.load(Ordering::Relaxed);
         let ack_stalled = last_frame_sent
             .map(|t| t.elapsed() >= ACK_TIMEOUT)
             .unwrap_or(false);
-        let should_send_frame = in_flight_now < MAX_IN_FLIGHT_FRAMES || ack_stalled;
-
-        if should_send_frame {
-            if ack_stalled && in_flight_now >= MAX_IN_FLIGHT_FRAMES {
-                // Les accusés de réception semblent bloqués (voir
-                // ACK_TIMEOUT) : on abandonne la contre-pression pour
-                // cette surface plutôt que de rester bloqué indéfiniment
-                // — se réengagera naturellement dès qu'un accusé arrivera
-                // à nouveau.
-                log::warn!(
-                    "[playback_engine] contre-pression vidéo : aucun accusé de réception \
-                     depuis {ACK_TIMEOUT:?}, réinitialisation."
-                );
-                in_flight.store(0, Ordering::Relaxed);
-            }
-
+        if in_flight_now < MAX_IN_FLIGHT_FRAMES {
+            // Régime normal : il reste de la place dans la file (≤ 2 trames
+            // non accusées) → envoi.
             // `InvokeResponseBody::Raw` : transfert binaire brut, sans passer
-            // par la sérialisation JSON/base64 — voir la justification dans le
-            // message d'accompagnement (mécanisme confirmé dans le code source
-            // de tauri::ipc::Channel). `buffer` est consommé ici ; une nouvelle
-            // allocation est faite à l'image suivante pour CE buffer de
-            // transport (simplification délibérée pour cette première version
-            // — un pool de deux buffers réutilisés en alternance serait
-            // l'optimisation naturelle si le profilage montre une pression
-            // mémoire/GC gênante). `render_target`, lui, est déjà réutilisé
+            // par la sérialisation JSON/base64. `buffer` est consommé ici ;
+            // une nouvelle allocation est faite à l'image suivante pour CE
+            // buffer de transport. `render_target`, lui, est déjà réutilisé
             // d'une image à l'autre (voir plus haut).
             if channel
                 .send(InvokeResponseBody::Raw(std::mem::take(&mut buffer)))
@@ -647,8 +627,24 @@ let height = raw_height.min(MAX_RENDER_HEIGHT);
                 in_flight.fetch_add(1, Ordering::Relaxed);
                 last_frame_sent = Some(Instant::now());
             }
+        } else if ack_stalled {
+            // File pleine ET aucun accusé depuis 500 ms (frontend passé en
+            // mode tirage, event loop JS bloqué, accusé perdu...) : UNE
+            // seule trame de sonde, jamais plus par fenêtre de 500 ms.
+            // Si les accusés reprennent, le régime normal redémarre de
+            // lui-même ; sinon cette trame isolée ne crée aucune file.
+            in_flight.store(MAX_IN_FLIGHT_FRAMES - 1, Ordering::Relaxed);
+            if channel
+                .send(InvokeResponseBody::Raw(std::mem::take(&mut buffer)))
+                .is_ok()
+            {
+                in_flight.fetch_add(1, Ordering::Relaxed);
+                last_frame_sent = Some(Instant::now());
+            }
         }
-
+        // (sinon : file pleine avec accusés vivants → trame SAUTÉE,
+        // l'affichage reste calé sur le temps réel — jamais de retard
+        // accumulé.)
         frame_index = frame_index.wrapping_add(1);
     }
 
@@ -688,7 +684,7 @@ struct FrameDumpState {
     count: u32,
     max_dumps: u32,
     interval: std::time::Duration,
-    last_dump: Option<std::time::Instant>,
+    last_dump: Option<Instant>,
 }
 
 impl FrameDumpState {
@@ -780,18 +776,15 @@ impl FrameDumpState {
     fn log_transport(&self, rendered: &[u8], stride: usize, buffer: &[u8], width: usize, height: usize) {
         let row_bytes = width * BYTES_PER_PIXEL;
         let expected_len = 8 + row_bytes * height;
-
         let hash_source = hash_tightly_packed(rendered, stride, width, height);
         let hash_sent = if buffer.len() > 8 {
             fnv1a(&buffer[8..])
         } else {
             0
         };
-
         let (fr, fg, fb) = sample_pixel_at(rendered, stride, 0, 0);
         let (cr, cg, cb) = sample_pixel_at(rendered, stride, width / 2, height / 2);
         let (lr, lg, lb) = sample_pixel_at(rendered, stride, width - 1, height - 1);
-
         log::info!(
             "[playback_engine] [AV-DIAG] image #{idx} {w}x{h} : buffer.len()={len} (attendu {expected}), \
              hash_source(mpv)={hs:#010x}, hash_envoyé(Channel)={hc:#010x}, match={m} | \
@@ -808,7 +801,6 @@ impl FrameDumpState {
             cr = cr, cg = cg, cb = cb,
             lr = lr, lg = lg, lb = lb,
         );
-
         if hash_source != hash_sent || buffer.len() != expected_len {
             log::error!(
                 "[playback_engine] [AV-DIAG] DIVERGENCE détectée AVANT MÊME l'envoi au Channel \
@@ -852,8 +844,7 @@ fn hash_tightly_packed(strided: &[u8], stride: usize, width: usize, height: usiz
 
 /// Extrait (R,G,B) du pixel (x,y) dans un buffer "rgb0" avec le `stride`
 /// donné (fonctionne aussi bien pour `rendered`, stride paddé, que pour la
-/// portion pixels d'un buffer tightly-packed en passant `stride =
-/// width*4`).
+/// portion pixels d'un buffer tightly-packed en passant `stride = width*4`).
 fn sample_pixel_at(bytes: &[u8], stride: usize, x: usize, y: usize) -> (u8, u8, u8) {
     let idx = y * stride + x * BYTES_PER_PIXEL;
     (bytes[idx], bytes[idx + 1], bytes[idx + 2])
@@ -882,22 +873,18 @@ fn write_bmp_rgb0(
     height: usize,
 ) -> std::io::Result<()> {
     use std::io::Write;
-
     let row_bytes_out = width * 3; // BMP 24 bits : 3 octets/pixel (B,G,R)
     let row_padding = (4 - (row_bytes_out % 4)) % 4; // BMP : chaque ligne alignée à 4 octets
     let padded_row = row_bytes_out + row_padding;
     let pixel_data_size = padded_row * height;
     let file_size = 14 + 40 + pixel_data_size;
-
     let mut file = std::fs::File::create(path)?;
-
     // BITMAPFILEHEADER (14 octets)
     file.write_all(b"BM")?;
     file.write_all(&(file_size as u32).to_le_bytes())?;
     file.write_all(&0u16.to_le_bytes())?; // réservé
     file.write_all(&0u16.to_le_bytes())?; // réservé
     file.write_all(&54u32.to_le_bytes())?; // offset des données pixel (14+40)
-
     // BITMAPINFOHEADER (40 octets)
     file.write_all(&40u32.to_le_bytes())?;
     file.write_all(&(width as i32).to_le_bytes())?;
@@ -906,11 +893,10 @@ fn write_bmp_rgb0(
     file.write_all(&24u16.to_le_bytes())?; // bits/pixel
     file.write_all(&0u32.to_le_bytes())?; // BI_RGB (aucune compression)
     file.write_all(&(pixel_data_size as u32).to_le_bytes())?;
-    file.write_all(&2835i32.to_le_bytes())?; // ~72 DPI, sans importance ici
+    file.write_all(&2835i32.to_le_bytes())?; // ~72 DPI, sans importance
     file.write_all(&2835i32.to_le_bytes())?;
     file.write_all(&0u32.to_le_bytes())?; // palette : aucune (24 bits)
     file.write_all(&0u32.to_le_bytes())?;
-
     let zero_padding = [0u8; 3];
     // BMP stocke les lignes de la DERNIÈRE (bas de l'image) à la PREMIÈRE.
     for y in (0..height).rev() {
@@ -924,6 +910,5 @@ fn write_bmp_rgb0(
             file.write_all(&zero_padding[..row_padding])?;
         }
     }
-
     file.flush()
 }

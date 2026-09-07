@@ -1,5 +1,5 @@
 {
   "bundle": {
-    "resources": ["fpcalc.exe", "libmpv-2.dll", "yt-dlp.exe"]
+    "resources": ["fpcalc.exe", "libmpv-2.dll", "yt-dlp.exe", "bgutil-pot-windows-x86_64.exe"]
   }
 }

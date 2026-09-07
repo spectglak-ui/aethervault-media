@@ -13,19 +13,65 @@
 //! stockés en base — jamais d'URL morte hors-ligne, cohérent doc §9).
 //! Best-effort + throttle 250 ms/titre : une erreur réseau ou un titre
 //! introuvable ne bloque jamais la chaîne de scan.
+//!
+//! 0.5.4 : correctif « TMDB injoignable sans VPN » — résolveur IPv4
+//! strict + agent HTTP partagé (timeout de connexion court). Sur certaines
+//! box/FAI, la route IPv6 vers les API TMDB est un trou noir : chaque
+//! requête attendait son timeout puis échouait ; en VPN (tunnel IPv4)
+//! tout passait. Forcer IPv4 au niveau du résolveur règle le problème
+//! sans toucher au reste de la pile.
 
 use crate::db::repositories::{library_repository, settings_repository, title_repository};
 use crate::db::DbPool;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
+use ureq::{Agent, AgentBuilder, Resolver};
 
 const API_BASE: &str = "https://api.themoviedb.org/3";
 const IMG_BASE: &str = "https://image.tmdb.org/t/p";
+
 /// Intervalle minimal entre deux titres — respecte la limite de débit
 /// TMDB sans nécessiter de file complexe.
 const THROTTLE: Duration = Duration::from_millis(250);
+
+/// 0.5.4 : résolveur IPv4 strict. `netloc` arrive au format `host:port`
+/// (ex. `api.themoviedb.org:443`) ; on ne garde que les adresses A (IPv4),
+/// jamais les AAAA (IPv6) qui pendent sur les routes cassées de certaines
+/// box.
+struct Ipv4OnlyResolver;
+
+impl Resolver for Ipv4OnlyResolver {
+    fn resolve(&self, netloc: &str) -> std::io::Result<Vec<SocketAddr>> {
+        let addrs: Vec<SocketAddr> = netloc
+            .to_socket_addrs()?
+            .filter(|a: &SocketAddr| a.is_ipv4())
+            .collect();
+        if addrs.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                format!("aucune adresse IPv4 pour {netloc}"),
+            ));
+        }
+        log::debug!("[tmdb] résolution IPv4 : {netloc} -> {} adresse(s)", addrs.len());
+        Ok(addrs)
+    }
+}
+
+/// 0.5.4 : agent HTTP partagé — résolveur IPv4 + timeout de connexion
+/// court (8 s) pour échouer vite au lieu de pendre sur une route morte.
+fn http_agent() -> &'static Agent {
+    static AGENT: OnceLock<Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        AgentBuilder::new()
+            .resolver(Ipv4OnlyResolver)
+            .timeout_connect(Duration::from_secs(8))
+            .build()
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetadataSettings {
@@ -84,30 +130,35 @@ fn url_encode(s: &str) -> String {
 }
 
 fn get_json(url: &str) -> Option<serde_json::Value> {
-    log::debug!("[tmdb] GET {}", url);
-    let resp = match ureq::get(url).timeout(Duration::from_secs(10)).call() {
+    log::debug!("[tmdb] GET {url}");
+    // 0.5.4 : agent IPv4 + User-Agent explicite (certaines box/proxies
+    // filtrent les requêtes sans UA identifiable).
+    let resp = match http_agent()
+        .get(url)
+        .set("User-Agent", "AetherVaultMedia/0.5 (+tmdb)")
+        .timeout(Duration::from_secs(10))
+        .call()
+    {
         Ok(r) => r,
         Err(e) => {
-            log::warn!("[tmdb] erreur réseau pour {} : {:?}", url, e);
+            log::warn!("[tmdb] erreur réseau pour {url} : {e:?}");
             return None;
         }
     };
     if resp.status() != 200 {
-        log::warn!("[tmdb] statut HTTP {} pour {}", resp.status(), url);
+        log::warn!("[tmdb] statut HTTP {} pour {url}", resp.status());
         return None;
     }
     let mut body = String::new();
     if let Err(e) = resp.into_reader().read_to_string(&mut body) {
-        log::warn!("[tmdb] lecture corps impossible pour {} : {:?}", url, e);
+        log::warn!("[tmdb] lecture corps impossible pour {url} : {e:?}");
         return None;
     }
     match serde_json::from_str(&body) {
         Ok(v) => Some(v),
         Err(e) => {
             log::warn!(
-                "[tmdb] JSON invalide pour {} : {:?} — corps : {}",
-                url,
-                e,
+                "[tmdb] JSON invalide pour {url} : {e:?} — corps : {}",
                 &body[..body.len().min(200)]
             );
             None
@@ -119,7 +170,13 @@ fn download_image(url: &str, dest: &std::path::Path) -> Option<()> {
     if dest.exists() {
         return Some(());
     }
-    let resp = ureq::get(url).timeout(Duration::from_secs(15)).call().ok()?;
+    // 0.5.4 : même agent IPv4 (image.tmdb.org a aussi des AAAA cassées).
+    let resp = http_agent()
+        .get(url)
+        .set("User-Agent", "AetherVaultMedia/0.5 (+tmdb)")
+        .timeout(Duration::from_secs(15))
+        .call()
+        .ok()?;
     let mut bytes = Vec::new();
     resp.into_reader().read_to_end(&mut bytes).ok()?;
     if let Some(parent) = dest.parent() {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { ArrowLeft, Minus, Square, X } from "lucide-react";
+import { ArrowLeft, Minus, Play, Square, X } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { usePlayer, FULLSCREEN_TARGET_ID } from "./PlayerContext";
@@ -15,6 +15,7 @@ function artFromMedia(m: {
 }): string | null {
   if (m.thumbnail) return m.thumbnail;
   if (m.youtubeId) return `https://i.ytimg.com/vi/${m.youtubeId}/hqdefault.jpg`;
+  // 0.5.4 : regex corrigées (points et slashes échappés).
   const yt =
     m.path.match(/[?&]v=([^&]+)/) ?? m.path.match(/youtu\.be\/([^?/&]+)/);
   if (yt) return `https://i.ytimg.com/vi/${yt[1]}/hqdefault.jpg`;
@@ -57,9 +58,6 @@ const menuItemStyle = (active: boolean): CSSProperties => ({
 
 /**
  * 0.5.0 — Sélecteur de résolution AetherFy.
- * Charge UNIQUEMENT la liste des résolutions pour le menu.
- * Transmet la préférence au backend (appliquée à chaque load_url).
- * Pas de reload forcé au démarrage.
  */
 function QualitySelector({ url }: { url: string }) {
   const [qualities, setQualities] = useState<QualityOption[]>([]);
@@ -74,7 +72,6 @@ function QualitySelector({ url }: { url: string }) {
   });
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Transmet la préférence au backend (appliquée à chaque load_url).
   useEffect(() => {
     let alive = true;
     invoke<QualityOption[]>("player_list_qualities", { url })
@@ -84,7 +81,6 @@ function QualitySelector({ url }: { url: string }) {
       .catch(() => {
         if (alive) setQualities([]);
       });
-
     let saved: number | null = null;
     try {
       const v = localStorage.getItem(QUALITY_STORAGE_KEY);
@@ -93,13 +89,11 @@ function QualitySelector({ url }: { url: string }) {
       saved = null;
     }
     invoke("player_set_preferred_quality", { height: saved }).catch(() => {});
-
     return () => {
       alive = false;
     };
   }, [url]);
 
-  // Ferme le menu au clic extérieur.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
@@ -186,23 +180,36 @@ function QualitySelector({ url }: { url: string }) {
 }
 
 /**
- * 0.4.0 — Disposition VIDÉO façon YouTube : grand lecteur 16:9 presque au
- * bord gauche, colonne « À suivre » avec miniatures, barre de fenêtre
- * (retour / réduire / plein écran / fermer) en haut.
+ * 0.4.0 — Disposition VIDÉO façon YouTube : grand lecteur 16:9, colonne
+ * « À suivre » avec miniatures, barre de fenêtre en haut.
  * 0.5.0 : sélecteur de qualité AetherFy dans la barre de titre.
+ * 0.5.4 : « Retour » / « Réduire » MASQUENT l'overlay (état local
+ * `reduced`) au lieu de naviguer : cet overlay est monté au niveau
+ * applicatif PAR-DESSUS les routes (la page playlist est déjà dessous),
+ * donc `navigate(-1)` ne le masquait jamais et partait sur la mauvaise
+ * page. La lecture CONTINUE en arrière-plan ; une pastille flottante
+ * permet de rouvrir le lecteur. Nouvel item lu → overlay réaffiché.
  */
 export function VideoWatchLayout() {
   const {
     queue,
     currentMedia,
     playQueue,
-    closeAudioView,
     displayMode,
     setDisplayMode,
     isFullscreen,
     toggleFullscreen,
     isDetached,
   } = usePlayer();
+
+  // 0.5.4 : overlay masqué (= « retour à la navigation »), lecture continue.
+  const [reduced, setReduced] = useState(false);
+  const mediaId = currentMedia?.id ?? null;
+
+  // Nouvel item lu → on réaffiche toujours le lecteur.
+  useEffect(() => {
+    setReduced(false);
+  }, [mediaId]);
 
   // 0.4.0 : cette vue ne doit JAMAIS laisser la fenêtre « toujours au-dessus ».
   useEffect(() => {
@@ -211,12 +218,55 @@ export function VideoWatchLayout() {
 
   if (!currentMedia) return null;
 
+  // 0.5.4 : mode réduit — pastille flottante pour rouvrir le lecteur.
+  if (reduced) {
+    return (
+      <button
+        onClick={() => setReduced(false)}
+        title="Rouvrir le lecteur vidéo"
+        style={{
+          position: "fixed",
+          right: 16,
+          bottom: 16,
+          zIndex: 950,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+          maxWidth: 320,
+          padding: "10px 14px",
+          border: "1px solid rgba(255,255,255,.14)",
+          borderRadius: 999,
+          background: "rgba(20,20,26,.92)",
+          color: "#e8e8ec",
+          fontSize: 12,
+          cursor: "pointer",
+          boxShadow: "0 8px 24px rgba(0,0,0,.5)",
+        }}
+      >
+        <Play size={14} style={{ flexShrink: 0 }} />
+        <span
+          style={{
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {currentMedia.title}
+        </span>
+      </button>
+    );
+  }
+
   const upNext = queue.items.filter((_, i) => i !== queue.currentIndex);
   const isStream = currentMedia.path.startsWith("http");
 
+  // 0.5.4 : « Retour » / « Réduire » → masque l'overlay (la page playlist
+  // réapparaît, elle était dessous), lecture continue en arrière-plan.
   const handleBack = () => {
+    // Sort proprement du plein écran élément le cas échéant (gère aussi
+    // le always-on-top via syncFullscreen du PlayerContext).
     if (isFullscreen) toggleFullscreen();
-    closeAudioView();
+    setReduced(true);
   };
 
   const toggleWindowFullscreen = () => {
@@ -258,7 +308,6 @@ export function VideoWatchLayout() {
           <X size={16} />
         </button>
       </div>
-
       <div
         style={{
           display: "flex",
@@ -307,7 +356,6 @@ export function VideoWatchLayout() {
               </>
             )}
           </div>
-
           {/* Titre + cadrage + qualité + réduire */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12 }}>
             <h1
@@ -324,7 +372,6 @@ export function VideoWatchLayout() {
             >
               {currentMedia.title}
             </h1>
-
             <div
               style={{
                 display: "flex",
@@ -360,9 +407,7 @@ export function VideoWatchLayout() {
                 </button>
               ))}
             </div>
-
             {isStream && <QualitySelector url={currentMedia.path} />}
-
             <button
               onClick={handleBack}
               style={{
@@ -382,12 +427,10 @@ export function VideoWatchLayout() {
               <X size={14} /> Réduire
             </button>
           </div>
-
           <div style={{ marginTop: 6, fontSize: 13, color: "var(--color-text-muted, #9a9aa3)" }}>
             {currentMedia.channel ?? "AetherFy"}
           </div>
         </div>
-
         {/* ----- Colonne « À suivre » ----- */}
         <aside style={{ width: 400, flexShrink: 0 }}>
           <div
@@ -421,9 +464,7 @@ export function VideoWatchLayout() {
                   onMouseEnter={(e) =>
                     (e.currentTarget.style.background = "rgba(255,255,255,.06)")
                   }
-                  onMouseLeave={(e) =>
-                    (e.currentTarget.style.background = "transparent")
-                  }
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                 >
                   <div
                     style={{
