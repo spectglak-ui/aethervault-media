@@ -31,7 +31,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle().clone();
-
             // Répertoire de données de l'application (ex. %APPDATA%\com.aethervault.media
             // sous Windows), fourni par Tauri de façon standard par OS.
             let data_dir = handle
@@ -40,41 +39,34 @@ pub fn run() {
                 .expect("impossible de résoudre le répertoire de données de l'application");
             std::fs::create_dir_all(&data_dir)
                 .expect("impossible de créer le répertoire de données");
-
             // Privacy/Security Manager (Étape 6a, architecture A2, doc §6.4
             // bis) : nettoie un éventuel fichier de travail resté sur disque
             // après un arrêt brutal pendant un déverrouillage/une
             // persistance du coffre privé.
             security::vault::cleanup_stale_temp_file(&data_dir);
-
             let database_path = data_dir.join("aethervault.db");
             let pool = db::init_pool(&database_path)
                 .expect("impossible d'initialiser le pool de connexions SQLite");
-
+            // 0.5.1 (correctif installation fraîche) : les tables VaultTube
+            // DOIVENT exister AVANT que les migrations 18→21 ne les modifient
+            // (ALTER TABLE). Auparavant create_tables() tournait après
+            // apply_migrations() → crash « no such table: vaulttube_subscriptions »
+            // au tout premier lancement sur une base neuve (ex. .deb Linux).
+            // create_tables() est idempotent (CREATE TABLE IF NOT EXISTS) :
+            // aucun effet sur une base existante déjà à jour.
+            services::vaulttube::VaultTubeRepository::new(pool.clone())
+                .create_tables()
+                .expect("impossible de créer les tables VaultTube");
             // Schéma appliqué de façon versionnée (voir db::migrations), puis
             // données par défaut insérées séparément (voir db::seed).
-                     // 0.5.1 (correctif installation fraîche) : les tables VaultTube
-         // DOIVENT exister AVANT que les migrations 18→21 ne les modifient
-         // (ALTER TABLE). Auparavant create_tables() tournait après
-         // apply_migrations() → crash « no such table: vaulttube_subscriptions »
-         // au tout premier lancement sur une base neuve (ex. .deb Linux).
-         // create_tables() est idempotent (CREATE TABLE IF NOT EXISTS) :
-         // aucun effet sur une base existante déjà à jour.
-                  // 0.5.1 (correctif installation fraîche) : les tables VaultTube
-         // DOIVENT exister AVANT que les migrations 18→21 ne les modifient.
-         services::vaulttube::VaultTubeRepository::new(pool.clone())
-             .create_tables()
-             .expect("impossible de créer les tables VaultTube");
-         db::migrations::apply_migrations(&pool)
-             .expect("impossible d'appliquer les migrations de la base de données");
-
+            db::migrations::apply_migrations(&pool)
+                .expect("impossible d'appliquer les migrations de la base de données");
             db::seed::ensure_default_profile(&pool)
                 .expect("impossible d'initialiser les données par défaut");
             db::seed::ensure_default_categories(&pool)
                 .expect("impossible d'initialiser les catégories par défaut");
             db::seed::backfill_library_categories(&pool)
                 .expect("impossible de rattacher les bibliothèques existantes à une catégorie");
-
             let log_dir = handle
                 .path()
                 .app_log_dir()
@@ -83,7 +75,6 @@ pub fn run() {
                 "AetherVault Media démarre — base de données : {:?}",
                 database_path
             );
-
             // 0.3.0 : fenêtre « quasi-max » dès le démarrage — inset de 4 px de
             // la zone de travail : jamais l'état « maximisé » (artefacts DWM
             // après les transitions plein écran), jamais en contact avec les
@@ -101,14 +92,12 @@ pub fn run() {
                     let _ = window.center();
                 }
             }
-
             let scanning_libraries = std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             ));
             let watcher =
                 services::watcher::start(pool.clone(), handle.clone(), scanning_libraries.clone())
                     .expect("impossible de démarrer la surveillance des dossiers (Filesystem Watcher)");
-
             // Playback Engine Bridge (Étape 3b) : démarré une fois pour
             // toute la durée de vie de l'application, indépendamment de
             // toute fenêtre — voir `services::playback_engine`.
@@ -120,11 +109,9 @@ pub fn run() {
                         services::playback_engine::PlaybackEngineState::Unavailable(err)
                     }
                 };
-
             // Metadata Service (Étape 4, doc §3.4/§6.3).
             let metadata_service =
                 std::sync::Arc::new(services::metadata::MetadataService::new());
-
             app.manage(AppState {
                 db_pool: pool,
                 database_path: database_path.to_string_lossy().to_string(),
@@ -304,9 +291,11 @@ pub fn run() {
             services::friends_net::friends_list_requests,
             services::friends_net::friends_set_request_status,
             // Playback Engine Bridge (Étape 3b) + AetherFy 0.5.0
-			services::playback_engine::player_find_trailer,
+            services::playback_engine::player_find_trailer,
             services::playback_engine::player_pull_frame,
             services::playback_engine::player_load_url,
+            // 0.5.4 : mode musique audio-seul (anti-grésillement).
+            services::playback_engine::player_load_url_audio,
             services::playback_engine::player_list_qualities,
             services::playback_engine::player_load_url_quality,
             services::playback_engine::player_set_preferred_quality,
