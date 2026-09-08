@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { AppStatus, VaultStatus } from "../types";
+import type { AppStatus, VaultStatus } from "@aethervault/shared-types";
 import { Button, IconButton, PageHeader, useTheme } from "@aethervault/ui-kit";
 import { useActiveProfile } from "../profile/ActiveProfileContext";
 import { privacyApi } from "../features/privacy/api";
