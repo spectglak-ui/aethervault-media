@@ -19,13 +19,14 @@ pub fn save_metadata_settings(
 }
 
 // ---- Fond d'Accueil personnalisé (0.3.0) -------------------------
+
 /// Fond d'Accueil (0.3.0) : même pattern que l'avatar de profil —
 /// image envoyée en bytes, copiée dans app_data/backdrops/, référence
 /// dans app_settings (clé "home_backdrop").
 #[tauri::command]
 pub fn set_home_backdrop(
     app: tauri::AppHandle,
-    state: tauri::State<crate::state::AppState>,
+    state: tauri::State<'_, crate::state::AppState>,
     file_name: String,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
@@ -58,7 +59,9 @@ pub fn set_home_backdrop(
 
 /// Fond d'Accueil (0.3.0) : lit le chemin du fond personnalisé.
 #[tauri::command]
-pub fn get_home_backdrop(state: tauri::State<crate::state::AppState>) -> Result<Option<String>, String> {
+pub fn get_home_backdrop(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<Option<String>, String> {
     use rusqlite::OptionalExtension;
     let conn = state.get_conn()?;
     conn.query_row(
@@ -72,7 +75,9 @@ pub fn get_home_backdrop(state: tauri::State<crate::state::AppState>) -> Result<
 
 /// Fond d'Accueil (0.3.0) : retire le fond personnalisé (fichier + référence).
 #[tauri::command]
-pub fn clear_home_backdrop(state: tauri::State<crate::state::AppState>) -> Result<(), String> {
+pub fn clear_home_backdrop(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<(), String> {
     use rusqlite::OptionalExtension;
     let conn = state.get_conn()?;
     let existing: Option<String> = conn
@@ -101,12 +106,11 @@ pub fn clear_home_backdrop(state: tauri::State<crate::state::AppState>) -> Resul
 /// ou pas de réseau.
 #[tauri::command]
 pub fn get_title_trailer(
-    state: tauri::State<crate::state::AppState>,
+    state: tauri::State<'_, crate::state::AppState>,
     title_id: i64,
 ) -> Result<Vec<String>, String> {
     use rusqlite::OptionalExtension;
     let conn = state.get_conn()?;
-    
     let (kind, tmdb_id): (String, Option<i64>) = conn
         .query_row(
             "SELECT kind, tmdb_id FROM titles WHERE id = ?1",
@@ -116,12 +120,10 @@ pub fn get_title_trailer(
         .optional()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Titre introuvable.".to_string())?;
-        
     log::info!("[trailer] title {title_id} kind={kind} tmdb_id={tmdb_id:?}");
-    
-    let Some(tmdb_id) = tmdb_id else { 
+    let Some(tmdb_id) = tmdb_id else {
         log::info!("[trailer] pas de tmdb_id — liste vide");
-        return Ok(Vec::new()) 
+        return Ok(Vec::new());
     };
     let settings = crate::services::metadata::tmdb::load_settings(&conn);
     if settings.api_key.is_empty() {
@@ -135,4 +137,48 @@ pub fn get_title_trailer(
     let keys = client.fetch_trailer_keys(&kind, tmdb_id);
     log::info!("[trailer] {} clé(s) YouTube reçue(s)", keys.len());
     Ok(keys)
+}
+
+// ---- Typographie personnalisée (0.5.4) ---------------------------
+
+/// 0.5.4 — typographie personnalisée (4 familles remplaçables :
+/// display / ui / body / mono), persistée dans app_settings.
+/// ⚠️ UNE SEULE définition de chaque commande : le doublon précédent
+/// (copie collée deux fois) provoquait E0428 + E0433.
+#[tauri::command]
+pub fn get_typography_settings(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<serde_json::Value, String> {
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let get = |key: &str, default: &str| -> String {
+        crate::db::repositories::settings_repository::get(&conn, key)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| default.to_string())
+    };
+    Ok(serde_json::json!({
+        "display": get("typography_display", "Panchang"),
+        "ui": get("typography_ui", "Panchang"),
+        "body": get("typography_body", "Space Grotesk"),
+        "mono": get("typography_mono", "Space Grotesk"),
+    }))
+}
+
+#[tauri::command]
+pub fn save_typography_settings(
+    state: tauri::State<'_, crate::state::AppState>,
+    display: String,
+    ui: String,
+    body: String,
+    mono: String,
+) -> Result<(), String> {
+    let conn = state.db_pool.get().map_err(|e| e.to_string())?;
+    let set = |key: &str, value: &str| -> Result<(), String> {
+        crate::db::repositories::settings_repository::set(&conn, key, value)
+            .map_err(|e| e.to_string())
+    };
+    set("typography_display", &display)?;
+    set("typography_ui", &ui)?;
+    set("typography_body", &body)?;
+    set("typography_mono", &mono)
 }

@@ -145,6 +145,8 @@ pub fn run() {
             commands::settings::get_home_backdrop,
             commands::settings::clear_home_backdrop,
             commands::settings::get_title_trailer,
+			commands::settings::get_typography_settings,
+            commands::settings::save_typography_settings,
             commands::segments::get_episode_segments,
             commands::segments::set_episode_segment,
             commands::segments::delete_episode_segment,
