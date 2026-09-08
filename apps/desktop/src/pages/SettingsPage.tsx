@@ -465,7 +465,7 @@ function SecuritySection() {
       <p className="avm-settings-muted">
         Changer le secret (PIN ou mot de passe) du coffre privé. Le coffre doit être déverrouillé.
       </p>
-      {status.locked ? (
+      {!status.unlocked ? (
         <p className="avm-settings-muted">
           Le coffre est verrouillé. Déverrouillez-le d'abord pour changer le secret.
         </p>
