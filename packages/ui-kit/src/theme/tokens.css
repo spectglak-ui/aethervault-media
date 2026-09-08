@@ -1,11 +1,10 @@
 /*
- * Jetons de thème d'AetherVault Media.
- *
- * Toute couleur/espacement/rayon utilisé par un composant (ui-kit ou app)
- * doit passer par une de ces variables — jamais de valeur codée en dur —
- * pour que le thème sombre/clair (et plus tard les thèmes par bibliothèque,
- * Étape 5) s'applique partout sans toucher au CSS des composants.
- */
+Jetons de thème d'AetherVault Media.
+Toute couleur/espacement/rayon utilisé par un composant (ui-kit ou app)
+doit passer par une de ces variables — jamais de valeur codée en dur —
+pour que le thème sombre/clair (et plus tard les thèmes par bibliothèque,
+Étape 5) s'applique partout sans toucher au CSS des composants.
+*/
 
 :root[data-theme="dark"] {
   --color-bg: #14161a;
@@ -14,13 +13,12 @@
   --color-border: #2a2e37;
   --color-text: #eef0f3;
   --color-text-muted: #9aa0ab;
-
   --color-accent: #7c5cff;
   --color-accent-contrast: #ffffff;
   --color-success: #6ee7a8;
   --color-danger: #f28b82;
-
   --shadow-elevated: 0 20px 60px rgba(0, 0, 0, 0.4);
+  --surface-blur: none;
 }
 
 :root[data-theme="light"] {
@@ -30,30 +28,41 @@
   --color-border: #e2e4e9;
   --color-text: #14161a;
   --color-text-muted: #5b616c;
-
   --color-accent: #7c5cff;
   --color-accent-contrast: #ffffff;
   --color-success: #1f9d5c;
   --color-danger: #c53d34;
-
   --shadow-elevated: 0 12px 32px rgba(20, 22, 26, 0.12);
+  --surface-blur: none;
+}
+
+:root[data-theme="transparent"] {
+  --color-bg: rgba(20, 22, 26, 0.75);
+  --color-surface: rgba(29, 32, 38, 0.65);
+  --color-surface-hover: rgba(36, 40, 48, 0.75);
+  --color-border: rgba(42, 46, 55, 0.5);
+  --color-text: #eef0f3;
+  --color-text-muted: #9aa0ab;
+  --color-accent: #7c5cff;
+  --color-accent-contrast: #ffffff;
+  --color-success: #6ee7a8;
+  --color-danger: #f28b82;
+  --shadow-elevated: 0 20px 60px rgba(0, 0, 0, 0.4);
+  --surface-blur: blur(12px) saturate(1.2);
 }
 
 :root {
   --font-sans: "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-mono: "Cascadia Code", Consolas, monospace;
-
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 16px;
-
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
   --space-5: 24px;
   --space-6: 32px;
-
   /* Jetons de mouvement : toute animation (CSS ou framer-motion) doit s'y
      référer plutôt que coder une durée/courbe en dur, pour garder un
      ressenti cohérent partout et pouvoir l'ajuster globalement. */
@@ -62,7 +71,75 @@
   --motion-duration-slow: 320ms;
   --motion-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
   --motion-ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
-
   --elevation-1: 0 1px 3px rgba(0, 0, 0, 0.12);
   --elevation-2: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+/* Thème transparent : applique le backdrop-filter aux surfaces principales */
+:root.avm-theme-transparent body,
+:root.avm-theme-transparent .avm-sidebar,
+:root.avm-theme-transparent .avm-card,
+:root.avm-theme-transparent .avm-page-header,
+:root.avm-theme-transparent .avm-settings-section,
+:root.avm-theme-transparent .avm-vault-form,
+:root.avm-theme-transparent [class*="modal"],
+:root.avm-theme-transparent [class*="dialog"] {
+  backdrop-filter: var(--surface-blur);
+  -webkit-backdrop-filter: var(--surface-blur); /* Safari */
+}
+
+/* ------------------------------------------------------------------ */
+/* 0.5.4 — Couche d'arrière-plan plein-fenêtre (thème Transparent)      */
+/* ------------------------------------------------------------------ */
+
+/* La couche fixe : derrière TOUT, jamais cliquable. */
+.avm-app-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-color: transparent;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* Fond par défaut (voile sombre dégradé) si aucun fond personnalisé. */
+.avm-app-backdrop:not([style*="background-image"]) {
+  background-image:
+    radial-gradient(1200px 800px at 80% -10%, rgba(124, 92, 255, 0.16), transparent 60%),
+    radial-gradient(900px 600px at 10% 110%, rgba(30, 128, 239, 0.10), transparent 60%);
+}
+
+/* Tout le shell passe AU-DESSUS de la couche fixe. */
+.avm-sidebar,
+.avm-topbar,
+.avm-shell,
+.avm-layout,
+.avm-main,
+.avm-page,
+.avm-home {
+  position: relative;
+  z-index: 1;
+}
+
+/* En thème Transparent : le shell ne peint plus de fond opaque par-dessus
+   la couche fixe — sinon le verre ne montre que du gris. */
+:root.avm-theme-transparent body,
+:root.avm-theme-transparent .avm-shell,
+:root.avm-theme-transparent .avm-layout,
+:root.avm-theme-transparent .avm-main,
+:root.avm-theme-transparent .avm-page,
+:root.avm-theme-transparent .avm-home {
+  background: transparent;
+}
+
+/* Surfaces vitrées : sidebar + barre du haut = couleur semi-transparente
+   du thème + flou. En thèmes Dark/White ces règles sont inactives
+   (scope .avm-theme-transparent), donc aucun changement visuel ailleurs. */
+:root.avm-theme-transparent .avm-sidebar,
+:root.avm-theme-transparent .avm-topbar {
+  background: var(--color-surface);
+  backdrop-filter: var(--surface-blur);
+  -webkit-backdrop-filter: var(--surface-blur);
 }

@@ -209,15 +209,37 @@ export function CategoryPage() {
     navigate(`/category/${category.key}/title/${title.id}`);
   };
 
-  return (
+    return (
     <div className="avm-category-page">
+      {/* 0.5.4 — fond de page en couche FIXE plein-fenêtre : couvre TOUTE
+          la fenêtre (derrière sidebar/barre du haut) et passe DERRIÈRE le
+          contenu (z-index 0 vs 1) — indispensable au thème Transparent. */}
       {wallpaper && (
-        <div className="avm-category-page__wallpaper" aria-hidden="true">
-          <img src={wallpaper} alt="" />
-          <div className="avm-category-page__wallpaper-overlay" />
+        <div
+          aria-hidden="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 0,
+            pointerEvents: "none",
+            overflow: "hidden",
+          }}
+        >
+          <img
+            src={wallpaper}
+            alt=""
+            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          />
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: "linear-gradient(rgba(12, 12, 16, 0.55), rgba(12, 12, 16, 0.82))",
+            }}
+          />
         </div>
       )}
-      <div className="avm-category-page__content">
+      <div className="avm-category-page__content" style={{ position: "relative", zIndex: 1 }}>
         <PageHeader
           title={`${category.icon ?? ""} ${category.name}`.trim()}
           description={

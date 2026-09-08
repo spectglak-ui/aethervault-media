@@ -1391,3 +1391,9 @@
 .avm-af-queue-row:hover .avm-q-next { 
 opacity: 1 !important; 
 }
+/* 0.5.4 — le shell reste AU-DESSUS des fonds de page fixes */
+.avm-sidebar,
+.avm-topbar {
+  position: relative;
+  z-index: 2;
+}

@@ -48,14 +48,31 @@ function colorKeyToCssVar(key: string): string {
  *
  * `tokens.css` conserve malgré tout des blocs statiques pour "dark"/"light" :
  * ils servent de valeurs par défaut avant que ce code s'exécute (évite un
- * flash de couleurs non stylées), mais sont ensuite prioritaires écrasés par
+ * flash de couleurs non stylées), mais sont ensuite prioritairement écrasés par
  * les propriétés inline posées ici.
+ *
+ * 0.5.4 : gestion du thème transparent (glassmorphism) — ajoute la classe
+ * `avm-theme-transparent` sur `<html>` pour activer le backdrop-filter sur
+ * les surfaces principales (voir tokens.css).
  */
 function applyThemeToDocument(theme: ThemeDefinition) {
   const root = document.documentElement;
   root.setAttribute("data-theme", theme.id);
   for (const [key, value] of Object.entries(theme.colors)) {
     root.style.setProperty(colorKeyToCssVar(key), value);
+  }
+    // 0.5.4 : le flou s'active dès que le fond est transparent — thème
+  // embarqué « Transparent » OU thème personnalisé/importé dont le bg
+  // est rgba()/transparent (ex. preset « Transparent » du customizer).
+  const bg = (theme.colors.bg ?? "").trim();
+  const isTransparent =
+    theme.id === "aethervault-transparent" ||
+    bg.startsWith("rgba") ||
+    bg === "transparent";
+  if (isTransparent) {
+    root.classList.add("avm-theme-transparent");
+  } else {
+    root.classList.remove("avm-theme-transparent");
   }
 }
 
@@ -109,7 +126,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const isBuiltinTheme = (id: string) => BUILTIN_THEMES.some((theme) => theme.id === id);
 
-  const value = useMemo<ThemeContextValue>(
+  const value = useMemo(
     () => ({
       themes,
       activeTheme,

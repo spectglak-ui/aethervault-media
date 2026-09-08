@@ -6,9 +6,10 @@ import { THEME_FORMAT_VERSION, type ThemeDefinition } from "@aethervault/shared-
  * seule leur présence par défaut (et le fait qu'ils ne peuvent pas être
  * supprimés) les distingue d'un thème communautaire.
  */
+
 export const darkTheme: ThemeDefinition = {
   id: "aethervault-dark",
-  name: "AetherVault Sombre",
+  name: "Dark",
   author: "AetherVault Media",
   version: THEME_FORMAT_VERSION,
   colors: {
@@ -27,7 +28,7 @@ export const darkTheme: ThemeDefinition = {
 
 export const lightTheme: ThemeDefinition = {
   id: "aethervault-light",
-  name: "AetherVault Clair",
+  name: "White",
   author: "AetherVault Media",
   version: THEME_FORMAT_VERSION,
   colors: {
@@ -44,4 +45,28 @@ export const lightTheme: ThemeDefinition = {
   },
 };
 
-export const BUILTIN_THEMES: ThemeDefinition[] = [darkTheme, lightTheme];
+/**
+ * Thème transparent avec flou (glassmorphism) : surfaces semi-transparentes +
+ * backdrop-filter pour voir les arrière-plans personnalisés (home backdrop).
+ * Les couleurs utilisent rgba() pour la transparence.
+ */
+export const transparentTheme: ThemeDefinition = {
+  id: "aethervault-transparent",
+  name: "Transparent",
+  author: "AetherVault Media",
+  version: THEME_FORMAT_VERSION,
+  colors: {
+    bg: "rgba(20, 22, 26, 0.75)",
+    surface: "rgba(29, 32, 38, 0.65)",
+    surfaceHover: "rgba(36, 40, 48, 0.75)",
+    border: "rgba(42, 46, 55, 0.5)",
+    text: "#eef0f3",
+    textMuted: "#9aa0ab",
+    accent: "#7c5cff",
+    accentContrast: "#ffffff",
+    success: "#6ee7a8",
+    danger: "#f28b82",
+  },
+};
+
+export const BUILTIN_THEMES: ThemeDefinition[] = [darkTheme, lightTheme, transparentTheme];

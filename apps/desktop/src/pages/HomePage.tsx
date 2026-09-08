@@ -13,11 +13,7 @@ import "./pages.css";
 
 /** 0.4.0 : détection tolérante de la catégorie Animés. */
 function isAnimeCategory(c: Category): boolean {
-  return (
-    c.key === "animes" ||
-    c.key === "anime" ||
-    c.name.toLowerCase().includes("anim")
-  );
+  return c.key === "animes" || c.key === "anime" || c.name.toLowerCase().includes("anim");
 }
 
 /**
@@ -26,6 +22,9 @@ function isAnimeCategory(c: Category): boolean {
  * 0.4.0 : tuile AetherFy (badge Alpha) entre Animé et Privé.
  * 0.4.1 : masquage de Privé piloté depuis les Paramètres (plus aucun
  * contrôle sur l'accueil).
+ * 0.5.4 : le fond personnalisé devient une couche FIXE plein-fenêtre
+ * (derrière la sidebar, la barre du haut et tout le contenu) pour que
+ * le thème Transparent laisse voir l'image à travers le verre.
  */
 export function HomePage() {
   const navigate = useNavigate();
@@ -170,175 +169,181 @@ export function HomePage() {
   );
 
   return (
-    <div
-      style={
-        homeBackdrop
-          ? {
-              backgroundImage: `linear-gradient(rgba(12, 12, 16, 0.72), rgba(12, 12, 16, 0.9)), url(${homeBackdrop})`,
-              backgroundAttachment: "fixed",
-              backgroundSize: "cover",
-              backgroundPosition: "center",
-            }
-          : undefined
-      }
-    >
-      {hero && assetUrl(hero.banner) ? (
-        <section className="avm-home-hero">
-          <img src={assetUrl(hero.banner)} alt="" />
-          <div className="avm-home-hero__overlay" />
-          <div className="avm-home-hero__content">
-            <h1>{hero.name}</h1>
-            <p className="avm-home-hero__meta">
-              {[
-                hero.year,
-                hero.rating ? `★ ${hero.rating.toFixed(1)}` : null,
-                heroCategory?.name ?? null,
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-            </p>
-            {hero.description && (
-              <p className="avm-home-hero__synopsis">{hero.description}</p>
-            )}
-            <div className="avm-home-hero__actions">
-              {hero.kind === "movie" && hero.media_file_id !== null && (
-                <Button
-                  variant="primary"
-                  onClick={() => void handleHeroPlay()}
-                  disabled={starting}
-                >
-                  <Play size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
-                  Lecture
-                </Button>
-              )}
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  if (heroCategory)
-                    navigate(`/category/${heroCategory.key}/title/${hero.id}`);
-                }}
-              >
-                <Info size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
-                Plus d'infos
-              </Button>
-            </div>
-          </div>
-        </section>
-      ) : (
-        <PageHeader
-          title="Accueil"
-          description="Toute votre médiathèque, organisée par catégorie."
+    <div>
+      {/* 0.5.4 — fond personnalisé en couche FIXE plein-fenêtre : couvre
+          TOUTE la fenêtre (y compris derrière sidebar/barre du haut) et
+          passe DERRIÈRE le contenu (z-index 0 vs 1). */}
+      {homeBackdrop && (
+        <div
+          className="avm-page-backdrop"
+          aria-hidden="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 0,
+            pointerEvents: "none",
+            backgroundImage: `linear-gradient(rgba(12, 12, 16, 0.72), rgba(12, 12, 16, 0.9)), url(${homeBackdrop})`,
+            backgroundSize: "cover",
+            backgroundPosition: "center",
+          }}
         />
       )}
-
-      {categories !== null && (
-        <div className="avm-home-tiles">
-          {categories.flatMap((category) => {
-            const out: ReactNode[] = [];
-            if (category.key === "private") {
-              // 0.4.1 : Privé masquable uniquement depuis les Paramètres.
-              if (!hidePrivate) {
-                out.push(
-                  <button
-                    key={category.id}
-                    className="avm-home-tile"
-                    onClick={() => navigate("/private")}
+      {/* Contenu remonté au-dessus de la couche fixe. */}
+      <div style={{ position: "relative", zIndex: 1 }}>
+        {hero && assetUrl(hero.banner) ? (
+          <section className="avm-home-hero">
+            <img src={assetUrl(hero.banner)} alt="" />
+            <div className="avm-home-hero__overlay" />
+            <div className="avm-home-hero__content">
+              <h1>{hero.name}</h1>
+              <p className="avm-home-hero__meta">
+                {[
+                  hero.year,
+                  hero.rating ? `★ ${hero.rating.toFixed(1)}` : null,
+                  heroCategory?.name ?? null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+              {hero.description && (
+                <p className="avm-home-hero__synopsis">{hero.description}</p>
+              )}
+              <div className="avm-home-hero__actions">
+                {hero.kind === "movie" && hero.media_file_id !== null && (
+                  <Button
+                    variant="primary"
+                    onClick={() => void handleHeroPlay()}
+                    disabled={starting}
                   >
-                    {assetUrl(category.banner) ? (
-                      <img src={assetUrl(category.banner)} alt="" />
-                    ) : (
-                      <div className="avm-card__placeholder" aria-hidden="true" />
-                    )}
-                    <span className="avm-home-tile__overlay">
-                      <span className="avm-home-tile__name">{category.name}</span>
-                      <span className="avm-home-tile__count">
-                        {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
+                    <Play size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
+                    Lecture
+                  </Button>
+                )}
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    if (heroCategory)
+                      navigate(`/category/${heroCategory.key}/title/${hero.id}`);
+                  }}
+                >
+                  <Info size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
+                  Plus d'infos
+                </Button>
+              </div>
+            </div>
+          </section>
+        ) : (
+          <PageHeader
+            title="Accueil"
+            description="Toute votre médiathèque, organisée par catégorie."
+          />
+        )}
+        {categories !== null && (
+          <div className="avm-home-tiles">
+            {categories.flatMap((category) => {
+              const out: ReactNode[] = [];
+              if (category.key === "private") {
+                // 0.4.1 : Privé masquable uniquement depuis les Paramètres.
+                if (!hidePrivate) {
+                  out.push(
+                    <button
+                      key={category.id}
+                      className="avm-home-tile"
+                      onClick={() => navigate("/private")}
+                    >
+                      {assetUrl(category.banner) ? (
+                        <img src={assetUrl(category.banner)} alt="" />
+                      ) : (
+                        <div className="avm-card__placeholder" aria-hidden="true" />
+                      )}
+                      <span className="avm-home-tile__overlay">
+                        <span className="avm-home-tile__name">{category.name}</span>
+                        <span className="avm-home-tile__count">
+                          {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
+                        </span>
                       </span>
-                    </span>
-                  </button>
-                );
+                    </button>
+                  );
+                }
+                return out;
               }
-              return out;
-            }
-            out.push(
-              <button
-                key={category.id}
-                className="avm-home-tile"
-                onClick={() => navigate(`/category/${category.key}`)}
-              >
-                {assetUrl(category.banner) ? (
-                  <img src={assetUrl(category.banner)} alt="" />
-                ) : (
-                  <div className="avm-card__placeholder" aria-hidden="true" />
-                )}
-                <span className="avm-home-tile__overlay">
-                  <span className="avm-home-tile__name">{category.name}</span>
-                  <span className="avm-home-tile__count">
-                    {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
+              out.push(
+                <button
+                  key={category.id}
+                  className="avm-home-tile"
+                  onClick={() => navigate(`/category/${category.key}`)}
+                >
+                  {assetUrl(category.banner) ? (
+                    <img src={assetUrl(category.banner)} alt="" />
+                  ) : (
+                    <div className="avm-card__placeholder" aria-hidden="true" />
+                  )}
+                  <span className="avm-home-tile__overlay">
+                    <span className="avm-home-tile__name">{category.name}</span>
+                    <span className="avm-home-tile__count">
+                      {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
+                    </span>
                   </span>
-                </span>
-              </button>
-            );
-            if (isAnimeCategory(category)) out.push(aetherfyTile);
-            return out;
-          })}
-          {!categories.some(isAnimeCategory) && aetherfyTile}
-        </div>
-      )}
-
-      {continueItems !== null && continueItems.length > 0 && (
-        <PosterRow title="Continuer à regarder">
-          {continueItems.map((item) => {
-            const percent = Math.min(
-              100,
-              Math.max(1, Math.round((item.positionSeconds / item.durationSeconds) * 100))
-            );
-            return (
-              <button
-                key={`continue-${item.mediaFileId}`}
-                className="avm-home-poster"
-                onClick={() => handleContinuePlay(item)}
-              >
-                {assetUrl(item.poster) ? (
-                  <img src={assetUrl(item.poster)} alt="" loading="lazy" />
-                ) : (
-                  <div className="avm-card__placeholder" aria-hidden="true" />
-                )}
-                <span className="avm-home-poster__overlay avm-home-poster__overlay--visible">
-                  <span className="avm-home-poster__name">{item.label}</span>
-                  <span className="avm-home-poster__meta">{percent}% vu</span>
-                </span>
-                <span className="avm-home-poster__progress" aria-hidden="true">
-                  <span style={{ width: `${percent}%` }} />
-                </span>
-              </button>
-            );
-          })}
-        </PosterRow>
-      )}
-
-      {recent !== null && recent.length > 0 && (
-        <PosterRow title="Ajouts récents">
-          {recent.map((title) => (
-            <PosterCard key={`recent-${title.id}`} title={title} onOpen={() => openTitle(title)} />
-          ))}
-        </PosterRow>
-      )}
-
-      {categories !== null &&
-        categories
-          .filter((c) => c.key !== "private" && (rows[c.id]?.length ?? 0) > 0)
-          .map((category) => (
-            <PosterRow key={category.id} title={category.name}>
-              {(rows[category.id] ?? []).map((title) => (
-                <PosterCard
-                  key={`${category.key}-${title.id}`}
-                  title={title}
-                  onOpen={() => openTitle(title)}
-                />
-              ))}
-            </PosterRow>
-          ))}
+                </button>
+              );
+              if (isAnimeCategory(category)) out.push(aetherfyTile);
+              return out;
+            })}
+            {!categories.some(isAnimeCategory) && aetherfyTile}
+          </div>
+        )}
+        {continueItems !== null && continueItems.length > 0 && (
+          <PosterRow title="Continuer à regarder">
+            {continueItems.map((item) => {
+              const percent = Math.min(
+                100,
+                Math.max(1, Math.round((item.positionSeconds / item.durationSeconds) * 100))
+              );
+              return (
+                <button
+                  key={`continue-${item.mediaFileId}`}
+                  className="avm-home-poster"
+                  onClick={() => handleContinuePlay(item)}
+                >
+                  {assetUrl(item.poster) ? (
+                    <img src={assetUrl(item.poster)} alt="" loading="lazy" />
+                  ) : (
+                    <div className="avm-card__placeholder" aria-hidden="true" />
+                  )}
+                  <span className="avm-home-poster__overlay avm-home-poster__overlay--visible">
+                    <span className="avm-home-poster__name">{item.label}</span>
+                    <span className="avm-home-poster__meta">{percent}% vu</span>
+                  </span>
+                  <span className="avm-home-poster__progress" aria-hidden="true">
+                    <span style={{ width: `${percent}%` }} />
+                  </span>
+                </button>
+              );
+            })}
+          </PosterRow>
+        )}
+        {recent !== null && recent.length > 0 && (
+          <PosterRow title="Ajouts récents">
+            {recent.map((title) => (
+              <PosterCard key={`recent-${title.id}`} title={title} onOpen={() => openTitle(title)} />
+            ))}
+          </PosterRow>
+        )}
+        {categories !== null &&
+          categories
+            .filter((c) => c.key !== "private" && (rows[c.id]?.length ?? 0) > 0)
+            .map((category) => (
+              <PosterRow key={category.id} title={category.name}>
+                {(rows[category.id] ?? []).map((title) => (
+                  <PosterCard
+                    key={`${category.key}-${title.id}`}
+                    title={title}
+                    onOpen={() => openTitle(title)}
+                  />
+                ))}
+              </PosterRow>
+            ))}
+      </div>
     </div>
   );
 }
