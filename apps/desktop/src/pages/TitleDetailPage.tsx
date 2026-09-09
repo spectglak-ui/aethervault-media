@@ -14,8 +14,8 @@ import { assetUrl } from "../lib/assetUrl";
 import "./pages.css";
 
 /** `"5432 s"` → `"1 h 30 min"` — registre différent de `formatTime`
-(player/formatTime.ts) : celui-ci affiche une durée totale à l'échelle
-d'une page de navigation. */
+ * (player/formatTime.ts) : celui-ci affiche une durée totale à l'échelle
+ * d'une page de navigation. */
 function formatDuration(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.round((totalSeconds % 3600) / 60);
@@ -24,8 +24,8 @@ function formatDuration(totalSeconds: number): string {
 }
 
 /** Charge une seule fois le script API IFrame YouTube (0.3.0 :
-nécessaire pour désactiver les sous-titres de la bande-annonce,
-impossible avec une iframe simple). */
+ * nécessaire pour désactiver les sous-titres de la bande-annonce,
+ * impossible avec une iframe simple). */
 function loadYouTubeApi(): Promise<any> {
   return new Promise((resolve) => {
     const w = window as any;
@@ -45,15 +45,20 @@ function loadYouTubeApi(): Promise<any> {
 }
 
 /**
-Page d'un Titre (doc §6.3). Étape 7 (lot 4) : fond d'écran de page
-personnalisable. Étape 8 : menu « Ajouter à une collection » (ListPlus)
-rangée « Titres similaires » (genres/acteurs/studios communs).
-0.3.0 : bande-annonce YouTube en arrière-plan, sans sous-titres.
-*/
+ * Page d'un Titre (doc §6.3). Étape 7 (lot 4) : fond d'écran de page
+ * personnalisable. Étape 8 : menu « Ajouter à une collection » (ListPlus) +
+ * rangée « Titres similaires » (genres/acteurs/studios communs).
+ * 0.3.0 : bande-annonce YouTube en arrière-plan, sans sous-titres.
+ * 0.5.6 : (a) `trailerActive` déclaré APRÈS `trailerMode` (l'ordre inverse
+ * provoquait un ReferenceError au rendu) ; (b) bande-annonce coupée pendant
+ * toute lecture (CPU/réseau YouTube = trames sautées mesurées via
+ * [AV-DIAG]) ; (c) tous les invoke sensibles ont un catch (fin des
+ * « Uncaught (in promise) error running command »).
+ */
 export function TitleDetailPage() {
   const { key, titleId } = useParams<{ key: string; titleId: string }>();
   const navigate = useNavigate();
-  const { play } = usePlayer();
+  const { play, currentMedia } = usePlayer();
   const [title, setTitle] = useState<TitleDetails | null | undefined>(undefined);
   const [similarTitles, setSimilarTitles] = useState<TitleSummary[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -68,6 +73,11 @@ export function TitleDetailPage() {
       return "backdrop";
     }
   });
+  // 0.5.6 : ordre corrigé (était déclaré AVANT trailerMode → ReferenceError).
+  // Le fond bande-annonce est DÉSACTIVÉ pendant toute lecture ; la
+  // préférence utilisateur (localStorage) est conservée et revient
+  // automatiquement une fois la lecture terminée.
+  const trailerActive = trailerMode === "trailer" && !currentMedia;
   const [trailerSound, setTrailerSound] = useState(false);
   const wallpaperRef = useRef<HTMLDivElement | null>(null);
   const trailerHostRef = useRef<HTMLDivElement | null>(null);
@@ -79,7 +89,7 @@ export function TitleDetailPage() {
   // on laisse overflow:hidden rogner le surplus : la bande-annonce
   // REMPLIT le fond sans bandes noires.
   useEffect(() => {
-    if (trailerMode !== "trailer" || !trailerKey) return;
+    if (!trailerActive || !trailerKey) return;
     const compute = () => {
       const el = wallpaperRef.current;
       if (!el) return;
@@ -95,13 +105,13 @@ export function TitleDetailPage() {
     compute();
     window.addEventListener("resize", compute);
     return () => window.removeEventListener("resize", compute);
-  }, [trailerMode, trailerKey]);
+  }, [trailerActive, trailerKey]);
 
-    // 0.3.0 : crée le lecteur YouTube du fond, DÉSACTIVE les sous-titres,
+  // 0.3.0 : crée le lecteur YouTube du fond, DÉSACTIVE les sous-titres,
   // et passe automatiquement à la vidéo suivante en cas d'erreur
   // (fallback automatique sur la liste des trailers disponibles).
   useEffect(() => {
-    if (trailerMode !== "trailer" || !trailerKey) return;
+    if (!trailerActive || !trailerKey) return;
     let cancelled = false;
     void loadYouTubeApi().then((YT) => {
       if (cancelled || !trailerHostRef.current) return;
@@ -134,8 +144,6 @@ export function TitleDetailPage() {
             event.target.playVideo();
           },
           onError: () => {
-            // 0.3.0 : erreur de lecture (vidéo supprimée, géo-bloquée…)
-            // → passe automatiquement à la vidéo suivante dans la liste.
             console.warn("[trailer] erreur de lecture, essai de la vidéo suivante");
             setTrailerKeyIndex((idx) => {
               const next = idx + 1;
@@ -155,7 +163,7 @@ export function TitleDetailPage() {
       trailerPlayerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trailerMode, trailerKey]);
+  }, [trailerActive, trailerKey]);
 
   // Bouton son : mute/unmute en direct, sans recharger la vidéo.
   useEffect(() => {
@@ -188,14 +196,13 @@ export function TitleDetailPage() {
     }
   }, [refresh, titleId]);
 
-      // 0.5.1 : TMDB d'abord ; si injoignable (box sans VPN), repli recherche
+  // 0.5.1 : TMDB d'abord ; si injoignable (box sans VPN), repli recherche
   // YouTube LOCALE via yt-dlp → l'option « bande-annonce en arrière-plan »
   // apparaît même sans VPN.
   const titleName = title?.name ?? null;
   useEffect(() => {
     if (!titleId) return;
     let alive = true;
-
     const fallback = async (): Promise<string[]> => {
       if (!titleName) return [];
       try {
@@ -205,7 +212,6 @@ export function TitleDetailPage() {
         return [];
       }
     };
-
     invoke<string[]>("get_title_trailer", { titleId: Number(titleId) })
       .then(async (keys) => (keys && keys.length > 0 ? keys : fallback()))
       .catch(() => fallback())
@@ -214,7 +220,6 @@ export function TitleDetailPage() {
         setTrailerKeys(keys);
         setTrailerKeyIndex(0);
       });
-
     return () => {
       alive = false;
     };
@@ -226,6 +231,11 @@ export function TitleDetailPage() {
     try {
       const file = await libraryApi.getMediaFile(title.media_file_id);
       play({ id: file.id, title: title.name, path: file.path, libraryId: file.library_id });
+    } catch (err) {
+      // 0.5.6 : fichier indisponible/verrouillé → message propre au lieu
+      // d'un rejet non géré (« Uncaught (in promise) error running command »).
+      console.warn("[title] lecture impossible :", err);
+      window.alert(err instanceof Error ? err.message : "Lecture impossible (fichier indisponible ?).");
     } finally {
       setStarting(false);
     }
@@ -243,20 +253,27 @@ export function TitleDetailPage() {
   const wallpaper = banner ?? poster;
 
   const handlePickWallpaper = async () => {
-    const sourcePath = await categoryApi.pickImage();
-    if (!sourcePath) return;
-    await titleApi.setBanner(title.id, sourcePath);
-    refresh();
+    try {
+      const sourcePath = await categoryApi.pickImage();
+      if (!sourcePath) return;
+      await titleApi.setBanner(title.id, sourcePath);
+      refresh();
+    } catch (err) {
+      console.warn("[title] changement de fond impossible :", err);
+    }
   };
-
   const handleResetWallpaper = async () => {
-    await titleApi.setBanner(title.id, null);
-    refresh();
+    try {
+      await titleApi.setBanner(title.id, null);
+      refresh();
+    } catch (err) {
+      console.warn("[title] réinitialisation du fond impossible :", err);
+    }
   };
 
   /** Étape 8 : menu natif « Ajouter à une collection » — coche/décoche
-  chaque collection existante pour ce Titre ; si aucune collection
-  n'existe encore, propose d'en créer une directement. */
+   * chaque collection existante pour ce Titre ; si aucune collection
+   * n'existe encore, propose d'en créer une directement. */
   const openCollectionsMenu = async () => {
     try {
       const [all, mine] = await Promise.all([
@@ -299,7 +316,7 @@ export function TitleDetailPage() {
 
   return (
     <div className="avm-title-page">
-      {trailerMode === "trailer" && trailerKey ? (
+      {trailerActive && trailerKey ? (
         <div
           ref={wallpaperRef}
           className="avm-title-page__wallpaper"
@@ -329,7 +346,6 @@ export function TitleDetailPage() {
           </div>
         )
       )}
-
       <div className="avm-title-page__wallpaper-actions">
         <IconButton label="Ajouter à une collection" onClick={() => void openCollectionsMenu()}>
           <ListPlus size={16} />
@@ -348,9 +364,7 @@ export function TitleDetailPage() {
         {trailerKey && (
           <IconButton
             label={
-              trailerMode === "trailer"
-                ? "Revenir au fond image"
-                : "Bande-annonce en arrière-plan"
+              trailerMode === "trailer" ? "Revenir au fond image" : "Bande-annonce en arrière-plan"
             }
             onClick={() => {
               const next = trailerMode === "trailer" ? "backdrop" : "trailer";
@@ -365,7 +379,7 @@ export function TitleDetailPage() {
             <Clapperboard size={16} />
           </IconButton>
         )}
-        {trailerKey && trailerMode === "trailer" && (
+        {trailerKey && trailerActive && (
           <IconButton
             label={trailerSound ? "Couper le son de la bande-annonce" : "Activer le son"}
             onClick={() => setTrailerSound((s) => !s)}
@@ -374,7 +388,6 @@ export function TitleDetailPage() {
           </IconButton>
         )}
       </div>
-
       <div className="avm-title-page__header">
         <div className="avm-title-page__poster">
           <PersonalizableImage
@@ -383,12 +396,20 @@ export function TitleDetailPage() {
             variant="poster"
             isCustom={title.poster_is_custom}
             onPick={async (sourcePath) => {
-              await titleApi.setPoster(title.id, sourcePath);
-              refresh();
+              try {
+                await titleApi.setPoster(title.id, sourcePath);
+                refresh();
+              } catch (err) {
+                console.warn("[title] changement d'affiche impossible :", err);
+              }
             }}
             onReset={async () => {
-              await titleApi.setPoster(title.id, null);
-              refresh();
+              try {
+                await titleApi.setPoster(title.id, null);
+                refresh();
+              } catch (err) {
+                console.warn("[title] réinitialisation de l'affiche impossible :", err);
+              }
             }}
           />
         </div>
@@ -445,7 +466,6 @@ export function TitleDetailPage() {
           )}
         </div>
       </div>
-
       {title.technical &&
         (title.technical.resolutions.length > 0 ||
           title.technical.codecs.length > 0 ||
@@ -494,19 +514,17 @@ export function TitleDetailPage() {
                 <div>
                   <span className="avm-technical-label">Sous-titres</span>
                   <div className="avm-technical-chips">
-                    {title.technical.subtitle_langs.length > 0 &&
-                      title.technical.subtitle_langs.map((lang) => (
-                        <span key={lang} className="avm-badge">
-                          {lang.toUpperCase()}
-                        </span>
-                      ))}
+                    {title.technical.subtitle_langs.map((lang) => (
+                      <span key={lang} className="avm-badge">
+                        {lang.toUpperCase()}
+                      </span>
+                    ))}
                   </div>
                 </div>
               )}
             </div>
           </div>
         )}
-
       {title.kind === "series" && (
         <section className="avm-title-page__seasons">
           <h2>Saisons</h2>
@@ -531,7 +549,6 @@ export function TitleDetailPage() {
           )}
         </section>
       )}
-
       {similarTitles.length > 0 && (
         <section className="avm-title-page__similar">
           <h2>Titres similaires</h2>

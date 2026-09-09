@@ -264,6 +264,7 @@ pub fn run() {
             commands::playback::player_set_audio_track,
             commands::playback::player_set_subtitle_track,
             commands::playback::player_redraw,
+			commands::playback::player_set_render_scale,
             commands::player_settings::get_player_settings,
             commands::player_settings::save_player_settings,
             commands::player_settings::get_post_shader,

@@ -48,4 +48,5 @@ export const playerApi = {
     invoke<void>("player_resize_surface", { width, height }),
   getPostShader: () => invoke<string>("get_post_shader"),
     setPostShader: (preset: string) => invoke<void>("set_post_shader", { preset }),
+	setRenderScale: (percent: number) => invoke<void>("player_set_render_scale", { percent }),
 };
