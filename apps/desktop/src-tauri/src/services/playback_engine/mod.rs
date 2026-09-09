@@ -4,6 +4,7 @@
 //! discussion qui a suivi).
 pub(crate) mod mpv_ffi;
 mod sw_render;
+pub use sw_render::set_render_scale;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;

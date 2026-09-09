@@ -418,3 +418,9 @@ pub fn list_similar_titles(
     }
     Ok(summaries)
 }
+/// 0.5.5 (R4) : échelle de rendu adaptative pilotée par le frontend.
+#[tauri::command]
+pub fn player_set_render_scale(percent: u32) -> Result<(), String> {
+    crate::services::playback_engine::set_render_scale(percent);
+    Ok(())
+}
