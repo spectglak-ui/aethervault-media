@@ -935,10 +935,18 @@ impl PlaybackEngineHandle {
         Ok(())
     }
 
-    pub fn ack_frame(&self) {
+        pub fn ack_frame(&self) {
         let guard = self.surface.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(state) = guard.as_ref() {
-            state.in_flight_frames.fetch_sub(1, Ordering::Relaxed);
+            // 0.5.6 : borne basse STRICTE — un accusé ne doit JAMAIS faire
+            // descendre in_flight sous 0 (double-ack frontend, ack d'une
+            // trame tirée par le polling…) : sinon la contre-pression est
+            // désamorcée silencieusement (vu en test : -1425).
+            let _ = state.in_flight_frames.fetch_update(
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                |v| if v > 0 { Some(v - 1) } else { None },
+            );
         }
     }
 

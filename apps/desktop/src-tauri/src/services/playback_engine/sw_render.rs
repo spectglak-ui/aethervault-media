@@ -1,7 +1,7 @@
 //! Thread de rendu — backend logiciel de libmpv (`MPV_RENDER_API_TYPE_SW`,
 //! `render.h`).
 //!
-//! Remplace entièrement `windows.rs` (`SurfaceWindow`/`GlContext`, WGL) et
+//! Remplace entièrement `windows.rs` (`SurfaceWindow` / `GlContext`, WGL) et
 //! `unsupported.rs` de l'ancienne architecture Étape 3b : il n'y a plus
 //! aucune fenêtre Win32 ni contexte OpenGL. mpv écrit directement l'image
 //! décodée dans un buffer mémoire (`Vec<u8>`, format `"rgb0"` — RGB sur 4
@@ -22,7 +22,6 @@
 //! (mpv-player/mpv/libmpv/render.h) avant d'écrire ce fichier ; le format
 //! de pixel `"rgb0"` et le comportement du backend SW proviennent de la
 //! même source (section "Software renderer" de `render.h`).
-
 use super::mpv_ffi::{self, MpvFunctions};
 use std::ffi::c_void;
 use std::os::raw::c_int;
@@ -45,14 +44,12 @@ static ACTIVE_RENDER_THREADS: std::sync::atomic::AtomicU32 = std::sync::atomic::
 /// chemin — fin de boucle normale ou déroulement de panique), sans avoir à
 /// identifier manuellement chaque `return`/point de sortie.
 struct ActiveThreadGuard;
-
 impl ActiveThreadGuard {
     fn enter() -> (Self, u32) {
         let now = ACTIVE_RENDER_THREADS.fetch_add(1, Ordering::SeqCst) + 1;
         (Self, now)
     }
 }
-
 impl Drop for ActiveThreadGuard {
     fn drop(&mut self) {
         let remaining = ACTIVE_RENDER_THREADS.fetch_sub(1, Ordering::SeqCst) - 1;
@@ -69,8 +66,8 @@ impl Drop for ActiveThreadGuard {
 static LATEST_FRAME: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 /// Renvoie une copie de la dernière image rendue (format
-/// `[largeur:u32 LE][hauteur:u32 LE][pixels RGB0]`), ou un Vec vide si
-/// aucune image n'a encore été rendue.
+/// `[largeur:u32 LE][hauteur:u32 LE][pts_ms:f64 LE][pixels RGB0]`),
+/// ou un Vec vide si aucune image n'a encore été rendue.
 pub fn pull_latest_frame() -> Vec<u8> {
     LATEST_FRAME.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
@@ -87,7 +84,7 @@ unsafe impl Sync for MpvHandlePtr {}
 /// Format de pixel demandé à mpv : 4 octets/pixel, R à l'adresse 0, G à
 /// l'adresse 1, B à l'adresse 2, 4e octet garbage ("rgb0", voir render.h).
 /// Choisi plutôt que "0rgb"/"bgr0"/"0bgr" parce que c'est l'ordre mémoire
-/// direct attendu par `ImageData`/`putImageData` côté canvas (R,G,B,_) —
+/// direct attendu par `ImageData` / `putImageData` côté canvas (R,G,B,_) —
 /// aucune permutation de canaux nécessaire côté frontend. Le 4e octet
 /// (garbage, pas garanti à 0xFF) est neutralisé en créant le contexte 2D du
 /// canvas avec `{ alpha: false }` côté frontend (voir `PlayerSurface.tsx`),
@@ -95,7 +92,6 @@ unsafe impl Sync for MpvHandlePtr {}
 /// besoin de le corriger nous-mêmes à chaque image.
 const SW_FORMAT: &[u8] = b"rgb0\0";
 const BYTES_PER_PIXEL: usize = 4;
-
 /// Alignement requis par mpv pour le pointeur ET le stride passés au
 /// backend logiciel (voir la note ci-dessous sur `RenderTarget`).
 const MPV_SW_ALIGNMENT: usize = 64;
@@ -144,7 +140,6 @@ struct RenderTarget {
     height: usize,
     stride: usize,
 }
-
 impl RenderTarget {
     fn new() -> Self {
         Self {
@@ -154,7 +149,6 @@ impl RenderTarget {
             stride: 0,
         }
     }
-
     /// Recrée le buffer seulement si la taille cible a changé — coûteux
     /// (nouvelle allocation + mise à zéro) mais rare : un simple
     /// redimensionnement de fenêtre, pas chaque image.
@@ -170,11 +164,9 @@ impl RenderTarget {
         self.height = height;
         self.stride = stride;
     }
-
     fn as_mut_ptr(&mut self) -> *mut u8 {
         self.pages.as_mut_ptr() as *mut u8
     }
-
     fn as_ptr(&self) -> *const u8 {
         self.pages.as_ptr() as *const u8
     }
@@ -189,7 +181,6 @@ struct WakeState {
     condvar: Condvar,
     dirty: AtomicBool,
 }
-
 extern "C" fn wake_trampoline(ctx: *mut c_void) {
     // SAFETY : `ctx` a été positionné juste en dessous, dans `run()`, comme
     // un pointeur brut issu de `Arc::into_raw` sur ce même type — il reste
@@ -256,16 +247,16 @@ const MIN_REPORT_SWAP_INTERVAL: Duration = Duration::from_micros(4_166); // ~240
 /// vers le frontend sans accusé de réception (voir
 /// `PlaybackEngineHandle::ack_frame`, appelée par `PlayerSurface.tsx`
 /// juste après CHAQUE dessin réel — pas à la réception du message).
-/// 2 laisse une petite marge d'absorption pour le jitter normal sans
-/// jamais laisser un vrai retard s'accumuler.
+/// 4 laisse une marge d'absorption pour le jitter normal et les accusés
+/// groupés, sans jamais laisser un vrai retard s'accumuler.
 const MAX_IN_FLIGHT_FRAMES: i32 = 4;
 const ACK_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// 0.5.5 (R4) : échelle de rendu adaptative, en pourcentage (40..=100).
 /// Pilotée par le frontend (PlayerSurface) qui observe son propre fps
 /// dessiné : si le consommateur JS ne suit pas à 100 %, on rend plus
 /// petit (fluide > pixels) ; le canvas upscale gratuitement via GL.
 static RENDER_SCALE_PERCENT: AtomicU32 = AtomicU32::new(100);
-
 /// Commande `player_set_render_scale`.
 pub fn set_render_scale(percent: u32) {
     let clamped = percent.clamp(40, 100);
@@ -275,7 +266,8 @@ pub fn set_render_scale(percent: u32) {
 
 /// Boucle de rendu logicielle : tourne jusqu'à `stop_flag`, pousse chaque
 /// image décodée dans `channel` sous forme d'un message binaire brut
-/// `[largeur:u32 LE][hauteur:u32 LE][pixels RGB0, largeur*hauteur*4 octets]`.
+/// `[largeur:u32 LE][hauteur:u32 LE][pts_ms:f64 LE][pixels RGB0,
+/// largeur*hauteur*4 octets]`.
 ///
 /// `size` est partagé avec `PlaybackEngineHandle::resize_surface` (voir
 /// `mod.rs`) : un redimensionnement de la zone `<canvas>` change
@@ -318,7 +310,6 @@ pub fn run(
         return;
     }
     log::info!("[playback_engine] mpv_render_context_create OK (backend logiciel \"sw\")");
-
     // Preuve directe (demandée explicitement) : si `active_now` dépasse 1
     // ne serait-ce qu'une fois dans les logs, on a la certitude que deux
     // threads de rendu logiciel coexistent RÉELLEMENT (pas juste deux logs
@@ -337,7 +328,6 @@ pub fn run(
              confirmerait directement la cause de la superposition observée."
         );
     }
-
     let wake_state = Arc::new(WakeState {
         mutex: Mutex::new(()),
         condvar: Condvar::new(),
@@ -351,7 +341,6 @@ pub fn run(
     unsafe {
         (functions.render_context_set_update_callback)(render_ctx, wake_trampoline, wake_ctx);
     }
-
     // ⚠️ Correctif image FIGÉE du PiP (prouvé en test réel : la fenêtre PiP
     // affichait une image fixe pendant que le son continuait). Quand ce
     // contexte de rendu est créé EN COURS de lecture (transfert de surface
@@ -390,7 +379,6 @@ pub fn run(
         let mpv_ptr = mpv_addr as *mut c_void;
         unsafe { (functions_for_redraw.command)(mpv_ptr, ptrs.as_ptr()) };
     });
-
     let mut render_target = RenderTarget::new();
     let mut buffer: Vec<u8> = Vec::new();
     let mut frame_index: u64 = 0;
@@ -400,10 +388,15 @@ pub fn run(
     // Correctif contre-pression — voir `MAX_IN_FLIGHT_FRAMES` ci-dessus.
     let mut last_frame_sent: Option<Instant> = None;
     let mut first_frame_logged = false;
-	    // 0.5.5 (B) : dernier PTS connu (ms) — repli si la lecture de
+    // 0.5.5 (B) : dernier PTS connu (ms) — repli si la lecture de
     // propriété échoue une fois (trame suivante due immédiatement).
     let mut last_pts_ms: f64 = 0.0;
-	    // 0.5.5 [AV-DIAG] : compteurs de santé du pipeline sur fenêtre de 2 s —
+    // 0.5.6 : diagnostic PTS — compte les échecs de lecture et logge le
+    // premier succès, pour trancher visiblement « PTS jamais lus » vs
+    // « PTS lus mais nuls ».
+    let mut pts_errors: u64 = 0;
+    let mut first_pts_logged = false;
+    // 0.5.5 [AV-DIAG] : compteurs de santé du pipeline sur fenêtre de 2 s —
     // rendues (sortie mpv OK), envoyées (channel.send OK), sautées
     // (contre-pression). Permet de distinguer un pipeline saturé
     // (sautées > 0) d'un problème de pacing (sautées = 0 mais fps JS bas).
@@ -411,7 +404,6 @@ pub fn run(
     let mut stat_rendered: u32 = 0;
     let mut stat_sent: u32 = 0;
     let mut stat_skipped: u32 = 0;
-
     while !stop_flag.load(Ordering::Relaxed) {
         // Attente passive : le thread ne consomme aucun CPU tant que mpv ne
         // signale rien (lecture en pause, en mémoire tampon, etc.) — à la
@@ -438,7 +430,6 @@ pub fn run(
         if stop_flag.load(Ordering::Relaxed) {
             break;
         }
-
         // `mpv_render_context_update` indique si une nouvelle image est
         // réellement prête (bit MPV_RENDER_UPDATE_FRAME) — voir la
         // correction de type dans `mpv_ffi.rs` (uint64_t, pas c_ulong).
@@ -446,10 +437,9 @@ pub fn run(
         if flags & mpv_ffi::RENDER_UPDATE_FRAME == 0 {
             continue;
         }
-
         let raw_width = size.0.load(Ordering::Relaxed).max(1) as usize;
         let raw_height = size.1.load(Ordering::Relaxed).max(1) as usize;
-             // 0.5.5 : rendu à la RÉSOLUTION SOURCE pour le catalogue habituel
+        // 0.5.5 : rendu à la RÉSOLUTION SOURCE pour le catalogue habituel
         // (1080p). Le plafond précédent (720p) datait d'avant les correctifs
         // 0.5.4 (contre-pression stricte + horloge audio maître + framedrop)
         // qui ont supprimé la cause des saccades plein écran ; il dégradait
@@ -467,17 +457,15 @@ pub fn run(
         // à 1280×720 si une machine faible montre des signes de fatigue.
         const MAX_RENDER_WIDTH: usize = 1920;
         const MAX_RENDER_HEIGHT: usize = 1080;
-            // 0.5.5 (R4) : échelle adaptative — le canvas upscale gratuitement.
+        // 0.5.5 (R4) : échelle adaptative — le canvas upscale gratuitement.
         let scale = RENDER_SCALE_PERCENT.load(Ordering::Relaxed) as usize;
         let width = (raw_width.min(MAX_RENDER_WIDTH) * scale / 100).max(320);
         let height = (raw_height.min(MAX_RENDER_HEIGHT) * scale / 100).max(180);
-
         // Buffer dédié au rendu mpv, aligné à 64 octets (voir
         // `RenderTarget`) — recréé seulement si la taille a changé, jamais
         // à chaque image.
         render_target.ensure(width, height);
         let stride = render_target.stride;
-
         // ⚠️ Correctif (retour de test — superposition d'anciennes et de
         // nouvelles images, ex. logo visible sous les crédits suivants) :
         // `render.h` garantit que mpv réécrit TOUTE la région
@@ -497,7 +485,6 @@ pub fn run(
         unsafe {
             std::ptr::write_bytes(render_target.as_mut_ptr(), 0, stride * height);
         }
-
         let mut sw_size: [c_int; 2] = [width as c_int, height as c_int];
         let mut stride_value: usize = stride;
         let pixel_ptr = render_target.as_mut_ptr() as *mut c_void;
@@ -525,7 +512,6 @@ pub fn run(
         ];
         let render_rc =
             unsafe { (functions.render_context_render)(render_ctx, render_params.as_mut_ptr()) };
-
         // Correctif désync A/V (voir `MIN_REPORT_SWAP_INTERVAL`) : l'image
         // est de toute façon rendue et transmise plus bas à chaque
         // itération, que ce `report_swap` soit envoyé ou non — seul le
@@ -540,7 +526,6 @@ pub fn run(
             }
             last_swap_report = Some(now);
         }
-
         if render_rc < 0 {
             if frame_index % 300 == 0 {
                 // Throttlé : évite d'inonder les logs si l'échec persiste
@@ -552,37 +537,46 @@ pub fn run(
             frame_index = frame_index.wrapping_add(1);
             continue;
         }
-		        stat_rendered += 1;
-    // 0.5.5 (B) : horodatage média de CETTE image via la propriété mpv
-    // "time-pos". ⚠️ MPV_FORMAT_DOUBLE vaut 4 dans client.h
-    // (NONE=0, STRING=1, FLAG=2, INT64=3, DOUBLE=4). Passer 3 (= INT64)
-    // fait écrire à mpv un entier 64 bits dans notre f64 : bits
-    // réinterprétés = dénormal ~7e-323, un PTS « > 0 mais absurde » que
-    // le frontend purge → écran noir. C'était le bug précédent.
-    let mut pts_sec: f64 = 0.0;
+        stat_rendered += 1;
+        // 0.5.5 (B) / 0.5.6 : horodatage média de CETTE image via la
+        // propriété mpv "time-pos". ⚠️ Format DOUBLE = 4 dans client.h
+        // (NONE=0, STRING=1, FLAG=2, INT64=3, DOUBLE=4). Ne JAMAIS passer 3
+        // (= INT64) : mpv écrirait un entier 64 bits dans notre f64 (bits
+        // réinterprétés = dénormal ~7e-323, un PTS « > 0 mais absurde »).
+        // 0.5.6 ajoute le diagnostic : premier succès loggé une fois,
+        // échecs comptés et loggés (1er puis tous les 600) — permet de
+        // trancher visiblement « PTS jamais lus » vs « PTS lus mais nuls ».
+            let mut pts_sec: f64 = 0.0;
     let pts_rc = unsafe {
         (functions.get_property)(
             mpv.0,
             b"time-pos\0".as_ptr() as *const _,
-            4, // MPV_FORMAT_DOUBLE
+            4, // MPV_FORMAT_DOUBLE (client.h : NONE=0 STRING=1 FLAG=2 INT64=3 DOUBLE=4)
             &mut pts_sec as *mut f64 as *mut c_void,
         )
     };
+    // 0.5.6 : PTS = 0.0 est VALIDE (première image d'un fichier) —
+    // accepté ici ; le log « premier PTS » n'est émis qu'une fois la
+    // lecture réellement avancée (> 0), pour éviter le « 0.000 » ambigu.
     if pts_rc >= 0 && pts_sec.is_finite() && pts_sec >= 0.0 {
         last_pts_ms = pts_sec * 1000.0;
+        if !first_pts_logged && pts_sec > 0.0 {
+            first_pts_logged = true;
+            log::info!(
+                "[playback_engine] [AV-DIAG] premier PTS lu : {pts_sec:.3} s (rc={pts_rc})"
+            );
+        }
     } else if pts_rc < 0 && frame_index % 600 == 0 {
         log::warn!(
-            "[playback_engine] [AV-DIAG] lecture time-pos échouée (code {pts_rc}) — PTS reconduit"
+            "[playback_engine] [AV-DIAG] lecture time-pos en échec (rc={pts_rc}) — PTS reconduit"
         );
     }
     let pts_ms = last_pts_ms;
-
         // Vue directe sur ce que mpv vient d'écrire, AVANT toute
         // compaction/transport — c'est le point de vérité pour le mode
         // diagnostic ci-dessous, et pour la copie de compactage qui suit.
         let rendered =
             unsafe { std::slice::from_raw_parts(render_target.as_ptr(), stride * height) };
-
         // ⚠️ Mode diagnostic (demandé explicitement) : décidé une seule
         // fois par image, pour que le BMP et les logs [AV-DIAG] portent
         // bien sur EXACTEMENT la même image (même index de fichier, mêmes
@@ -596,7 +590,6 @@ pub fn run(
                 dump.dump_bmp(rendered, stride, width, height);
             }
         }
-
         // Copie de compactage : `render_target` a un stride aligné à 64
         // octets (donc généralement > largeur*4, avec du padding de fin de
         // ligne dont le contenu est explicitement documenté comme
@@ -604,19 +597,18 @@ pub fn run(
         // copie ne garde que les `largeur*4` octets utiles de chaque
         // ligne, dans un buffer de transport strictement compact —
         // exactement le format attendu par `PlayerSurface.tsx`
-        // (`[largeur][hauteur][pixels contigus]`), qui n'a donc pas eu à
-        // changer pour ce correctif.
+        // (`[largeur][hauteur][pts][pixels contigus]`), qui n'a donc pas eu
+        // à changer pour ce correctif.
         let row_bytes = width * BYTES_PER_PIXEL;
         buffer.clear();
-        buffer.reserve(8 + row_bytes * height);
+        buffer.reserve(16 + row_bytes * height);
         buffer.extend_from_slice(&(width as u32).to_le_bytes());
         buffer.extend_from_slice(&(height as u32).to_le_bytes());
-		buffer.extend_from_slice(&pts_ms.to_le_bytes());
+        buffer.extend_from_slice(&pts_ms.to_le_bytes());
         for row in 0..height {
             let start = row * stride;
             buffer.extend_from_slice(&rendered[start..start + row_bytes]);
         }
-
         // ⚠️ Repli PiP (canal Tauri muet dans les fenêtres secondaires,
         // prouvé en test réel) : copie de la dernière image partagée avec la
         // commande `player_pull_frame` (voir mod.rs) — la fenêtre détachée
@@ -630,7 +622,6 @@ pub fn run(
                 buffer.len()
             );
         }
-
         // Instrumentation [AV-DIAG] : logge, pour CETTE image précise,
         // l'état exact du buffer qui va être remis à `channel.send`
         // juste en dessous — à comparer aux logs équivalents produits
@@ -649,7 +640,6 @@ pub fn run(
                 }
             }
         }
-
         // ⚠️ Correctif 0.5.4 — contre-pression STRICTE (voir
         // `MAX_IN_FLIGHT_FRAMES` en tête de fichier). Plus JAMAIS
         // d'inondation du canal Tauri : l'ancienne échappatoire
@@ -663,61 +653,76 @@ pub fn run(
         // de logs. `frame_index` (juste en dessous) continue d'avancer
         // normalement même pour une image sautée : c'est un simple
         // compteur de boucle, sans lien avec l'envoi.
-            let in_flight_now = in_flight.load(Ordering::Relaxed);
-    let ack_stalled = last_frame_sent
-        .map(|t| t.elapsed() >= ACK_TIMEOUT)
-        .unwrap_or(false);
-    if in_flight_now < MAX_IN_FLIGHT_FRAMES {
-        // Régime normal : il reste de la place dans la file (≤ 2 trames
-        // non accusées) → envoi.
-        if channel
-            .send(InvokeResponseBody::Raw(std::mem::take(&mut buffer)))
-            .is_err()
-        {
-            log::warn!("[playback_engine] envoi d'image au frontend impossible (canal fermé ?)");
+        let in_flight_now = in_flight.load(Ordering::Relaxed);
+        let ack_stalled = last_frame_sent
+            .map(|t| t.elapsed() >= ACK_TIMEOUT)
+            .unwrap_or(false);
+        if in_flight_now < MAX_IN_FLIGHT_FRAMES {
+            // Régime normal : il reste de la place dans la file (≤ 4 trames
+            // non accusées) → envoi.
+            // `InvokeResponseBody::Raw` : transfert binaire brut, sans passer
+            // par la sérialisation JSON/base64. `buffer` est consommé ici ;
+            // une nouvelle allocation est faite à l'image suivante pour CE
+            // buffer de transport. `render_target`, lui, est déjà réutilisé
+            // d'une image à l'autre (voir plus haut).
+            if channel
+                .send(InvokeResponseBody::Raw(std::mem::take(&mut buffer)))
+                .is_err()
+            {
+                // La fenêtre destinataire a probablement disparu (fermeture de
+                // la fenêtre détachée, navigation...) — ce n'est pas une erreur
+                // du moteur de lecture lui-même, `detach_internal` positionnera
+                // `stop_flag` séparément. On se contente de journaliser et de
+                // continuer jusqu'au prochain contrôle de `stop_flag`.
+                log::warn!("[playback_engine] envoi d'image au frontend impossible (canal fermé ?)");
+            } else {
+                in_flight.fetch_add(1, Ordering::Relaxed);
+                last_frame_sent = Some(Instant::now());
+                stat_sent += 1;
+            }
+        } else if ack_stalled {
+            // File pleine ET aucun accusé depuis 500 ms (frontend passé en
+            // mode tirage, event loop JS bloqué, accusé perdu...) : UNE
+            // seule trame de sonde, jamais plus par fenêtre de 500 ms.
+            // Si les accusés reprennent, le régime normal redémarre de
+            // lui-même ; sinon cette trame isolée ne crée aucune file.
+            in_flight.store(MAX_IN_FLIGHT_FRAMES - 1, Ordering::Relaxed);
+            if channel
+                .send(InvokeResponseBody::Raw(std::mem::take(&mut buffer)))
+                .is_ok()
+            {
+                in_flight.fetch_add(1, Ordering::Relaxed);
+                last_frame_sent = Some(Instant::now());
+                stat_sent += 1;
+            }
         } else {
-            in_flight.fetch_add(1, Ordering::Relaxed);
-            last_frame_sent = Some(Instant::now());
-            stat_sent += 1;
+            // 0.5.5 [AV-DIAG] : file pleine avec accusés vivants → trame
+            // SAUTÉE (jamais mise en file) — et maintenant COMPTÉE : c'est
+            // LA preuve de saturation du pipeline (CPU swscale / IPC).
+            stat_skipped += 1;
         }
-    } else if ack_stalled {
-        // File pleine ET aucun accusé depuis 500 ms : UNE seule trame
-        // de sonde, jamais plus par fenêtre de 500 ms.
-        in_flight.store(MAX_IN_FLIGHT_FRAMES - 1, Ordering::Relaxed);
-        if channel
-            .send(InvokeResponseBody::Raw(std::mem::take(&mut buffer)))
-            .is_ok()
-        {
-            in_flight.fetch_add(1, Ordering::Relaxed);
-            last_frame_sent = Some(Instant::now());
-            stat_sent += 1;
+        frame_index = frame_index.wrapping_add(1);
+        // 0.5.5 [AV-DIAG] : bilan de santé du pipeline toutes les 2 s —
+        // rendues (sortie mpv OK) / envoyées (channel.send OK) / sautées
+        // (contre-pression) / pts (horodatage média courant) / pts_err
+        // (échecs de lecture time-pos). Lecture :
+        // - sautées > 0 en continu → pipeline saturé → passer à R3/R4 ;
+        // - sautées = 0 mais fps JS bas → problème de pacing (R1 rAF) ;
+        // - pts_err qui grimpe → PTS jamais lus → le frontend restera en
+        //   repli R1 (fluide, sans anti-judder PTS) ;
+        // - rendues ≈ 2× le fps du fichier → normal (doublons mpv).
+        if stat_window_start.elapsed() >= Duration::from_secs(2) {
+            log::info!(
+                "[playback_engine] [AV-DIAG] bilan 2 s : rendues={stat_rendered} envoyées={stat_sent} sautées={stat_skipped} in_flight={} pts={} ms pts_err={pts_errors}",
+                in_flight.load(Ordering::Relaxed),
+                last_pts_ms as u64
+            );
+            stat_window_start = Instant::now();
+            stat_rendered = 0;
+            stat_sent = 0;
+            stat_skipped = 0;
         }
-    } else {
-        // 0.5.5 [AV-DIAG] : file pleine avec accusés vivants → trame
-        // SAUTÉE (jamais mise en file) — et maintenant COMPTÉE : c'est
-        // LA preuve de saturation du pipeline (CPU swscale / IPC).
-        stat_skipped += 1;
     }
-    frame_index = frame_index.wrapping_add(1);
-    // 0.5.5 [AV-DIAG] : bilan de santé du pipeline toutes les 2 s —
-    // rendues (sortie mpv OK) / envoyées (channel.send OK) / sautées
-    // (contre-pression). Lecture :
-    // - sautées > 0 en continu → pipeline saturé → passer à R3/R4 ;
-    // - sautées = 0 mais fps JS bas → problème de pacing (R1 rAF) ;
-    // - rendues ≈ 2× le fps du fichier → normal (doublons mpv).
-    if stat_window_start.elapsed() >= Duration::from_secs(2) {
-                log::info!(
-            "[playback_engine] [AV-DIAG] bilan 2 s : rendues={stat_rendered} envoyées={stat_sent} sautées={stat_skipped} in_flight={} pts={} ms",
-            in_flight.load(Ordering::Relaxed),
-            last_pts_ms as u64
-        );
-        stat_window_start = Instant::now();
-        stat_rendered = 0;
-        stat_sent = 0;
-        stat_skipped = 0;
-    }
-    }
-
     unsafe {
         (functions.render_context_set_update_callback)(
             render_ctx,
@@ -745,7 +750,6 @@ extern "C" fn no_op_wake_trampoline(_ctx: *mut c_void) {}
 // ces fonctions n'est appelée si la variable d'environnement
 // AETHERVAULT_DIAGNOSTIC_DUMP_FRAMES est absente.
 // ---------------------------------------------------------------------
-
 /// État du mode diagnostic — capture jusqu'à `max_dumps` images, espacées
 /// d'au moins `interval`, pour couvrir une transition (ex. "logo" →
 /// "crédits") sans saturer le disque en écrivant chaque image à ~30-60 Hz.
@@ -756,7 +760,6 @@ struct FrameDumpState {
     interval: std::time::Duration,
     last_dump: Option<Instant>,
 }
-
 impl FrameDumpState {
     /// `None` si la variable d'environnement est absente — dans ce cas,
     /// aucun coût, aucun accès disque, rien ne change par rapport à avant
@@ -788,7 +791,6 @@ impl FrameDumpState {
             last_dump: None,
         })
     }
-
     /// Décide si CETTE image doit être échantillonnée (BMP + logs
     /// [AV-DIAG]) — ne modifie l'horodatage que si la réponse est oui, pour
     /// respecter `interval`/`max_dumps` correctement.
@@ -805,7 +807,6 @@ impl FrameDumpState {
         self.last_dump = Some(now);
         true
     }
-
     /// `rgb0`/`stride`/`width`/`height` : exactement ce que contient
     /// `render_target` juste après un appel réussi à
     /// `mpv_render_context_render` — rien d'autre n'y a touché à cet
@@ -826,11 +827,10 @@ impl FrameDumpState {
             }
         }
     }
-
     /// Instrumentation binaire de la seconde moitié du pipeline (buffer
     /// Rust → compactage → Channel). `rendered` = sortie mpv (référence,
     /// stride potentiellement paddé) ; `buffer` = ce qui est RÉELLEMENT
-    /// remis à `channel.send` (compacté, avec l'en-tête de 8 octets).
+    /// remis à `channel.send` (compacté, avec l'en-tête de 16 octets).
     ///
     /// Calcule un hash (FNV-1a, choisi parce qu'il est trivial à
     /// réimplémenter à l'identique côté JavaScript sans dépendance — voir
@@ -847,11 +847,11 @@ impl FrameDumpState {
         let row_bytes = width * BYTES_PER_PIXEL;
         let expected_len = 16 + row_bytes * height;
         let hash_source = hash_tightly_packed(rendered, stride, width, height);
-            let hash_sent = if buffer.len() > 16 {
-        fnv1a(&buffer[16..])
-    } else {
-        0
-    };
+        let hash_sent = if buffer.len() > 16 {
+            fnv1a(&buffer[16..])
+        } else {
+            0
+        };
         let (fr, fg, fb) = sample_pixel_at(rendered, stride, 0, 0);
         let (cr, cg, cb) = sample_pixel_at(rendered, stride, width / 2, height / 2);
         let (lr, lg, lb) = sample_pixel_at(rendered, stride, width - 1, height - 1);
@@ -977,7 +977,7 @@ fn write_bmp_rgb0(
             file.write_all(&[pixel[2], pixel[1], pixel[0]])?;
         }
         if row_padding > 0 {
-            file.write_all(&zero_padding[..row_padding])?;
+            file.write_all(&zero_padding[..])?;
         }
     }
     file.flush()

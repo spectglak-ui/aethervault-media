@@ -20,6 +20,17 @@ interface ParsedFrame {
   pixels: Uint8Array;
 }
 
+/**
+ * 0.5.6 — version vérifiée et corrigée :
+ * - UN SEUL push par message (le double push doublait les accusés →
+ *   in_flight écrasé à 0, contre-pression morte, tempête d'invokes) ;
+ * - EXACTEMENT UN ack par trame consommée (dessinée OU jetée) ;
+ * - mode PTS activé seulement si les PTS backend sont valides
+ *   (decidePtsMode appelé sur PTS bruts), sinon repli R1 définitif avec
+ *   PTS reconstruit à l'arrivée ;
+ * - R4 avec hystérésis LARGE + cooldown 8 s (fini le ping-pong
+ *   100↔85↔70 qui produisait un hitch à chaque changement).
+ */
 export function PlayerSurface({ className }: PlayerSurfaceProps) {
   const { currentMedia, displayMode, isPlaying, buffered, position, duration } = usePlayer();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -149,28 +160,26 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
     let lastFrameAt = 0;
     let lastRedrawAt = 0;
     let stallProbe: number | undefined;
-
-    // 0.5.5 (R1+B) : file de trames horodatées ; une seule trame dessinée
-    // par vsync.
+    // File de trames horodatées ; UNE seule trame dessinée par vsync.
     let frameQueue: ParsedFrame[] = [];
-	let ptsBroken = false;
+    let ptsBroken = false;
     let lastFramePts = -1;
     let rafId = 0;
-    // 0.5.5 (B-hotfix2) : fiabilité des PTS détectée automatiquement.
     // null = pas encore décidé ; true = mode PTS (anti-judder) ;
     // false = repli R1 (dernière trame par vsync — le mode prouvé fluide).
     let ptsMode: boolean | null = null;
     let ptsSamples = 0;
     let lastDrawWall = 0;
-    // 0.5.5 (R2) — instrumentation frontend
+    // Instrumentation
     let drawnCount = 0;
     let heldCount = 0;
     let fpsWindowStart = performance.now();
-    // 0.5.5 (R4) : crans d'échelle de rendu + compteurs de décision.
+    // R4 0.5.6 : crans d'échelle + hystérésis large + cooldown 8 s.
     const SCALE_STEPS = [100, 85, 70, 55, 40];
     let scaleIndex = 0;
     let lowWindows = 0;
     let highWindows = 0;
+    let lastScaleChangeAt = 0;
     let fpsProbe: number | undefined;
 
     const physicalSize = () => {
@@ -180,18 +189,15 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
         height: Math.round(Math.max(rect.height, 1) * ratio),
       };
     };
-
     /** 0.5.5 (B) : horloge média estimée (ms) à l'instant `wall`. */
     const mediaEstMs = (wall: number): number => {
       const a = mediaAnchorRef.current;
       return a.posMs + (wall - a.wall);
     };
-
     /** Accusé de réception — jamais de rejet non géré (console propre). */
     const ack = () => {
       playerApi.ackFrame().catch(() => {});
     };
-
     const toUint8Array = (message: unknown): Uint8Array => {
       if (message instanceof Uint8Array) return message;
       if (message instanceof ArrayBuffer) return new Uint8Array(message);
@@ -206,7 +212,6 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
       }
       return new Uint8Array(0);
     };
-
     /** 0.5.5 : en-tête 16 octets = [w:u32][h:u32][pts_ms:f64] + pixels. */
     const parseFrame = (message: unknown): ParsedFrame | null => {
       const bytes = toUint8Array(message);
@@ -241,7 +246,6 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
         pixels: new Uint8Array(bytes.buffer, bytes.byteOffset + 16, width * height * 4),
       };
     };
-
     const drawFrame = (frame: ParsedFrame) => {
       lastFrameAt = performance.now();
       lastDrawWall = lastFrameAt;
@@ -271,18 +275,11 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
         console.log("[DIAG] première image dessinée :", frame.width, "x", frame.height);
       }
     };
-
-    /** 0.5.5 (B-hotfix2) : décide si les PTS backend sont exploitables.
-     * PTS ≤ 0 ou écart > 3 s avec l'horloge média → repli R1 immédiat.
-     * 10 échantillons cohérents → mode PTS (anti-judder 3:2) activé. */
+    /** 0.5.6 : décide si les PTS BRUTS backend sont exploitables (appelé
+     * par enqueue AVANT toute reconstruction). PTS ≤ 0 / non monotone /
+     * écart > 3 s → repli R1. 10 échantillons cohérents → mode PTS. */
     const decidePtsMode = (frame: ParsedFrame) => {
-      if (ptsMode === false) return;
-      if (!(frame.pts > 0)) {
-        ptsMode = false;
-        console.warn("[AV-DIAG] PTS ≤ 0 reçus → présentation PTS désactivée (mode R1)");
-        return;
-      }
-      if (ptsMode === true) return;
+      if (ptsMode === false || ptsMode === true) return;
       const delta = frame.pts - mediaEstMs(performance.now());
       if (Math.abs(delta) > 3000) {
         ptsMode = false;
@@ -295,9 +292,9 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
         console.log("[AV-DIAG] PTS fiables → présentation cadencée par PTS (anti-judder) active");
       }
     };
-
     /** À chaque vsync : dessine UNE trame. Mode PTS si fiable, sinon R1.
-     * Aucun chemin ne peut laisser l'écran noir : filet 500 ms inclus. */
+     * INVARIANT : exactement UN ack par trame sortie de la file.
+     * Aucun chemin ne laisse l'écran noir : filet 500 ms inclus. */
     const presentTick = () => {
       rafId = 0;
       if (disposed) return;
@@ -305,7 +302,7 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
       let drew = false;
       if (ptsMode === false) {
         // Repli R1 (prouvé fluide) : la trame la plus récente par vsync,
-        // les autres consommées + accusées (contre-pression cohérente).
+        // les autres consommées + accusées (UNE fois chacune).
         let latest: ParsedFrame | null = null;
         while (frameQueue.length > 0) {
           const f = frameQueue.shift() as ParsedFrame;
@@ -338,8 +335,7 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
           due = f;
         }
         // FILET ANTI-ÉCRAN-NOIR : rien de dessiné depuis 500 ms alors que
-        // des trames attendent → PTS jugés inutilisables, bascule en R1
-        // et dessine immédiatement la trame la plus récente.
+        // des trames attendent → PTS jugés inutilisables, bascule en R1.
         if (!due && frameQueue.length > 0 && now - lastDrawWall > 500) {
           due = frameQueue[frameQueue.length - 1];
           while (frameQueue.length > 0) {
@@ -358,44 +354,44 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
       if (!drew) heldCount += 1;
       if (frameQueue.length > 0) schedulePresent();
     };
-
     const schedulePresent = () => {
       if (rafId !== 0 || disposed) return;
       rafId = requestAnimationFrame(presentTick);
     };
-
     const enqueue = (message: unknown, viaChannel: boolean) => {
       lastFrameAt = performance.now();
       if (viaChannel) polling = false;
-            const frame = parseFrame(message);
+      const frame = parseFrame(message);
       if (!frame) return;
-      // 0.5.5 hotfix v2 : PTS backend inexploitable (0, dénormal ~7e-323
-      // issu d'un mauvais format mpv, ou non monotone) → bascule
-      // DÉFINITIVE sur un PTS reconstruit à l'arrivée (pacing R1).
-      // L'image prime sur le perfectionnement du cadencement.
+      // 0.5.6 : décision de mode sur les PTS BRUTS, avant reconstruction.
       if (!ptsBroken) {
         if (!(frame.pts >= 1) || frame.pts <= lastFramePts) {
           ptsBroken = true;
+          ptsMode = false;
           console.warn(
-            "[AV-DIAG] PTS backend invalide (" + frame.pts + ") → repli pacing à l'arrivée"
+            "[AV-DIAG] PTS backend invalide (" + frame.pts + ") → repli R1 définitif"
           );
+        } else {
+          lastFramePts = frame.pts;
+          decidePtsMode(frame);
         }
-        lastFramePts = frame.pts;
       }
       if (ptsBroken) {
+        // PTS reconstruit à l'arrivée : le pacing PTS devient un pacing
+        // « dessine à l'arrivée » (R1), prouvé fluide.
         frame.pts = mediaEstMs(performance.now());
       }
+      // 0.5.6 : UN SEUL push par message (le double push doublait les
+      // accusés → in_flight écrasé à 0 → contre-pression morte).
       frameQueue.push(frame);
-      frameQueue.push(frame);
-      // Garde-fou : file anormalement longue → on ne garde que les 2
-      // trames les plus récentes.
-      while (frameQueue.length > 2) {
+      // Garde-fou : file anormalement longue → on ne garde que les 3
+      // trames les plus récentes ; les jetées sont accusées (envoyées).
+      while (frameQueue.length > 3) {
         frameQueue.shift();
         ack();
       }
       schedulePresent();
     };
-
     const startPolling = () => {
       if (polling || disposed) return;
       polling = true;
@@ -414,12 +410,10 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
       };
       tick();
     };
-
     const channel = new Channel<ArrayBuffer | number[]>();
     channel.onmessage = (message) => {
       enqueue(message, true);
     };
-
     const initialSize = physicalSize();
     playerApi
       .attachSurface(channel, initialSize.width, initialSize.height)
@@ -445,23 +439,26 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
           drawnCount = 0;
           heldCount = 0;
           fpsWindowStart = now;
-          // R4 : consommateur à la peine → le producteur rend plus petit ;
-          // stable longtemps → on remonte d'un cran.
+          // R4 0.5.6 : hystérésis LARGE + cooldown 8 s — fini le ping-pong
+          // d'échelle (100↔85↔70) qui produisait un hitch par changement.
           if (attached && playingRef.current) {
-            if (fps > 0 && fps < 20) {
+            const since = now - lastScaleChangeAt;
+            if (fps > 0 && fps < 18) {
               lowWindows += 1;
               highWindows = 0;
-              if (lowWindows >= 2 && scaleIndex < SCALE_STEPS.length - 1) {
+              if (lowWindows >= 3 && since > 8000 && scaleIndex < SCALE_STEPS.length - 1) {
                 scaleIndex += 1;
                 lowWindows = 0;
+                lastScaleChangeAt = now;
                 void playerApi.setRenderScale(SCALE_STEPS[scaleIndex]);
               }
             } else if (fps >= 23) {
               highWindows += 1;
               lowWindows = 0;
-              if (highWindows >= 5 && scaleIndex > 0) {
+              if (highWindows >= 6 && since > 8000 && scaleIndex > 0) {
                 scaleIndex -= 1;
                 highWindows = 0;
+                lastScaleChangeAt = now;
                 void playerApi.setRenderScale(SCALE_STEPS[scaleIndex]);
               }
             } else {
@@ -487,7 +484,6 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
       .catch((err) => {
         console.error("Impossible d'attacher la surface vidéo :", err);
       });
-
     const sync = () => {
       if (!attached) return;
       const size = physicalSize();
