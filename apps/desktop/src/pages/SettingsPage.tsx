@@ -8,6 +8,7 @@ import { useActiveProfile } from "../profile/ActiveProfileContext";
 import { privacyApi } from "../features/privacy/api";
 import "./pages.css";
 import { metadataApi } from "../features/settings/api";
+import { RenderQualitySection } from "./RenderQualitySection";
 
 type DiagnosticsState =
   | { kind: "loading" }
@@ -955,6 +956,7 @@ export function SettingsPage() {
       <ThemeCustomizerSection />
       <TypographySection />
       <SkipSettingsSection />
+	  <RenderQualitySection />
       <TmdbSection />
       <HidePrivateSection />
       <SecuritySection />
