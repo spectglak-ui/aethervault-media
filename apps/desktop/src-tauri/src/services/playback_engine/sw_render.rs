@@ -257,6 +257,11 @@ const ACK_TIMEOUT: Duration = Duration::from_millis(500);
 /// dessiné : si le consommateur JS ne suit pas à 100 %, on rend plus
 /// petit (fluide > pixels) ; le canvas upscale gratuitement via GL.
 static RENDER_SCALE_PERCENT: AtomicU32 = AtomicU32::new(100);
+/// 0.5.6 : dernier PTS média connu (ms), publié par le thread d'événements
+/// (mod.rs) à chaque changement de `time-pos`. Lu par le thread de rendu
+/// SANS appel libmpv (get_property depuis ce thread renvoyait 0 ici) →
+/// permet au frontend d'activer le mode PTS (anti-judder 3:2).
+pub static LAST_PTS_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 /// Commande `player_set_render_scale`.
 pub fn set_render_scale(percent: u32) {
     let clamped = percent.clamp(40, 100);
@@ -546,32 +551,9 @@ pub fn run(
         // 0.5.6 ajoute le diagnostic : premier succès loggé une fois,
         // échecs comptés et loggés (1er puis tous les 600) — permet de
         // trancher visiblement « PTS jamais lus » vs « PTS lus mais nuls ».
-            let mut pts_sec: f64 = 0.0;
-    let pts_rc = unsafe {
-        (functions.get_property)(
-            mpv.0,
-            b"time-pos\0".as_ptr() as *const _,
-            4, // MPV_FORMAT_DOUBLE (client.h : NONE=0 STRING=1 FLAG=2 INT64=3 DOUBLE=4)
-            &mut pts_sec as *mut f64 as *mut c_void,
-        )
-    };
-    // 0.5.6 : PTS = 0.0 est VALIDE (première image d'un fichier) —
-    // accepté ici ; le log « premier PTS » n'est émis qu'une fois la
-    // lecture réellement avancée (> 0), pour éviter le « 0.000 » ambigu.
-    if pts_rc >= 0 && pts_sec.is_finite() && pts_sec >= 0.0 {
-        last_pts_ms = pts_sec * 1000.0;
-        if !first_pts_logged && pts_sec > 0.0 {
-            first_pts_logged = true;
-            log::info!(
-                "[playback_engine] [AV-DIAG] premier PTS lu : {pts_sec:.3} s (rc={pts_rc})"
-            );
-        }
-    } else if pts_rc < 0 && frame_index % 600 == 0 {
-        log::warn!(
-            "[playback_engine] [AV-DIAG] lecture time-pos en échec (rc={pts_rc}) — PTS reconduit"
-        );
-    }
-    let pts_ms = last_pts_ms;
+                // 0.5.6 : PTS lu depuis l'atomique publié par le thread d'événements
+    // (zéro appel libmpv depuis le thread de rendu).
+    let pts_ms = LAST_PTS_MS.load(Ordering::Relaxed) as f64;
         // Vue directe sur ce que mpv vient d'écrire, AVANT toute
         // compaction/transport — c'est le point de vérité pour le mode
         // diagnostic ci-dessous, et pour la copie de compactage qui suit.

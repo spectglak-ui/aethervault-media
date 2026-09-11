@@ -46,6 +46,25 @@ export interface WatchSession {
   endedAt: string;
 }
 
+/** 0.6.0 : acteur d'un titre (crédits TMDB). */
+export interface PersonCredit {
+  person_id: number;
+  name: string;
+  character: string | null;
+  profile_path: string | null;
+}
+/** 0.6.0 : fiche personne. */
+export interface PersonInfo {
+  name: string;
+  biography: string | null;
+  profile_path: string | null;
+}
+export const personApi = {
+  credits: (titleId: number) => invoke<PersonCredit[]>("get_title_cast", { titleId }),
+  person: (personId: number) => invoke<PersonInfo>("get_person", { personId }),
+  titles: (personId: number) => invoke<TitleSummary[]>("list_person_titles", { personId }),
+};
+
 export const titleApi = {
   listByCategory: (categoryId: number) =>
     invoke<TitleSummary[]>("list_titles_by_category", { categoryId }),

@@ -21,15 +21,24 @@ interface ParsedFrame {
 }
 
 /**
- * 0.5.6 — version vérifiée et corrigée :
- * - UN SEUL push par message (le double push doublait les accusés →
- *   in_flight écrasé à 0, contre-pression morte, tempête d'invokes) ;
- * - EXACTEMENT UN ack par trame consommée (dessinée OU jetée) ;
- * - mode PTS activé seulement si les PTS backend sont valides
- *   (decidePtsMode appelé sur PTS bruts), sinon repli R1 définitif avec
- *   PTS reconstruit à l'arrivée ;
- * - R4 avec hystérésis LARGE + cooldown 8 s (fini le ping-pong
- *   100↔85↔70 qui produisait un hitch à chaque changement).
+ * Surface de rendu vidéo (canvas WebGL) — consommateur du canal Tauri
+ * ouvert par `player_attach_surface` (voir `sw_render.rs` côté Rust).
+ *
+ * 0.5.6 — version consolidée finale :
+ * - UN SEUL `push` par message reçu (le double push historique doublait
+ *   les accusés → comptabilité `in_flight` faussée côté Rust → trames
+ *   sautées = micro-saccades) ;
+ * - INVARIANT : exactement UN ack par trame sortie de la file (dessinée
+ *   OU jetée), jamais plus, jamais moins ;
+ * - PTS backend : 0 à la première trame est NORMAL ; un PTS négatif ou
+ *   non monotone (backend cassé qui renvoie toujours 0) → repli R1
+ *   définitif (PTS reconstruit à l'arrivée) ; PTS valides et monotones →
+ *   mode PTS (anti-judder 3:2) après 10 échantillons cohérents ;
+ * - R4 0.5.6 : DESCENTE SEULE (latch), seuil 22 fps (« sous la cadence
+ *   source 24 » : à 100 % le consommateur plafonnait à ~19 fps dessinés
+ *   = ≈10 trames/2 s sautées côté Rust), grâce 6 s au démarrage,
+ *   cooldown 8 s entre deux changements — fini le ping-pong d'échelle ;
+ * - filet anti-écran-noir 500 ms inclus dans tous les chemins.
  */
 export function PlayerSurface({ className }: PlayerSurfaceProps) {
   const { currentMedia, displayMode, isPlaying, buffered, position, duration } = usePlayer();
@@ -174,12 +183,12 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
     let drawnCount = 0;
     let heldCount = 0;
     let fpsWindowStart = performance.now();
-    // R4 0.5.6 : crans d'échelle + hystérésis large + cooldown 8 s.
+    // R4 0.5.6 : descente seule + grâce démarrage + cooldown 8 s.
     const SCALE_STEPS = [100, 85, 70, 55, 40];
     let scaleIndex = 0;
     let lowWindows = 0;
-    let highWindows = 0;
     let lastScaleChangeAt = 0;
+    let r4GraceUntil = 0;
     let fpsProbe: number | undefined;
 
     const physicalSize = () => {
@@ -276,8 +285,8 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
       }
     };
     /** 0.5.6 : décide si les PTS BRUTS backend sont exploitables (appelé
-     * par enqueue AVANT toute reconstruction). PTS ≤ 0 / non monotone /
-     * écart > 3 s → repli R1. 10 échantillons cohérents → mode PTS. */
+     * par enqueue sur PTS valides et monotones uniquement). Écart > 3 s
+     * avec l'horloge média → R1. 10 échantillons cohérents → mode PTS. */
     const decidePtsMode = (frame: ParsedFrame) => {
       if (ptsMode === false || ptsMode === true) return;
       const delta = frame.pts - mediaEstMs(performance.now());
@@ -300,28 +309,14 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
       if (disposed) return;
       const now = performance.now();
       let drew = false;
-      if (ptsMode === false) {
-        // Repli R1 (prouvé fluide) : la trame la plus récente par vsync,
-        // les autres consommées + accusées (UNE fois chacune).
-        let latest: ParsedFrame | null = null;
-        while (frameQueue.length > 0) {
-          const f = frameQueue.shift() as ParsedFrame;
-          if (latest) ack();
-          latest = f;
-        }
-        if (latest) {
-          drawFrame(latest);
-          ack();
-          drew = true;
-        }
-      } else {
+      if (ptsMode === true) {
         const m = mediaEstMs(now);
-        // Trames déjà périmées (arrivées après leur heure) : consommées.
+        // Trames périmées (arrivées après leur heure) : consommées + ack.
         while (frameQueue.length > 0 && frameQueue[0].pts < m - 500) {
           frameQueue.shift();
           ack();
         }
-        // Seek arrière : file entière dans le futur lointain → purge.
+        // Seek arrière : file entière dans le futur lointain → purge + ack.
         if (frameQueue.length > 0 && frameQueue[0].pts > m + 2000) {
           while (frameQueue.length > 0) {
             frameQueue.shift();
@@ -350,6 +345,20 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
           ack();
           drew = true;
         }
+      } else {
+        // Repli R1 (prouvé fluide) : la trame la plus récente par vsync,
+        // les autres consommées + accusées (UNE fois chacune).
+        let latest: ParsedFrame | null = null;
+        while (frameQueue.length > 0) {
+          const f = frameQueue.shift() as ParsedFrame;
+          if (latest) ack();
+          latest = f;
+        }
+        if (latest) {
+          drawFrame(latest);
+          ack();
+          drew = true;
+        }
       }
       if (!drew) heldCount += 1;
       if (frameQueue.length > 0) schedulePresent();
@@ -364,8 +373,11 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
       const frame = parseFrame(message);
       if (!frame) return;
       // 0.5.6 : décision de mode sur les PTS BRUTS, avant reconstruction.
+      // PTS = 0 à la première trame est NORMAL (lastFramePts démarre à
+      // -1) ; un backend cassé qui renvoie TOUJOURS 0 est détecté dès la
+      // 2e trame (non monotone) → repli R1 définitif.
       if (!ptsBroken) {
-        if (!(frame.pts >= 1) || frame.pts <= lastFramePts) {
+        if (frame.pts < 0 || frame.pts <= lastFramePts) {
           ptsBroken = true;
           ptsMode = false;
           console.warn(
@@ -377,15 +389,15 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
         }
       }
       if (ptsBroken) {
-        // PTS reconstruit à l'arrivée : le pacing PTS devient un pacing
-        // « dessine à l'arrivée » (R1), prouvé fluide.
+        // PTS reconstruit à l'arrivée : le pacing devient « dessine la
+        // dernière trame reçue par vsync » (R1), prouvé fluide.
         frame.pts = mediaEstMs(performance.now());
       }
-      // 0.5.6 : UN SEUL push par message (le double push doublait les
-      // accusés → in_flight écrasé à 0 → contre-pression morte).
+      // 0.5.6 : UN SEUL push par message (le double push historique
+      // doublait les accusés → in_flight faussé → trames sautées Rust).
       frameQueue.push(frame);
-      // Garde-fou : file anormalement longue → on ne garde que les 3
-      // trames les plus récentes ; les jetées sont accusées (envoyées).
+      // Garde-fou : file anormalement longue → trames jetées + ack
+      // (elles ont été envoyées par Rust, il faut libérer in_flight).
       while (frameQueue.length > 3) {
         frameQueue.shift();
         ack();
@@ -420,18 +432,28 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
       .then(async () => {
         if (disposed) return;
         attached = true;
+        // 0.5.6 : grâce R4 — ignore la rampe de démarrage (décodage +
+        // premier remplissage de file), sinon R4 descendait sur des fps
+        // de montée en charge (8-14 fps les 4 premières secondes).
+        r4GraceUntil = performance.now() + 6000;
         try {
           await playerApi.redraw();
         } catch {
           // best-effort
         }
-        // 0.5.5 (R2) : fps réellement dessiné, toutes les 2 s.
         fpsProbe = window.setInterval(() => {
           if (disposed) return;
           const now = performance.now();
           const seconds = (now - fpsWindowStart) / 1000;
           if (seconds <= 0) return;
           const fps = drawnCount / seconds;
+          // 0.5.6 : silence en fin de lecture (keep-open) / pause longue :
+          // plus de spam « fps 0.0 » dans la console.
+          if (drawnCount === 0 && !playingRef.current) {
+            heldCount = 0;
+            fpsWindowStart = now;
+            return;
+          }
           const mode = ptsMode === null ? "détection" : ptsMode ? "PTS" : "R1";
           console.log(
             `[AV-DIAG] fps dessiné (${seconds.toFixed(1)} s) : ${fps.toFixed(1)} | mode : ${mode} | échelle : ${SCALE_STEPS[scaleIndex]}% | holds : ${heldCount}`
@@ -439,31 +461,24 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
           drawnCount = 0;
           heldCount = 0;
           fpsWindowStart = now;
-          // R4 0.5.6 : hystérésis LARGE + cooldown 8 s — fini le ping-pong
-          // d'échelle (100↔85↔70) qui produisait un hitch par changement.
-          if (attached && playingRef.current) {
+          // R4 0.5.6 : DESCENTE SEULE (latch), seuil 22 fps = « sous la
+          // cadence source 24 ». À 100 % le consommateur plafonnait à
+          // ~19 fps dessinés (≈10 trames/2 s sautées côté Rust = micro-
+          // saccades) : l'ancien seuil 18 ne réagissait jamais. Grâce 6 s
+          // au démarrage ; cooldown 8 s ; aucune remontée automatique
+          // (chaque changement d'échelle = reconfig mpv = hitch visible).
+          if (attached && playingRef.current && now > r4GraceUntil) {
             const since = now - lastScaleChangeAt;
-            if (fps > 0 && fps < 18) {
+            if (fps > 0 && fps < 22) {
               lowWindows += 1;
-              highWindows = 0;
               if (lowWindows >= 3 && since > 8000 && scaleIndex < SCALE_STEPS.length - 1) {
                 scaleIndex += 1;
                 lowWindows = 0;
                 lastScaleChangeAt = now;
                 void playerApi.setRenderScale(SCALE_STEPS[scaleIndex]);
               }
-            } else if (fps >= 23) {
-              highWindows += 1;
-              lowWindows = 0;
-              if (highWindows >= 6 && since > 8000 && scaleIndex > 0) {
-                scaleIndex -= 1;
-                highWindows = 0;
-                lastScaleChangeAt = now;
-                void playerApi.setRenderScale(SCALE_STEPS[scaleIndex]);
-              }
             } else {
               lowWindows = 0;
-              highWindows = 0;
             }
           }
         }, 2000);

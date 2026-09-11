@@ -26,7 +26,6 @@ use crate::services::playback_engine::TrackList;
 use crate::state::AppState;
 use tauri::{AppHandle, Manager};
 use crate::domain::title::TitleSummary;
-use std::collections::HashMap;
 
 #[tauri::command]
 pub fn get_playback_progress(

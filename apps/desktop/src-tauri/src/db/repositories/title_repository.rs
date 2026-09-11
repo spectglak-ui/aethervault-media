@@ -633,3 +633,56 @@ pub fn list_collection_titles(
     })?;
     rows.collect()
 }
+
+/// 0.6.0 : (tmdb_id, kind) d'un Titre.
+pub fn get_tmdb_id(
+    conn: &Connection,
+    title_id: i64,
+) -> rusqlite::Result<Option<(i64, String)>> {
+    let mut stmt = conn.prepare("SELECT tmdb_id, kind FROM titles WHERE id = ?")?;
+    let mut rows = stmt.query([title_id])?;
+    match rows.next()? {
+        Some(row) => {
+            let tmdb: Option<i64> = row.get(0)?;
+            let kind: String = row.get(1)?;
+            Ok(tmdb.map(|t| (t, kind)))
+        }
+        None => Ok(None),
+    }
+}
+
+/// 0.6.0 : Titres possédés dont le tmdb_id figure dans la liste
+/// (filmographie d'une personne). `kind` = "movie" ou "series".
+pub fn list_titles_by_tmdb_ids(
+    conn: &Connection,
+    kind: &str,
+    tmdb_ids: &[i64],
+) -> rusqlite::Result<Vec<(i64, i64, String, String, Option<i32>, Option<String>)>> {
+    if tmdb_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = tmdb_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT id, category_id, kind, name, year, poster_path
+         FROM titles
+         WHERE kind = ? AND tmdb_id IN ({placeholders})
+         ORDER BY name"
+    );
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    params.push(Box::new(kind.to_string()));
+    for id in tmdb_ids {
+        params.push(Box::new(*id));
+    }
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+        ))
+    })?;
+    rows.collect()
+}

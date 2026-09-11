@@ -9,17 +9,12 @@ import { titleApi } from "../features/title/api";
 import { libraryApi } from "../features/library/api";
 import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
+import { CastRow, GenreRow } from "../components/TitleRows";
 import "./pages.css";
 
 /**
- * Liste des épisodes d'une Saison (doc §6.3, §6.7). Cliquer un épisode
- * construit la file de lecture (Queue, §4.2 bis) à partir de **tous les
- * épisodes de cette saison qui ont un fichier associé**, dans leur ordre
- * d'affichage — c'est ce qui permet à Précédent/Suivant de parcourir les
- * épisodes d'une série exactement comme VLC/MPC-HC le font pour un dossier
- * ouvert. Construite à la demande, au clic, plutôt que précalculée à
- * l'affichage de la page : les fichiers ne sont résolus (`getMediaFile`)
- * que si l'utilisateur lance vraiment la lecture.
+ * Liste des épisodes d'une Saison (doc §6.3, §6.7).
+ * 0.6.0 : rangées « Distribution » + « Du même genre » en bas de page.
  */
 export function SeasonEpisodesPage() {
   const { titleId, seasonId } = useParams<{ key: string; titleId: string; seasonId: string }>();
@@ -32,9 +27,6 @@ export function SeasonEpisodesPage() {
   const [detectProgress, setDetectProgress] = useState<{ done: number; total: number } | null>(
     null
   );
-
-  // 0.3.0 (finition v2) : référence vers le titre courant, lisible depuis
-  // le listener credits:done (qui vit dans un useEffect à dépendances vides).
   const titleIdRef = useRef<string | null>(null);
   titleIdRef.current = titleId ?? null;
 
@@ -51,8 +43,6 @@ export function SeasonEpisodesPage() {
       }
     ).then((fn) => (u1 = fn));
     void listen<{ found: number }>("credits:done", (e) => {
-      // v2 : analyse terminée → on pose le drapeau « série déjà analysée »
-      // (l'auto-détection ne se relancera plus pour ce titre).
       if (titleIdRef.current) {
         try {
           localStorage.setItem(`avm-credits-analyzed-${titleIdRef.current}`, "1");
@@ -80,10 +70,6 @@ export function SeasonEpisodesPage() {
     });
   };
 
-  // 0.3.0 (finition v2) : détection automatique à l'ouverture d'une saison
-  // SANS segments. Le drapeau n'est posé qu'à la FIN d'une analyse terminée
-  // (listener credits:done) — une analyse interrompue/échouée sera retentée
-  // à la prochaine ouverture.
   useEffect(() => {
     if (!titleId || !episodes || episodes.length < 2 || detecting) return;
     try {
@@ -94,7 +80,6 @@ export function SeasonEpisodesPage() {
     const withFiles = episodes.filter((e) => e.media_file_id !== null);
     if (withFiles.length < 2) return;
     const firstId = withFiles[0].media_file_id as number;
-    // Des segments existent déjà en base ? → rien à analyser.
     void invoke<{ segments: unknown[] }>("get_media_segment_context", {
       mediaFileId: firstId,
     })
@@ -138,12 +123,6 @@ export function SeasonEpisodesPage() {
     if (!episodes || !title) return;
     setStarting(clickedEpisode.id);
     try {
-      // Chaque entrée résolue porte l'id de son épisode d'origine plutôt
-      // que de compter sur la position dans le tableau : après le filtre
-      // ci-dessous (épisodes sans fichier exclus), l'index dans `items` ne
-      // correspond plus à l'index dans `episodes` — chercher l'épisode
-      // cliqué par position aurait pointé sur la mauvaise entrée dès qu'un
-      // épisode sans fichier précède celui cliqué.
       const resolved = await Promise.all(
         episodes.map(async (episode) => {
           if (episode.media_file_id === null) return null;
@@ -247,6 +226,9 @@ export function SeasonEpisodesPage() {
           })}
         </ul>
       )}
+      {/* 0.6.0 : rangées Distribution + Du même genre (zone basse). */}
+      {titleId && <CastRow titleId={Number(titleId)} />}
+      {titleId && <GenreRow titleId={Number(titleId)} />}
     </div>
   );
 }

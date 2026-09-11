@@ -22,6 +22,7 @@ import { VaultTubeVideosPage } from "./pages/VaultTubeVideosPage";
 import { VaultTubePlaylistsPage } from "./pages/VaultTubePlaylistsPage";
 import { VaultTubePlaylistPreviewPage } from "./pages/VaultTubePlaylistPreviewPage";
 import { VaultTubeUserPlaylistPage } from "./pages/VaultTubeUserPlaylistPage";
+import { PersonPage } from "./pages/PersonPage";
 
 /**
  * Routeur "hash" (#/...) plutôt que "browser" : évite d'avoir à configurer
@@ -59,6 +60,7 @@ export const router = createHashRouter([
 	  { path: "/stats", element: <StatsPage /> },
       { path: "/profiles", element: <ProfilesPage /> },
       { path: "/settings", element: <SettingsPage /> },
+	  { path: "/person/:personId", element: <PersonPage /> },
       {
         path: "/experimental-player",
         element: <ExperimentalPlayerPage />,
