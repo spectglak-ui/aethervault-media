@@ -17,7 +17,11 @@ import "./pages.css";
  * 0.6.0 : rangées « Distribution » + « Du même genre » en bas de page.
  */
 export function SeasonEpisodesPage() {
-  const { titleId, seasonId } = useParams<{ key: string; titleId: string; seasonId: string }>();
+  const { key: categoryKey, titleId, seasonId } = useParams<{
+  key: string;
+  titleId: string;
+  seasonId: string;
+}>();
   const { playQueue } = usePlayer();
   const [title, setTitle] = useState<TitleDetails | null>(null);
   const [episodes, setEpisodes] = useState<EpisodeSummary[] | null>(null);
@@ -228,7 +232,7 @@ export function SeasonEpisodesPage() {
       )}
       {/* 0.6.0 : rangées Distribution + Du même genre (zone basse). */}
       {titleId && <CastRow titleId={Number(titleId)} />}
-      {titleId && <GenreRow titleId={Number(titleId)} />}
+      {titleId && <GenreRow titleId={Number(titleId)} categoryKey={categoryKey ?? ""} />}
     </div>
   );
 }
