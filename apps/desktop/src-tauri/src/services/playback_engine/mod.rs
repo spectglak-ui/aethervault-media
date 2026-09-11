@@ -264,6 +264,14 @@ impl PlaybackEngineHandle {
         let _ = set_option(&functions, mpv, "hr-seek-framedrop", "no");
         let _ = set_option(&functions, mpv, "video-sync-max-video-change", "5");
         let _ = set_option(&functions, mpv, "video-sync-max-audio-change", "0.1");
+		    // 0.5.6 : rendu logiciel plus rapide (render.h recommande explicitement
+            // sw-fast + zimg ; l'OSD mpv est inutile car l'UI est dessinée par
+            // l'app — le rendu OSD CPU est un coût pur à 1080p).
+        let _ = set_option(&functions, mpv, "sws-fast", "yes");
+        let _ = set_option(&functions, mpv, "sw-fast", "yes"); // alias selon versions
+        let _ = set_option(&functions, mpv, "sws-allow-zimg", "yes");
+        let _ = set_option(&functions, mpv, "osd-level", "0");
+        let _ = set_option(&functions, mpv, "video-osd", "no");
 
         let rc = unsafe { (functions.initialize)(mpv.0) };
         if rc < 0 {
@@ -1386,8 +1394,13 @@ fn run_event_thread(
                     "demuxer-cache-time" if prop.format == MpvFormat::Double as c_int => {
                         payload.buffered_seconds = Some(unsafe { *(prop.data as *const f64) });
                     }
-                    "time-pos" if prop.format == MpvFormat::Double as c_int => {
-                        payload.position_seconds = Some(unsafe { *(prop.data as *const f64) });
+                                        "time-pos" if prop.format == MpvFormat::Double as c_int => {
+                        let secs = unsafe { *(prop.data as *const f64) };
+                        payload.position_seconds = Some(secs);
+                        // 0.5.6 : publie le PTS pour le thread de rendu
+                        // (sw_render::LAST_PTS_MS) — sans appel libmpv
+                        // depuis ce dernier.
+                        sw_render::LAST_PTS_MS.store((secs * 1000.0) as i64, Ordering::Relaxed);
                     }
                     "duration" if prop.format == MpvFormat::Double as c_int => {
                         payload.duration_seconds = Some(unsafe { *(prop.data as *const f64) });

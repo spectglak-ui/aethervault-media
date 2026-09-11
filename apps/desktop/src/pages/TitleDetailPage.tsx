@@ -4,11 +4,11 @@ import { Clapperboard, ImageUp, ListPlus, Play, RotateCcw, Volume2, VolumeX } fr
 import { invoke } from "@tauri-apps/api/core";
 import { Menu, CheckMenuItem } from "@tauri-apps/api/menu";
 import { Button, EmptyState, IconButton, PageHeader } from "@aethervault/ui-kit";
-import type { Category, TitleDetails, TitleSummary } from "@aethervault/shared-types";
+import type { TitleDetails } from "@aethervault/shared-types";
 import { titleApi } from "../features/title/api";
 import { libraryApi } from "../features/library/api";
-import { categoryApi } from "../features/category/api";
 import { PersonalizableImage } from "../features/personalization/PersonalizableImage";
+import { CastRow, GenreRow } from "../components/TitleRows";
 import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
 import "./pages.css";
@@ -23,9 +23,7 @@ function formatDuration(totalSeconds: number): string {
   return `${hours} h ${String(minutes).padStart(2, "0")} min`;
 }
 
-/** Charge une seule fois le script API IFrame YouTube (0.3.0 :
- * nécessaire pour désactiver les sous-titres de la bande-annonce,
- * impossible avec une iframe simple). */
+/** Charge une seule fois le script API IFrame YouTube (0.3.0). */
 function loadYouTubeApi(): Promise<any> {
   return new Promise((resolve) => {
     const w = window as any;
@@ -45,27 +43,22 @@ function loadYouTubeApi(): Promise<any> {
 }
 
 /**
- * Page d'un Titre (doc §6.3). Étape 7 (lot 4) : fond d'écran de page
- * personnalisable. Étape 8 : menu « Ajouter à une collection » (ListPlus) +
- * rangée « Titres similaires » (genres/acteurs/studios communs).
- * 0.3.0 : bande-annonce YouTube en arrière-plan, sans sous-titres.
- * 0.5.6 : (a) `trailerActive` déclaré APRÈS `trailerMode` (l'ordre inverse
- * provoquait un ReferenceError au rendu) ; (b) bande-annonce coupée pendant
- * toute lecture (CPU/réseau YouTube = trames sautées mesurées via
- * [AV-DIAG]) ; (c) tous les invoke sensibles ont un catch (fin des
- * « Uncaught (in promise) error running command »).
+ * Page d'un Titre (doc §6.3).
+ * 0.6.0 : (a) ORDRE CORRIGÉ — `trailerMode` déclaré AVANT `trailerActive`
+ * (l'ordre inverse provoquait un ReferenceError au rendu) ;
+ * (b) rangées « Distribution » (acteurs cliquables → page Personne) et
+ * « Du même genre » en bas de page (composants partagés TitleRows).
  */
 export function TitleDetailPage() {
   const { key, titleId } = useParams<{ key: string; titleId: string }>();
   const navigate = useNavigate();
   const { play, currentMedia } = usePlayer();
   const [title, setTitle] = useState<TitleDetails | null | undefined>(undefined);
-  const [similarTitles, setSimilarTitles] = useState<TitleSummary[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
   const [starting, setStarting] = useState(false);
   const [trailerKeys, setTrailerKeys] = useState<string[]>([]);
   const [trailerKeyIndex, setTrailerKeyIndex] = useState(0);
   const trailerKey = trailerKeys[trailerKeyIndex] ?? null;
+  // 0.6.0 : déclaration AVANT trailerActive (sinon ReferenceError TDZ).
   const [trailerMode, setTrailerMode] = useState<"backdrop" | "trailer">(() => {
     try {
       return localStorage.getItem("avm-title-trailer-mode") === "trailer" ? "trailer" : "backdrop";
@@ -73,10 +66,8 @@ export function TitleDetailPage() {
       return "backdrop";
     }
   });
-  // 0.5.6 : ordre corrigé (était déclaré AVANT trailerMode → ReferenceError).
   // Le fond bande-annonce est DÉSACTIVÉ pendant toute lecture ; la
-  // préférence utilisateur (localStorage) est conservée et revient
-  // automatiquement une fois la lecture terminée.
+  // préférence utilisateur (localStorage) revient après la lecture.
   const trailerActive = trailerMode === "trailer" && !currentMedia;
   const [trailerSound, setTrailerSound] = useState(false);
   const wallpaperRef = useRef<HTMLDivElement | null>(null);
@@ -84,10 +75,6 @@ export function TitleDetailPage() {
   const trailerPlayerRef = useRef<any>(null);
   const [trailerRect, setTrailerRect] = useState<{ w: number; h: number } | null>(null);
 
-  // 0.3.0 : dimensions « cover » de l'iframe YouTube — le conteneur
-  // n'est pas 16:9, donc on surdimensionne l'iframe (ratio forcé) et
-  // on laisse overflow:hidden rogner le surplus : la bande-annonce
-  // REMPLIT le fond sans bandes noires.
   useEffect(() => {
     if (!trailerActive || !trailerKey) return;
     const compute = () => {
@@ -107,9 +94,6 @@ export function TitleDetailPage() {
     return () => window.removeEventListener("resize", compute);
   }, [trailerActive, trailerKey]);
 
-  // 0.3.0 : crée le lecteur YouTube du fond, DÉSACTIVE les sous-titres,
-  // et passe automatiquement à la vidéo suivante en cas d'erreur
-  // (fallback automatique sur la liste des trailers disponibles).
   useEffect(() => {
     if (!trailerActive || !trailerKey) return;
     let cancelled = false;
@@ -165,7 +149,6 @@ export function TitleDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trailerActive, trailerKey]);
 
-  // Bouton son : mute/unmute en direct, sans recharger la vidéo.
   useEffect(() => {
     const player = trailerPlayerRef.current;
     if (!player) return;
@@ -187,18 +170,9 @@ export function TitleDetailPage() {
 
   useEffect(() => {
     refresh();
-    categoryApi.list().then(setCategories).catch(() => {});
-    if (titleId) {
-      titleApi
-        .similar(Number(titleId), 12)
-        .then(setSimilarTitles)
-        .catch(() => setSimilarTitles([]));
-    }
-  }, [refresh, titleId]);
+  }, [refresh]);
 
-  // 0.5.1 : TMDB d'abord ; si injoignable (box sans VPN), repli recherche
-  // YouTube LOCALE via yt-dlp → l'option « bande-annonce en arrière-plan »
-  // apparaît même sans VPN.
+  // 0.5.1 : TMDB d'abord ; si injoignable, repli YouTube local (yt-dlp).
   const titleName = title?.name ?? null;
   useEffect(() => {
     if (!titleId) return;
@@ -232,8 +206,6 @@ export function TitleDetailPage() {
       const file = await libraryApi.getMediaFile(title.media_file_id);
       play({ id: file.id, title: title.name, path: file.path, libraryId: file.library_id });
     } catch (err) {
-      // 0.5.6 : fichier indisponible/verrouillé → message propre au lieu
-      // d'un rejet non géré (« Uncaught (in promise) error running command »).
       console.warn("[title] lecture impossible :", err);
       window.alert(err instanceof Error ? err.message : "Lecture impossible (fichier indisponible ?).");
     } finally {
@@ -254,7 +226,7 @@ export function TitleDetailPage() {
 
   const handlePickWallpaper = async () => {
     try {
-      const sourcePath = await categoryApi.pickImage();
+      const sourcePath = await categoryApiPick();
       if (!sourcePath) return;
       await titleApi.setBanner(title.id, sourcePath);
       refresh();
@@ -271,9 +243,7 @@ export function TitleDetailPage() {
     }
   };
 
-  /** Étape 8 : menu natif « Ajouter à une collection » — coche/décoche
-   * chaque collection existante pour ce Titre ; si aucune collection
-   * n'existe encore, propose d'en créer une directement. */
+  /** Étape 8 : menu natif « Ajouter à une collection ». */
   const openCollectionsMenu = async () => {
     try {
       const [all, mine] = await Promise.all([
@@ -306,12 +276,6 @@ export function TitleDetailPage() {
     } catch {
       // best-effort
     }
-  };
-
-  /** Étape 8 : navigation vers un titre similaire (bonne catégorie). */
-  const openSimilar = (similar: TitleSummary) => {
-    const category = categories.find((c) => c.id === similar.category_id);
-    if (category) navigate(`/category/${category.key}/title/${similar.id}`);
   };
 
   return (
@@ -549,27 +513,16 @@ export function TitleDetailPage() {
           )}
         </section>
       )}
-      {similarTitles.length > 0 && (
-        <section className="avm-title-page__similar">
-          <h2>Titres similaires</h2>
-          <div className="avm-category-grid avm-category-grid--posters">
-            {similarTitles.map((similar) => (
-              <button
-                key={similar.id}
-                className="avm-explore-card"
-                onClick={() => openSimilar(similar)}
-              >
-                {assetUrl(similar.poster) ? (
-                  <img src={assetUrl(similar.poster)} alt="" />
-                ) : (
-                  <div className="avm-card__placeholder" aria-hidden="true" />
-                )}
-                <span className="avm-explore-card__name">{similar.name}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
+      {/* 0.6.0 : rangées Distribution + Du même genre (zone basse). */}
+            <CastRow titleId={title.id} />
+      <GenreRow titleId={title.id} categoryKey={key ?? ""} />
     </div>
   );
+}
+
+/** Indirection pour conserver l'import categoryApi uniquement si présent
+ * dans ton projet (pickImage). */
+import { categoryApi } from "../features/category/api";
+async function categoryApiPick(): Promise<string | null> {
+  return categoryApi.pickImage();
 }

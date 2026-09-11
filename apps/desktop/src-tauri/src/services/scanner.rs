@@ -20,7 +20,6 @@
 use crate::db::repositories::{folder_repository, media_repository};
 use crate::db::DbPool;
 use serde::Serialize;
-use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};

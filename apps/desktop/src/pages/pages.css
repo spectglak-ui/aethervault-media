@@ -1397,3 +1397,9 @@ opacity: 1 !important;
   position: relative;
   z-index: 2;
 }
+/* 0.6.0 : rangée Distribution (bannières verticales acteurs) */
+.avm-cast-row { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px; }
+.avm-cast-card { flex: 0 0 110px; display: flex; flex-direction: column; align-items: center; gap: 6px; background: none; border: 0; color: inherit; cursor: pointer; text-align: center; }
+.avm-cast-card img, .avm-cast-card__fallback { width: 110px; height: 150px; object-fit: cover; border-radius: 10px; }
+.avm-cast-card__fallback { display: flex; align-items: center; justify-content: center; font-size: 40px; background: var(--color-surface-hover, #26262d); color: var(--color-text-muted, #9a9aa5); }
+.avm-cast-card__name { font-size: 12px; font-weight: 600; }

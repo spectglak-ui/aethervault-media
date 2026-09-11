@@ -5,6 +5,6 @@ pub mod models;
 pub mod repository;
 pub mod sync;
 
-pub use models::{SearchResult, UserPlaylist, UserPlaylistItem, VaultTubePlaylist, VaultTubeSubscription, VaultTubeVideo,};
+pub use models::{VaultTubePlaylist, VaultTubeSubscription, VaultTubeVideo,};
 pub use repository::VaultTubeRepository;
 pub use sync::VaultTubeSync;

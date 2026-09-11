@@ -372,7 +372,100 @@ impl TmdbClient {
             imdb_id,
         })
     }
+    /// 0.6.0 : crédits d'un titre (12 premiers acteurs) avec photos de
+    /// profil téléchargées en local (cache naturel : `download_image`
+    /// ignore les fichiers déjà présents).
+    pub fn fetch_title_cast(&self, kind: &str, tmdb_id: i64, data_dir: &str) -> Vec<TmdbCreditPerson> {
+        let path = if kind == "movie" {
+            format!("/movie/{tmdb_id}/credits")
+        } else {
+            format!("/tv/{tmdb_id}/credits")
+        };
+        let Some(v) = get_json(&self.url(&path, "", &self.lang)) else {
+            return Vec::new();
+        };
+        let Some(cast) = v.get("cast").and_then(|c| c.as_array()) else {
+            return Vec::new();
+        };
+        let img_dir = std::path::Path::new(data_dir).join("metadata").join("tmdb");
+        let mut out = Vec::new();
+        for p in cast.iter().take(12) {
+            let Some(id) = p.get("id").and_then(|i| i.as_i64()) else { continue };
+            let name = p
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let character = p.get("character").and_then(|c| c.as_str()).map(String::from);
+            let profile_path = p.get("profile_path").and_then(|pp| pp.as_str()).and_then(|pp| {
+                let dest = img_dir.join(format!("person_{id}.jpg"));
+                download_image(&format!("{IMG_BASE}/w300{pp}"), &dest)
+                    .map(|()| dest.to_string_lossy().to_string())
+            });
+            out.push(TmdbCreditPerson { person_id: id, name, character, profile_path });
+        }
+        out
+    }
 
+    /// 0.6.0 : fiche personne (nom, biographie avec repli en-US, photo
+    /// de profil locale).
+    pub fn fetch_person(&self, person_id: i64, data_dir: &str) -> Option<TmdbPerson> {
+        let path = format!("/person/{person_id}");
+        let v = get_json(&self.url(&path, "", &self.lang))?;
+        let name = v.get("name").and_then(|n| n.as_str())?.to_string();
+        let bio = |lang: &str| -> Option<String> {
+            get_json(&self.url(&path, "", lang))
+                .and_then(|j| j.get("biography").and_then(|b| b.as_str()).map(String::from))
+                .filter(|s| !s.trim().is_empty())
+        };
+        let biography = bio(&self.lang).or_else(|| {
+            if self.lang != "en-US" {
+                bio("en-US")
+            } else {
+                None
+            }
+        });
+        let profile_path = v.get("profile_path").and_then(|pp| pp.as_str()).and_then(|pp| {
+            let dest = std::path::Path::new(data_dir)
+                .join("metadata")
+                .join("tmdb")
+                .join(format!("person_{person_id}.jpg"));
+            download_image(&format!("{IMG_BASE}/w300{pp}"), &dest)
+                .map(|()| dest.to_string_lossy().to_string())
+        });
+        Some(TmdbPerson { name, biography, profile_path })
+    }
+
+    /// 0.6.0 : filmographie TMDB (combined_credits) → (tmdb_id, media_type)
+    /// dédupliquée, pour intersection avec les titres possédés.
+    pub fn fetch_person_credits(&self, person_id: i64) -> Vec<(i64, String)> {
+        let Some(v) = get_json(&self.url(
+            &format!("/person/{person_id}/combined_credits"),
+            "",
+            &self.lang,
+        )) else {
+            return Vec::new();
+        };
+        let mut out: Vec<(i64, String)> = Vec::new();
+        for key in ["cast", "crew"] {
+            let Some(list) = v.get(key).and_then(|c| c.as_array()) else { continue };
+            for c in list {
+                let Some(id) = c.get("id").and_then(|i| i.as_i64()) else { continue };
+                let media = c
+                    .get("media_type")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("movie")
+                    .to_string();
+                if !out.iter().any(|(oid, _)| *oid == id) {
+                    out.push((id, media));
+                }
+            }
+        }
+        out
+    }
     /// Bande-annonce officielle (0.3.0) : endpoint TMDB « videos » —
     /// retourne TOUTES les vidéos YouTube disponibles (triées par priorité :
     /// Trailer officiel > Trailer > autres vidéos) — le frontend essaiera
@@ -428,6 +521,23 @@ impl TmdbClient {
         }
         Vec::new()
     }
+}
+
+/// 0.6.0 : personne TMDB (fiche + photo téléchargée en local).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TmdbPerson {
+    pub name: String,
+    pub biography: Option<String>,
+    pub profile_path: Option<String>,
+}
+
+/// 0.6.0 : acteur d'un titre (crédits TMDB) avec photo locale.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TmdbCreditPerson {
+    pub person_id: i64,
+    pub name: String,
+    pub character: Option<String>,
+    pub profile_path: Option<String>,
 }
 
 /// Passe d'enrichissement TMDB d'une bibliothèque (Étape 7) : tous les
