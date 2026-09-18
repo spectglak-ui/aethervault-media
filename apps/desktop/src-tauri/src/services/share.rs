@@ -50,7 +50,7 @@ fn active_slot() -> &'static Mutex<Option<ActiveShare>> {
 fn stopped() -> bool {
     active_slot()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.get_ref())
         .as_ref()
         .map(|s| s.stop.load(Ordering::Relaxed))
         .unwrap_or(true)
@@ -167,7 +167,7 @@ fn sanitize_name(name: &str) -> String {
 /// Démarre un partage : listener temporaire + (si `lan_only` est faux)
 /// UPnP best-effort + code autoportant avec expiration.
 pub fn start_share(app: &AppHandle, path: &str, lan_only: bool) -> Result<ShareOffer, String> {
-    if active_slot().lock().unwrap().is_some() {
+    if active_slot().lock().unwrap_or_else(|e| e.get_ref()).is_some() {
         return Err("Un partage est déjà en cours — arrêtez-le d'abord.".into());
     }
     let file_path = std::path::PathBuf::from(path);
@@ -216,7 +216,7 @@ pub fn start_share(app: &AppHandle, path: &str, lan_only: bool) -> Result<ShareO
     let json = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
     let code = format!("AVM-{}", base64::engine::general_purpose::URL_SAFE.encode(json));
 
-    *active_slot().lock().unwrap() = Some(ActiveShare {
+    *active_slot().lock().unwrap_or_else(|e| e.get_ref()) = Some(ActiveShare {
         stop: AtomicBool::new(false),
     });
 
@@ -303,11 +303,11 @@ fn serve_loop(
         }
     }
     let _ = app.emit("share-ended", ());
-    *active_slot().lock().unwrap() = None;
+    *active_slot().lock().unwrap_or_else(|e| e.get_ref()) = None;
 }
 
 pub fn stop_share() {
-    if let Some(session) = active_slot().lock().unwrap().as_ref() {
+    if let Some(session) = active_slot().lock().unwrap_or_else(|e| e.get_ref()).as_ref() {
         session.stop.store(true, Ordering::Relaxed);
     }
 }

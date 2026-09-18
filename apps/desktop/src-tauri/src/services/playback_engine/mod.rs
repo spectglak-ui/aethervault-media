@@ -675,13 +675,14 @@ impl PlaybackEngineHandle {
         ]
     }
 
-    /// 0.5.2 : récupère un PO Token (cache 30 min), ou None si sidecar absent/échec.
+    /// 0.5.2 : récupère un PO Token (cache 30 min, refresh à 20 min), ou None si sidecar absent/échec.
     fn fetch_pot_token(&self) -> Option<(String, String)> {
-        // 1. Cache encore valide ?
+        // 1. Cache encore valide ? (refresh à 20 min pour éviter expiration pendant usage)
+        const CACHE_TTL_SECS: u64 = 20 * 60; // Refresh avant expiration (30 min théorique)
         {
             let guard = self.pot_cache.lock().unwrap_or_else(|p| p.into_inner());
             if let Some((v, t, instant)) = guard.as_ref() {
-                if instant.elapsed() < Duration::from_secs(30 * 60) {
+                if instant.elapsed() < Duration::from_secs(CACHE_TTL_SECS) {
                     return Some((v.clone(), t.clone()));
                 }
             }
@@ -1185,9 +1186,12 @@ fn cobalt_extract(url: &str, height: Option<i64>) -> Option<String> {
                     if (status == "tunnel" || status == "redirect")
                         && json.get("url").and_then(|u| u.as_str()).is_some()
                     {
-                        let u = json["url"].as_str().unwrap().to_string();
-                        log::info!("[playback] cobalt OK via {base} ({status})");
-                        return Some(u);
+                        // Fix P0: gestion sécurisée sans unwrap()
+                        if let Some(u) = json["url"].as_str() {
+                            let url = u.to_string();
+                            log::info!("[playback] cobalt OK via {base} ({status})");
+                            return Some(url);
+                        }
                     }
                     log::warn!("[playback] cobalt {base} : réponse sans URL");
                 }
