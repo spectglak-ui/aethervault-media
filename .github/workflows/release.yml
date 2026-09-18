@@ -16,10 +16,13 @@ jobs:
         include:
           - platform: 'ubuntu-22.04'
             args: '--target x86_64-unknown-linux-gnu'
+            is-primary: true # C'est cette plateforme qui créera le brouillon de la release
           - platform: 'macos-latest'
             args: '--target x86_64-apple-darwin'
+            is-primary: false
           - platform: 'windows-latest'
             args: ''
+            is-primary: false
 
     runs-on: ${{ matrix.platform }}
     
@@ -32,7 +35,7 @@ jobs:
           node-version: '22' # Mise à jour vers Node 22
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v3 # Mise à jour pnpm action
+        uses: pnpm/action-setup@v3
         with:
           version: 9
 
@@ -54,13 +57,21 @@ jobs:
 
       - name: Install dependencies (Windows)
         if: matrix.platform == 'windows-latest'
+        shell: pwsh
         run: |
-          # Téléchargement manuel de libmpv pour Windows car non disponible via choco/scoop facilement dans CI
-          mkdir -p apps/desktop/src-tauri/libs
-          Invoke-WebRequest -Uri "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20240505/libmpv-2.dll.zip" -OutFile "libmpv.zip"
-          Expand-Archive -Path "libmpv.zip" -DestinationPath "temp_lib"
-          Copy-Item "temp_lib/libmpv-2.dll" -Destination "apps/desktop/src-tauri/libs/"
-          # Note: Adaptez l'URL si nécessaire pour une version plus récente
+          # Création du dossier libs
+          New-Item -ItemType Directory -Force -Path "apps/desktop/src-tauri/libs"
+          
+          # Téléchargement de la dernière version stable de libmpv (version spécifique connue pour fonctionner)
+          $url = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20240606/libmpv-2.dll.zip"
+          Invoke-WebRequest -Uri $url -OutFile "libmpv.zip"
+          Expand-Archive -Path "libmpv.zip" -DestinationPath "temp_lib" -Force
+          
+          # Copie des DLLs nécessaires
+          Copy-Item "temp_lib/libmpv-2.dll" -Destination "apps/desktop/src-tauri/libs/" -Force
+          
+          # Nettoyage
+          Remove-Item "libmpv.zip", "temp_lib" -Recurse -Force
 
       - name: Install app dependencies and build it
         run: pnpm install --frozen-lockfile
@@ -69,12 +80,13 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Désactivez la signature si vous n'avez pas configuré les clés, sinon le build échouera
+          # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "AetherVault Media ${{ github.ref_name }}"
-          releaseBody: "Voir les notes de version pour les détails."
-          releaseDraft: true
+          releaseBody: "Nouvelle version multiplateforme incluant les correctifs critiques v0.5.7."
+          releaseDraft: ${{ matrix.is-primary }} # Seul Linux crée le brouillon
           prerelease: false
           args: ${{ matrix.args }}
