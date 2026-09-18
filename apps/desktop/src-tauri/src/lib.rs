@@ -1,0 +1,313 @@
+//! AetherVault Media — bibliothèque applicative principale.
+//!
+//! Ce module assemble les différentes couches du socle (base de données,
+//! journalisation, commandes exposées au frontend) et démarre l'application
+//! Tauri. La logique métier détaillée (bibliothèques, lecteur, profils...)
+//! sera ajoutée dans les étapes suivantes, dans des modules dédiés sous
+//! `domain/` et `services/`, sans modifier la structure de ce point d'entrée.
+mod commands;
+mod db;
+mod domain;
+mod security;
+mod services;
+mod state;
+
+use state::AppState;
+use tauri::Manager;
+use tauri_plugin_log::{Target, TargetKind};
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir { file_name: None }),
+                ])
+                .build(),
+        )
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let handle = app.handle().clone();
+            // Répertoire de données de l'application (ex. %APPDATA%\com.aethervault.media
+            // sous Windows), fourni par Tauri de façon standard par OS.
+            let data_dir = handle
+                .path()
+                .app_data_dir()
+                .expect("impossible de résoudre le répertoire de données de l'application");
+            std::fs::create_dir_all(&data_dir)
+                .expect("impossible de créer le répertoire de données");
+            // Privacy/Security Manager (Étape 6a, architecture A2, doc §6.4
+            // bis) : nettoie un éventuel fichier de travail resté sur disque
+            // après un arrêt brutal pendant un déverrouillage/une
+            // persistance du coffre privé.
+            security::vault::cleanup_stale_temp_file(&data_dir);
+            let database_path = data_dir.join("aethervault.db");
+            let pool = db::init_pool(&database_path)
+                .expect("impossible d'initialiser le pool de connexions SQLite");
+            // 0.5.1 (correctif installation fraîche) : les tables VaultTube
+            // DOIVENT exister AVANT que les migrations 18→21 ne les modifient
+            // (ALTER TABLE). Auparavant create_tables() tournait après
+            // apply_migrations() → crash « no such table: vaulttube_subscriptions »
+            // au tout premier lancement sur une base neuve (ex. .deb Linux).
+            // create_tables() est idempotent (CREATE TABLE IF NOT EXISTS) :
+            // aucun effet sur une base existante déjà à jour.
+            services::vaulttube::VaultTubeRepository::new(pool.clone())
+                .create_tables()
+                .expect("impossible de créer les tables VaultTube");
+            // Schéma appliqué de façon versionnée (voir db::migrations), puis
+            // données par défaut insérées séparément (voir db::seed).
+            db::migrations::apply_migrations(&pool)
+                .expect("impossible d'appliquer les migrations de la base de données");
+            db::seed::ensure_default_profile(&pool)
+                .expect("impossible d'initialiser les données par défaut");
+            db::seed::ensure_default_categories(&pool)
+                .expect("impossible d'initialiser les catégories par défaut");
+            db::seed::backfill_library_categories(&pool)
+                .expect("impossible de rattacher les bibliothèques existantes à une catégorie");
+            let log_dir = handle
+                .path()
+                .app_log_dir()
+                .expect("impossible de résoudre le répertoire de logs");
+            log::info!(
+                "AetherVault Media démarre — base de données : {:?}",
+                database_path
+            );
+            // 0.3.0 : fenêtre « quasi-max » dès le démarrage — inset de 4 px de
+            // la zone de travail : jamais l'état « maximisé » (artefacts DWM
+            // après les transitions plein écran), jamais en contact avec les
+            // bords de l'écran ni la barre des tâches.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unmaximize();
+                if let Ok(Some(monitor)) = window.primary_monitor() {
+                    let work_area = monitor.work_area();
+                    let margin = 4i32;
+                    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+                        width: (work_area.size.width as i32 - 2 * margin).max(800) as u32,
+                        height: (work_area.size.height as i32 - 2 * margin).max(600) as u32,
+                    }));
+                    // 0.3.0 : centrage explicite — garantit des marges symétriques.
+                    let _ = window.center();
+                }
+            }
+            let scanning_libraries = std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            ));
+            let watcher =
+                services::watcher::start(pool.clone(), handle.clone(), scanning_libraries.clone())
+                    .expect("impossible de démarrer la surveillance des dossiers (Filesystem Watcher)");
+            // Playback Engine Bridge (Étape 3b) : démarré une fois pour
+            // toute la durée de vie de l'application, indépendamment de
+            // toute fenêtre — voir `services::playback_engine`.
+            let playback_engine =
+                match services::playback_engine::PlaybackEngineHandle::start(handle.clone()) {
+                    Ok(engine) => services::playback_engine::PlaybackEngineState::Ready(engine),
+                    Err(err) => {
+                        log::error!("Playback Engine Bridge indisponible : {err}");
+                        services::playback_engine::PlaybackEngineState::Unavailable(err)
+                    }
+                };
+            // Metadata Service (Étape 4, doc §3.4/§6.3).
+            let metadata_service =
+                std::sync::Arc::new(services::metadata::MetadataService::new());
+            app.manage(AppState {
+                db_pool: pool,
+                database_path: database_path.to_string_lossy().to_string(),
+                log_directory: log_dir.to_string_lossy().to_string(),
+                data_dir: data_dir.to_string_lossy().to_string(),
+                watcher,
+                scanning_libraries,
+                playback_engine,
+                metadata_service,
+                // Étape 6c-ii : plus d'admin auto-activé au démarrage — le frontend
+                // passe par AuthGate (login / onboarding). `None` = aucun profil actif.
+                active_profile_id: std::sync::Mutex::new(None),
+                // INVARIANT SÉCURITÉ : Le coffre DOIT TOUJOURS démarrer verrouillé.
+                vault: std::sync::Mutex::new(security::vault::VaultState::Locked),
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::status::get_app_status,
+            commands::profile::list_profiles,
+            commands::profile::get_active_profile,
+            commands::profile::switch_active_profile,
+            commands::profile::create_profile,
+            commands::profile::rename_profile,
+            commands::profile::update_profile_permissions,
+            commands::profile::delete_profile,
+            commands::profile::set_profile_avatar,
+            commands::profile::get_profile_avatar,
+            commands::profile::clear_profile_avatar,
+            commands::settings::set_home_backdrop,
+            commands::settings::get_home_backdrop,
+            commands::settings::clear_home_backdrop,
+            commands::settings::get_title_trailer,
+			commands::settings::get_typography_settings,
+            commands::settings::save_typography_settings,
+            commands::segments::get_episode_segments,
+            commands::segments::set_episode_segment,
+            commands::segments::delete_episode_segment,
+            commands::segments::detect_credits,
+            commands::segments::get_media_segment_context,
+            commands::vaulttube::vaulttube_add_subscription,
+            commands::vaulttube::vaulttube_list_subscriptions,
+            commands::vaulttube::vaulttube_list_videos,
+            commands::vaulttube::vaulttube_refresh_subscription,
+            commands::vaulttube::vaulttube_remove_subscription,
+            commands::vaulttube::vaulttube_list_playlists,
+            commands::vaulttube::vaulttube_sync_playlists,
+            commands::vaulttube::vaulttube_preview_videos,
+            commands::vaulttube::vaulttube_search,
+            commands::vaulttube::vaulttube_create_user_playlist,
+            commands::vaulttube::vaulttube_list_user_playlists,
+            commands::vaulttube::vaulttube_delete_user_playlist,
+            commands::vaulttube::vaulttube_list_user_playlist_items,
+            commands::vaulttube::vaulttube_add_to_user_playlist,
+            commands::vaulttube::vaulttube_remove_from_user_playlist,
+            commands::vaulttube::vaulttube_reorder_user_playlist,
+            commands::vaulttube::vaulttube_set_user_playlist_mode,
+            commands::vaulttube::vaulttube_set_subscription_mode,
+            // Authentification des profils (Étape 6c)
+            commands::auth::get_login_state,
+            commands::auth::login_profile,
+            commands::auth::logout_profile,
+            commands::auth::setup_first_admin,
+            commands::auth::change_own_password,
+            commands::auth::admin_reset_password,
+            commands::auth::recover_with_code,
+            commands::settings::get_metadata_settings,
+            commands::settings::save_metadata_settings,
+            commands::security::get_vault_status,
+            commands::security::setup_vault,
+            commands::security::unlock_vault,
+            commands::security::lock_vault,
+            commands::security::change_vault_secret,
+            commands::security::list_private_libraries,
+            commands::security::create_private_library,
+            commands::security::rename_private_library,
+            commands::security::delete_private_library,
+            commands::private_video::list_private_video_folders,
+            commands::private_video::private_video_thumbnail,
+            commands::private_video::add_private_video_folder,
+            commands::private_video::remove_private_video_folder,
+            commands::private_video::list_private_video_files,
+            commands::private_video::scan_private_video_library,
+            commands::private_video::get_private_playback_progress,
+            commands::private_video::save_private_playback_progress,
+            commands::private_image::list_private_image_folders,
+            commands::private_image::add_private_image_folder,
+            commands::private_image::remove_private_image_folder,
+            commands::private_image::scan_private_image_library,
+            commands::private_image::list_private_image_files,
+            commands::private_image::get_private_image_thumbnail,
+            commands::private_image::get_private_album_cover,
+            commands::private_image::set_private_album_cover,
+            commands::library::list_libraries,
+            commands::library::generate_episode_thumbnails,
+            commands::library::create_library,
+            commands::library::delete_library,
+            commands::library::list_library_folders,
+            commands::library::pick_folder,
+            commands::library::add_library_folder,
+            commands::library::remove_library_folder,
+            commands::library::list_media_files,
+            commands::library::get_media_file,
+            commands::library::scan_library,
+            commands::library::match_library_metadata_command,
+            commands::nas::nas_test_connection,
+            commands::nas::nas_connect,
+            commands::category::list_categories,
+            commands::category::pick_image,
+            commands::category::set_category_banner,
+            commands::title::list_recent_titles,
+            commands::title::get_home_hero,
+            commands::title::create_collection,
+            commands::title::list_collections,
+            commands::title::delete_collection,
+            commands::title::add_to_collection,
+            commands::title::remove_from_collection,
+            commands::title::list_collections_for_title,
+            commands::title::list_collection_titles,
+            commands::title::search_titles,
+            commands::title::search_facets,
+            commands::title::list_titles_by_category,
+            commands::title::get_title_details,
+            commands::title::list_episodes,
+            commands::title::set_title_poster,
+            commands::title::set_title_banner,
+            commands::title::delete_title,
+			commands::title::get_title_cast,
+            commands::title::get_person,
+            commands::title::list_person_titles,
+            commands::playback::get_playback_progress,
+            commands::playback::save_playback_progress,
+            commands::playback::list_continue_watching,
+            commands::playback::record_watch,
+            commands::playback::get_watch_stats,
+            commands::playback::get_top_genres,
+            commands::playback::get_top_titles,
+            commands::playback::get_watch_sessions,
+            commands::playback::reset_watch_stats,
+            commands::playback::list_similar_titles,
+            commands::playback::player_load,
+            commands::playback::player_set_paused,
+            commands::playback::player_seek,
+            commands::playback::player_set_volume,
+            commands::playback::player_set_muted,
+            commands::playback::player_set_rate,
+            commands::playback::player_stop,
+            commands::playback::player_attach_surface,
+            commands::playback::player_resize_surface,
+            commands::playback::player_ack_frame,
+            commands::playback::player_capture_screenshot,
+            commands::playback::player_list_tracks,
+            commands::playback::player_set_audio_track,
+            commands::playback::player_set_subtitle_track,
+            commands::playback::player_redraw,
+			commands::playback::player_set_render_scale,
+            commands::player_settings::get_player_settings,
+            commands::player_settings::save_player_settings,
+            commands::player_settings::get_post_shader,
+            commands::player_settings::set_post_shader,
+            commands::window::open_player_window,
+            commands::window::toggle_floating_player,
+            commands::window::mark_player_ready,
+            commands::window::close_player_window,
+            commands::share::share_start,
+            commands::share::share_stop,
+            commands::share::share_receive,
+            commands::friends::add_friend,
+            commands::friends::remove_friend,
+            commands::friends::list_friends,
+            commands::friends::get_friends_activity,
+            commands::friends::update_activity,
+            commands::friends::clear_activity,
+            commands::friends::set_activity_visibility,
+            commands::friends::get_activity_visibility,
+            services::friends_net::friends_generate_code,
+            services::friends_net::friends_add_by_code,
+            services::friends_net::friends_list_remote,
+            services::friends_net::friends_remove_remote,
+            services::friends_net::friends_ping_all,
+            services::friends_net::friends_fetch_catalog,
+            services::friends_net::friends_send_request,
+            services::friends_net::friends_list_requests,
+            services::friends_net::friends_set_request_status,
+            // Playback Engine Bridge (Étape 3b) + AetherFy 0.5.0
+            services::playback_engine::player_find_trailer,
+            services::playback_engine::player_pull_frame,
+            services::playback_engine::player_load_url,
+            // 0.5.4 : mode musique audio-seul (anti-grésillement).
+            services::playback_engine::player_load_url_audio,
+            services::playback_engine::player_list_qualities,
+            services::playback_engine::player_load_url_quality,
+            services::playback_engine::player_set_preferred_quality,
+            services::playback_engine::player_extract_media,
+            services::playback_engine::player_unload,
+        ])
+        .run(tauri::generate_context!())
+        .expect("erreur lors du lancement d'AetherVault Media");
+}

@@ -1,0 +1,92 @@
+/* Correctif PiP : la vidéo occupe désormais TOUTE la fenêtre — la barre de
+   déplacement (en haut) et les contrôles (en bas, voir la surcharge de
+   .avm-player__controls plus bas) sont incrustés par-dessus en
+   semi-transparence, plutôt que de lui retirer de l'espace. Cohérent avec
+   le même traitement appliqué au mode étendu de la fenêtre principale
+   (voir layout.css). `overflow: hidden` : cette fenêtre étant désormais
+   sans décorations natives (`decorations(false)`, voir commands::window
+   côté Rust), rien ne doit jamais déborder de ses coins. */
+.avm-detached-player {
+  position: relative;
+  height: 100vh;
+  background: #000;
+  overflow: hidden;
+}
+
+.avm-detached-player__surface {
+  position: absolute;
+  inset: 0;
+  background: #000;
+}
+
+.avm-detached-player__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 0 1rem;
+}
+
+/* Correctif PiP : remplace la barre de titre native retirée côté Rust
+   (`decorations(false)`) — `data-tauri-drag-region` (posé dans
+   DetachedPlayerWindow.tsx) est reconnu nativement par Tauri pour le
+   glisser-déposer de la fenêtre, exactement comme une vraie barre de
+   titre système. */
+.avm-detached-player__titlebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0));
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.avm-detached-player__titlebar-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Surcharge de .avm-player__controls (posé par PlayerControls, partagé
+   avec PlayerDock) spécifiquement dans cette fenêtre : incrustation
+   compacte en bas de la vidéo plutôt que fond plein dans le flux normal —
+   voir la note en tête de DetachedPlayerWindow.tsx. */
+.avm-detached-player .avm-player__controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0));
+  padding: 1.5rem 0.6rem 0.5rem;
+}
+
+.avm-detached-player .avm-player__row {
+  gap: 0.35rem;
+}
+
+.avm-detached-player .avm-player__time {
+  font-size: 0.68rem;
+}
+
+/* Même correctif de lisibilité que le mode étendu de la fenêtre
+   principale (voir layout.css) — IconButton (ui-kit) n'est pas conçu
+   pour un fond vidéo incrusté. */
+.avm-detached-player .avm-player__controls .avm-icon-button,
+.avm-detached-player .avm-player__controls .avm-player__time {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.avm-detached-player .avm-player__controls .avm-icon-button:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}

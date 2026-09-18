@@ -1,0 +1,11 @@
+{
+  "name": "@aethervault/desktop",
+  "private": true,
+  "version": "0.5.7",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "pnpm --filter @aethervault/desktop tauri build"
+  },
+  "packageManager": "pnpm@9.0.0"
+}

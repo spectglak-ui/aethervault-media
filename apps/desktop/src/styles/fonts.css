@@ -1,0 +1,101 @@
+/* 0.5.4 — Typographies embarquées LOCALES (offline-first)
+ * Panchang (titres ExtraBold + boutons Bold)
+ * Space Grotesk (corps, descriptions, menus)
+ * Source : Fontshare (Free License — usage commercial OK) */
+
+/* --- Panchang (titres ExtraBold + boutons Bold) --- */
+@font-face {
+  font-family: "Panchang";
+  src: url("./fonts/Panchang-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Panchang";
+  src: url("./fonts/Panchang-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Panchang";
+  src: url("./fonts/Panchang-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Panchang";
+  src: url("./fonts/Panchang-ExtraBold.woff2") format("woff2");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* --- Space Grotesk (corps, descriptions, menus) --- */
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("./fonts/SpaceGrotesk-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("./fonts/SpaceGrotesk-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("./fonts/SpaceGrotesk-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* --- Variables globales + fallbacks système --- */
+:root {
+  --font-display: "Panchang", "Space Grotesk", system-ui, sans-serif;
+  --font-ui: "Panchang", "Space Grotesk", system-ui, sans-serif;
+  --font-body: "Space Grotesk", system-ui, sans-serif;
+}
+
+/* --- Forçage global de la cascade --- */
+/* 1. Base : tout → Space Grotesk (corps) */
+#root,
+#root *:not(code):not(pre):not(kbd):not(samp) {
+  font-family: var(--font-body);
+}
+
+/* 2. Interface : boutons, badges, onglets, navigation → Panchang Bold (700) */
+#root button,
+#root [role="button"],
+#root .badge,
+#root .tab,
+#root [role="tab"],
+#root nav,
+#root nav a,
+#root aside a,
+#root label {
+  font-family: var(--font-ui);
+  font-weight: 700;
+}
+
+/* 3. Titres : h1-h6 et hero → Panchang ExtraBold (800) */
+#root h1,
+#root h2,
+#root h3,
+#root h4,
+#root h5,
+#root h6,
+#root .avm-hero-title,
+#root .avm-title,
+#root [class*="hero"] h1,
+#root [class*="hero"] h2 {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}

@@ -1,0 +1,67 @@
+.avm-experimental-player {
+  position: relative;
+  width: 100%;
+  background: #000;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.avm-experimental-player__video {
+  display: block;
+  width: 100%;
+  max-height: 70vh;
+  background: #000;
+  /* Correctif (étirement de l'image) : même principe que le lecteur
+     principal, "Ajuster" par défaut — <video> le prend même en charge de
+     façon plus native qu'un <canvas>. Pas de sélecteur de mode ici, cette
+     phase ne valide que la lecture elle-même. */
+  object-fit: contain;
+}
+
+.avm-experimental-player__error {
+  padding: 0.75rem 1rem;
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+  color: var(--color-danger);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.avm-experimental-player__controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--color-surface);
+}
+
+.avm-experimental-player__time {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.avm-experimental-player__seek {
+  flex: 1;
+  min-width: 0;
+}
+
+.avm-experimental-player__volume {
+  width: 90px;
+}
+
+.avm-experimental-player__path {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  margin-bottom: 0.5rem;
+  word-break: break-all;
+}
+
+.avm-experimental-player__pick-error {
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm, 4px);
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+  color: var(--color-danger);
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+}
