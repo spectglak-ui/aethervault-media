@@ -32,13 +32,43 @@ const RECOVERY_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 /// `$argon2id$v=19$m=19456,t=2,p=1$...`). Les paramètres par défaut
 /// d'Argon2 (19 MiB mémoire, 2 itérations, 1 thread) sont suffisants
 /// pour un fichier local non chiffré.
+/// 
+/// Politique de mot de passe (Fix P1 - Sécurité) :
+/// - Minimum 8 caractères
+/// - Au moins une majuscule
+/// - Au moins une minuscule  
+/// - Au moins un chiffre
+/// - Au moins un caractère spécial
 pub fn hash_password(password: &str) -> Result<String, String> {
+    // Validation de la politique de mot de passe
+    validate_password_policy(password)?;
+    
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
     let hash = argon2
         .hash_password(password.as_bytes(), &salt)
         .map_err(|e| format!("Échec du hash du mot de passe : {e}"))?;
     Ok(hash.to_string())
+}
+
+/// Valide qu'un mot de passe respecte la politique de sécurité
+fn validate_password_policy(password: &str) -> Result<(), String> {
+    if password.len() < 8 {
+        return Err("Le mot de passe doit contenir au moins 8 caractères.".to_string());
+    }
+    if !password.chars().any(|c| c.is_uppercase()) {
+        return Err("Le mot de passe doit contenir au moins une lettre majuscule.".to_string());
+    }
+    if !password.chars().any(|c| c.is_lowercase()) {
+        return Err("Le mot de passe doit contenir au moins une lettre minuscule.".to_string());
+    }
+    if !password.chars().any(|c| c.is_ascii_digit()) {
+        return Err("Le mot de passe doit contenir au moins un chiffre.".to_string());
+    }
+    if !password.chars().any(|c| !c.is_alphanumeric()) {
+        return Err("Le mot de passe doit contenir au moins un caractère spécial.".to_string());
+    }
+    Ok(())
 }
 
 /// Vérifie un mot de passe contre un hash Argon2id (chaîne PHC).

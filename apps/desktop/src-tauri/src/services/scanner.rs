@@ -20,6 +20,7 @@
 use crate::db::repositories::{folder_repository, media_repository};
 use crate::db::DbPool;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -152,7 +153,11 @@ pub fn scan_library(
     // Deuxième passage : traitement avec barre déterminée
     let mut added = 0u64;
     let mut updated = 0u64;
+    let mut removed = 0u64;
     let mut processed: u64 = 0;
+    
+    // Collecter les chemins vus pour détecter les suppressions
+    let mut seen_paths: HashSet<String> = HashSet::new();
     
     for (idx, (path, size, modified_str)) in all_entries.into_iter().enumerate() {
         let file_name = Path::new(&path)
@@ -166,6 +171,8 @@ pub fn scan_library(
             .find(|f| path.starts_with(&f.path))
             .map(|f| f.id)
             .unwrap_or(0);
+        
+        seen_paths.insert(path.clone());
         
         let was_inserted = media_repository::upsert(
             &conn,
@@ -197,6 +204,16 @@ pub fn scan_library(
         }
     }
     
+    // Détection des fichiers supprimés (Fix P0)
+    for folder in &folders {
+        if !Path::new(&folder.path).exists() {
+            continue; // déjà marqué indisponible plus haut
+        }
+        // Supprimer les fichiers connus mais absents du scan actuel
+        let count = media_repository::remove_missing(&conn, folder.id, &seen_paths)?;
+        removed += count;
+    }
+    
     // Émettre fin de phase scan
     let _ = app_handle.emit("library:scan-progress", serde_json::json!({
         "library_id": library_id,
@@ -210,7 +227,7 @@ pub fn scan_library(
         library_id,
         added,
         updated,
-        removed: 0, // TODO : détecter les fichiers supprimés
+        removed,
         unavailable_folders,
     })
 }
