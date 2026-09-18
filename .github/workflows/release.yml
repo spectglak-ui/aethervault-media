@@ -59,19 +59,23 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          # Création du dossier libs
-          New-Item -ItemType Directory -Force -Path "apps/desktop/src-tauri/libs"
+          # Créer le dossier libs
+          New-Item -ItemType Directory -Force -Path "apps\desktop\src-tauri\libs"
           
-          # Téléchargement de la dernière version stable de libmpv (version spécifique connue pour fonctionner)
-          $url = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20240606/libmpv-2.dll.zip"
-          Invoke-WebRequest -Uri $url -OutFile "libmpv.zip"
+          # Utiliser une URL stable pour libmpv-2.dll (build shinchiro récent)
+          $url = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20241103/libmpv-2.dll.zip"
+          
+          Write-Host "Téléchargement de libmpv depuis : $url"
+          Invoke-WebRequest -Uri $url -OutFile "libmpv.zip" -UseBasicParsing
+          
+          # Extraire et copier
           Expand-Archive -Path "libmpv.zip" -DestinationPath "temp_lib" -Force
-          
-          # Copie des DLLs nécessaires
-          Copy-Item "temp_lib/libmpv-2.dll" -Destination "apps/desktop/src-tauri/libs/" -Force
+          Copy-Item "temp_lib\libmpv-2.dll" -Destination "apps\desktop\src-tauri\libs\" -Force
           
           # Nettoyage
           Remove-Item "libmpv.zip", "temp_lib" -Recurse -Force
+          
+          Write-Host "libmpv-2.dll installé avec succès dans libs/"
 
       - name: Install app dependencies and build it
         run: pnpm install --frozen-lockfile
