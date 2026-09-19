@@ -788,8 +788,9 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center top;
   filter: blur(0px) saturate(1.1) brightness(0.5);
-  transform: scale(1.05);
+  transform: scale(1.1);
 }
 .avm-title-page__wallpaper-overlay {
   position: absolute;
@@ -809,6 +810,7 @@
   display: flex;
   gap: 0.35rem;
 }
+
 .avm-title-page > *:not(.avm-title-page__wallpaper):not(.avm-title-page__wallpaper-actions) {
   position: relative;
   z-index: 1;
@@ -832,8 +834,9 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center top;
   filter: blur(0px) saturate(1.1) brightness(0.5);
-  transform: scale(1.05);
+  transform: scale(1.1);
 }
 .avm-category-page__wallpaper-overlay {
   position: absolute;
