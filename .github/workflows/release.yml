@@ -59,22 +59,23 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          # Créer le dossier libs
-          New-Item -ItemType Directory -Force -Path "apps\desktop\src-tauri\libs"
+          # Installation de Scoop (gestionnaire de paquets Windows)
+          Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+          Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
           
-          # Utiliser une URL stable pour libmpv-2.dll (build shinchiro récent)
-          $url = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20241103/libmpv-2.dll.zip"
+          # Ajout du bucket 'extras' et installation de mpv
+          scoop bucket add extras
+          scoop install mpv
           
-          Write-Host "Téléchargement de libmpv depuis : $url"
-          Invoke-WebRequest -Uri $url -OutFile "libmpv.zip" -UseBasicParsing
+          # Copie de libmpv-2.dll depuis l'installation Scoop vers le dossier libs du projet
+          $mpvPath = (scoop which mpv) | Split-Path
+          Copy-Item "$mpvPath\libmpv-2.dll" -Destination "apps/desktop/src-tauri/libs/"
           
-          # Extraire et copier
-          Expand-Archive -Path "libmpv.zip" -DestinationPath "temp_lib" -Force
-          Copy-Item "temp_lib\libmpv-2.dll" -Destination "apps\desktop\src-tauri\libs\" -Force
-          
-          # Nettoyage
-          Remove-Item "libmpv.zip", "temp_lib" -Recurse -Force
-          
+          # Vérification que le fichier est bien présent
+          if (!(Test-Path "apps/desktop/src-tauri/libs/libmpv-2.dll")) {
+            Write-Error "Échec de la copie de libmpv-2.dll"
+            exit 1
+          }
           Write-Host "libmpv-2.dll installé avec succès dans libs/"
 
       - name: Install app dependencies and build it
