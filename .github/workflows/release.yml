@@ -55,7 +55,7 @@ jobs:
         run: |
           brew install mpv
 
-      - name: Install dependencies (Windows)
+            - name: Install dependencies (Windows)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
@@ -66,11 +66,20 @@ jobs:
           Write-Host "Recherche de la dernière release de shinchiro/mpv-winbuild-cmake..."
           $release = Invoke-RestMethod -Uri "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest"
           
-          # 3. Identification de l'asset libmpv-dev (x86_64)
-          $asset = $release.assets | Where-Object { $_.name -like "*libmpv-dev-x86_64*.7z" } | Select-Object -First 1
+          Write-Host "Dernière release trouvée : $($release.tag_name)"
+          
+          # Affichage des assets disponibles pour débogage
+          Write-Host "Assets disponibles dans cette release :"
+          $release.assets | ForEach-Object { Write-Host "  - $($_.name)" }
+
+          # 3. Identification de l'asset (essai multiple de motifs)
+          # On cherche d'abord libmpv-dev, puis mpv-dev, en s'assurant que c'est pour x86_64
+          $asset = $release.assets | Where-Object { 
+            $_.name -like "*libmpv-dev*x86_64*.7z" -or $_.name -like "*mpv-dev*x86_64*.7z" 
+          } | Select-Object -First 1
 
           if (-not $asset) {
-            Write-Error "Aucun asset libmpv-dev-x86_64 trouvé dans la dernière release."
+            Write-Error "Aucun asset compatible (libmpv-dev ou mpv-dev pour x86_64) trouvé dans la dernière release."
             exit 1
           }
 
@@ -87,15 +96,21 @@ jobs:
           Write-Host "Extraction de l'archive..."
           7z x $zipFile -o$extractPath -y | Out-Null
 
-          # 6. Copie du DLL
+          # 6. Copie du DLL (on cherche libmpv-2.dll ou mpv-2.dll selon le cas)
           $dllSource = Get-ChildItem -Path $extractPath -Recurse -Filter "libmpv-2.dll" | Select-Object -First 1
           
+          # Fallback : si libmpv-2.dll n'est pas trouvé, chercher mpv-2.dll (certains builds le nomment ainsi)
+          if (-not $dllSource) {
+             $dllSource = Get-ChildItem -Path $extractPath -Recurse -Filter "mpv-2.dll" | Select-Object -First 1
+          }
+
           if ($dllSource) {
             Copy-Item $dllSource.FullName -Destination "apps/desktop/src-tauri/libs/libmpv-2.dll" -Force
-            Write-Host "Succès : libmpv-2.dll copié dans libs/"
+            Write-Host "Succès : $($dllSource.Name) copié dans libs/libmpv-2.dll"
             Get-Item "apps/desktop/src-tauri/libs/libmpv-2.dll"
           } else {
-            Write-Error "Échec : Fichier libmpv-2.dll introuvable dans l'archive extraite."
+            Write-Error "Échec : Aucun fichier DLL (libmpv-2.dll ou mpv-2.dll) trouvé dans l'archive extraite."
+            Get-ChildItem -Path $extractPath -Recurse | Select-Object FullName
             exit 1
           }
 
