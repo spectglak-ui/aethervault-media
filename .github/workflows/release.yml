@@ -32,7 +32,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22' # Mise à jour vers Node 22
+          node-version: '22'
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v3
@@ -55,14 +55,14 @@ jobs:
         run: |
           brew install mpv
 
-            - name: Install dependencies (Windows)
+      - name: Install dependencies (Windows)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
           # 1. Création du dossier libs
           New-Item -ItemType Directory -Force -Path "apps/desktop/src-tauri/libs" | Out-Null
 
-          # 2. Récupération de la dernière release via l'API GitHub (plus robuste qu'une URL en dur)
+          # 2. Récupération de la dernière release via l'API GitHub
           Write-Host "Recherche de la dernière release de shinchiro/mpv-winbuild-cmake..."
           $release = Invoke-RestMethod -Uri "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest"
           
@@ -83,7 +83,7 @@ jobs:
           # 4. Téléchargement
           Invoke-WebRequest -Uri $url -OutFile $zipFile -UseBasicParsing
 
-          # 5. Extraction (7z est disponible par défaut sur les runners Windows)
+          # 5. Extraction
           Write-Host "Extraction de l'archive..."
           7z x $zipFile -o$extractPath -y | Out-Null
 
@@ -110,13 +110,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Désactivez la signature si vous n'avez pas configuré les clés, sinon le build échouera
-          # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "AetherVault Media ${{ github.ref_name }}"
           releaseBody: "Nouvelle version multiplateforme incluant les correctifs critiques v0.5.7."
-          releaseDraft: ${{ matrix.is-primary }} # Seul Linux crée le brouillon
+          releaseDraft: ${{ matrix.is-primary }}
           prerelease: false
           args: ${{ matrix.args }}
