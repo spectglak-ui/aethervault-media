@@ -290,7 +290,7 @@ export function TitleDetailPage() {
           <div
             style={{
               position: "absolute",
-              top: "50%",
+              top: "26%",
               left: "50%",
               minWidth: "100%",
               minHeight: "100%",
