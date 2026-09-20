@@ -51,6 +51,8 @@ pub struct NewImageFileData<'a> {
     pub taken_at: Option<&'a str>,
     pub camera_model: Option<&'a str>,
     pub thumbnail: Option<&'a [u8]>,
+    pub perceptual_hash: Option<&'a str>,
+    pub file_hash: Option<&'a str>,
 }
 
 const FILE_COLUMNS: &str = "id, private_library_id, folder_id, path, file_name, size_bytes, \
@@ -224,8 +226,8 @@ pub fn upsert_file(
                 "UPDATE private_image_files
                  SET size_bytes = ?1, modified_at = ?2, width = ?3, height = ?4,
                      taken_at = ?5, camera_model = ?6, thumbnail_blob = ?7,
-                     is_available = 1, updated_at = ?8
-                 WHERE id = ?9",
+                     perceptual_hash = ?8, file_hash = ?9, is_available = 1, updated_at = ?10
+                 WHERE id = ?11",
                 rusqlite::params![
                     data.size_bytes,
                     data.modified_at,
@@ -234,6 +236,8 @@ pub fn upsert_file(
                     data.taken_at,
                     data.camera_model,
                     data.thumbnail,
+                    data.perceptual_hash,
+                    data.file_hash,
                     now,
                     id
                 ],
@@ -245,8 +249,8 @@ pub fn upsert_file(
                 "INSERT INTO private_image_files
                     (private_library_id, folder_id, path, file_name, size_bytes, modified_at,
                      width, height, taken_at, camera_model, thumbnail_blob, is_available,
-                     discovered_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12, ?12)",
+                     discovered_at, updated_at, perceptual_hash, file_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12, ?12, ?13, ?14)",
                 rusqlite::params![
                     private_library_id,
                     folder_id,
@@ -259,7 +263,9 @@ pub fn upsert_file(
                     data.taken_at,
                     data.camera_model,
                     data.thumbnail,
-                    now
+                    now,
+                    data.perceptual_hash,
+                    data.file_hash
                 ],
             )?;
             Ok(true)

@@ -18,7 +18,9 @@
     "react-dom": "^18",
     "react-router-dom": "^6.23.0",
     "lucide-react": "^0.400.0",
-    "framer-motion": "^11.0.0"
+    "framer-motion": "^11.0.0",
+    "react-window": "^1.8.10",
+    "date-fns": "^3.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

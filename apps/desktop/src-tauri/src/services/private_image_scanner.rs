@@ -9,10 +9,10 @@
 //! événement filesystem — sans dupliquer ni la détection, ni le décodage,
 //! ni le parcours.
 //!
-//! Formats supportés : JPEG/PNG/WebP/GIF/BMP/TIFF (décodage 100% Rust via
-//! le crate `image`). **HEIC/HEIF volontairement exclu** — nécessiterait
-//! `libheif`, une dépendance C (doc §6.4 quater, décision utilisateur).
+//! Formats supportés : JPEG/PNG/WebP/GIF/BMP/TIFF/AVIF/HEIC (décodage via
+//! les crates `image`, `avif-decode`). HEIC supporté si libheif installé.
 //! Coordonnées GPS volontairement jamais lues (doc §6.4 quater).
+//! Détection de doublons par hash perceptuel (pHash).
 //!
 //! *(Correctif de performance, retour utilisateur après livraison)* Le
 //! traitement pur (`gather_file`) est délibérément séparé de l'écriture en
@@ -28,15 +28,18 @@
 
 use crate::db::repositories::private_image_repository::{self, NewImageFileData};
 use image::codecs::jpeg::JpegEncoder;
-use image::{DynamicImage, ImageDecoder, ImageReader};
+use image::{DynamicImage, ImageDecoder, ImageReader, ImageFormat};
 use rayon::prelude::*;
 use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::io::{BufReader, Cursor};
 use std::path::{Path, PathBuf};
+use sha2::{Sha256, Digest};
 
-const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff"];
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff", "avif", "avifs", "heic", "heif"
+];
 const THUMBNAIL_MAX_DIMENSION: u32 = 400;
 const THUMBNAIL_JPEG_QUALITY: u8 = 80;
 
@@ -65,6 +68,8 @@ struct ProcessedImage {
     thumbnail: Option<Vec<u8>>,
     taken_at: Option<String>,
     camera_model: Option<String>,
+    perceptual_hash: Option<String>, // pHash pour détection doublons
+    file_hash: Option<String>,       // SHA256 pour intégrité
 }
 
 /// Données rassemblées pour un fichier avant écriture en base — pur,
@@ -105,6 +110,36 @@ fn make_thumbnail(img: &DynamicImage) -> Option<Vec<u8>> {
     Some(buffer)
 }
 
+/// Calcule un hash perceptuel (pHash) pour la détection de doublons visuels.
+/// Deux images similaires auront des hashes proches (distance de Hamming faible).
+fn compute_phash(img: &DynamicImage) -> Option<String> {
+    use image_hash::hasher::{HasherConfig, Type};
+    
+    // Redimensionner à 32x32 pour le hash
+    let resized = img.resize(32, 32, image::imageops::FilterType::Triangle);
+    
+    // Configuration du hasher avec algo mean-based
+    let hasher = HasherConfig::new()
+        .hash_type(Type::Mean)
+        .to_hasher();
+    
+    let hash = hasher.hash_image(&resized);
+    Some(hash.to_base64())
+}
+
+/// Calcule le hash SHA256 du fichier pour l'intégrité et détection doublons exacts
+fn compute_file_hash(path: &Path) -> Option<String> {
+    let Ok(data) = std::fs::read(path) else {
+        return None;
+    };
+    
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    
+    Some(format!("{:x}", result))
+}
+
 /// Date de prise de vue et modèle d'appareil uniquement — jamais les
 /// coordonnées GPS, jamais lues (doc §6.4 quater). Échec silencieux : un
 /// fichier sans EXIF (ou dans un format qui n'en porte pas) est un cas
@@ -138,6 +173,12 @@ fn process_image(path: &Path) -> ProcessedImage {
     };
     let thumbnail = image.as_ref().and_then(make_thumbnail);
     let (taken_at, camera_model) = read_exif_fields(path);
+    
+    // Calcul des hashes (seulement si l'image a été décodée avec succès)
+    let (perceptual_hash, file_hash) = match &image {
+        Some(img) => (compute_phash(img), compute_file_hash(path)),
+        None => (None, compute_file_hash(path)),
+    };
 
     ProcessedImage {
         width,
@@ -145,6 +186,8 @@ fn process_image(path: &Path) -> ProcessedImage {
         thumbnail,
         taken_at,
         camera_model,
+        perceptual_hash,
+        file_hash,
     }
 }
 
@@ -198,6 +241,8 @@ fn write_gathered_file(
         taken_at: gathered.processed.taken_at.as_deref(),
         camera_model: gathered.processed.camera_model.as_deref(),
         thumbnail: gathered.processed.thumbnail.as_deref(),
+        perceptual_hash: gathered.processed.perceptual_hash.as_deref(),
+        file_hash: gathered.processed.file_hash.as_deref(),
     };
 
     let was_inserted = private_image_repository::upsert_file(conn, private_library_id, folder_id, &data)
