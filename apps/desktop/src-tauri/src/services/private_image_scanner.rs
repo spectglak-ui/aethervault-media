@@ -113,7 +113,7 @@ fn make_thumbnail(img: &DynamicImage) -> Option<Vec<u8>> {
 /// Calcule un hash perceptuel (pHash) pour la détection de doublons visuels.
 /// Deux images similaires auront des hashes proches (distance de Hamming faible).
 fn compute_phash(img: &DynamicImage) -> Option<String> {
-    use image_hash::hasher::{HasherConfig, Type};
+    use img_hash::hasher::{HasherConfig, Type};
     
     // Redimensionner à 32x32 pour le hash
     let resized = img.resize(32, 32, image::imageops::FilterType::Triangle);
