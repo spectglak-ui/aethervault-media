@@ -111,20 +111,13 @@ fn make_thumbnail(img: &DynamicImage) -> Option<Vec<u8>> {
 }
 
 /// Calcule un hash perceptuel (pHash) pour la détection de doublons visuels.
-/// Deux images similaires auront des hashes proches (distance de Hamming faible).
-fn compute_phash(img: &DynamicImage) -> Option<String> {
-    use img_hash::hasher::{HasherConfig, Type};
-    
-    // Redimensionner à 32x32 pour le hash
-    let resized = img.resize(32, 32, image::imageops::FilterType::Triangle);
-    
-    // Configuration du hasher avec algo mean-based
-    let hasher = HasherConfig::new()
-        .hash_type(Type::Mean)
-        .to_hasher();
-    
-    let hash = hasher.hash_image(&resized);
-    Some(hash.to_base64())
+/// Note: Désactivé temporairement en raison d'un conflit de versions entre 
+/// les crates 'image' (v0.25) et 'img_hash' (v0.23).
+fn compute_phash(_img: &DynamicImage) -> Option<String> {
+    // Retourne None pour l'instant. Le hash SHA256 (fichier exact) fonctionne déjà.
+    // Pour réactiver le pHash, il faudra attendre une mise à jour de img_hash
+    // ou implémenter l'algorithme manuellement.
+    None
 }
 
 /// Calcule le hash SHA256 du fichier pour l'intégrité et détection doublons exacts
