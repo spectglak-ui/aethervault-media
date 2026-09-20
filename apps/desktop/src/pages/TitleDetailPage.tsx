@@ -283,7 +283,7 @@ export function TitleDetailPage() {
       {trailerActive && trailerKey ? (
         <div
           ref={wallpaperRef}
-          className="avm-title-page__wallpaper"
+          className="avm-title-page__wallpaper avm-title-page__wallpaper--video"
           aria-hidden="true"
           style={{ overflow: "hidden" }}
         >
@@ -292,13 +292,15 @@ export function TitleDetailPage() {
               position: "absolute",
               top: "50%",
               left: "50%",
-              width: trailerRect ? `${trailerRect.w}px` : "100%",
-              height: trailerRect ? `${trailerRect.h}px` : "100%",
-              transform: "translate(-50%, -50%)",
+              minWidth: "100%",
+              minHeight: "100%",
+              width: "auto",
+              height: "auto",
+              transform: "translate(-50%, -50%) scale(1.15)",
               pointerEvents: "none",
             }}
           >
-            <div ref={trailerHostRef} style={{ width: "100%", height: "100%" }} />
+            <div ref={trailerHostRef} style={{ width: "100vw", height: "56.25vw", maxHeight: "177.78vh", maxWidth: "320vh" }} />
           </div>
           <div className="avm-title-page__wallpaper-overlay" />
         </div>
