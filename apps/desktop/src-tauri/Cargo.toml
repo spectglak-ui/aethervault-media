@@ -40,7 +40,7 @@ base64 = "0.22"
 rayon = "1"
 igd = "0.12"
 sha2 = "0.10"
-image-hash = "5.0" # Détection doublons par hash perceptuel
+image-hash = "3.2" # Détection doublons par hash perceptuel (crate renommée: img_hash)
 ffmpeg-sidecar = "1.0" # Support vidéo pour thumbnails
 avif-decode = "1.0" # Support format AVIF
 # Note: HEIC support via image crate features
