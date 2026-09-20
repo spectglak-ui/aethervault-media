@@ -1,123 +1,90 @@
-name: 'Publish Release'
+name: Release
 
 on:
   push:
     tags:
-      - 'v*'
-  workflow_dispatch:
+      - "v*"
 
 jobs:
-  publish-tauri:
-    permissions:
-      contents: write
+  build:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: 'ubuntu-22.04'
-            args: '--target x86_64-unknown-linux-gnu'
-            is-primary: true
-          - platform: 'macos-latest'
-            args: '--target x86_64-apple-darwin'
-            is-primary: false
-          - platform: 'windows-latest'
-            args: ''
-            is-primary: false
-
+          - platform: windows-latest
+            args: ""
+          - platform: ubuntu-22.04
+            args: ""
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
     runs-on: ${{ matrix.platform }}
-    
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true   # télécharge libmpv-2.dll (123 Mo) stockée en Git LFS
+
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: 20
 
+      # ⚠️ PAS de clé "version" ici : la version de pnpm vient du champ
+      # "packageManager" du package.json racine (pnpm@9.0.0).
       - name: Setup pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 9
+        uses: pnpm/action-setup@v4
 
-      - name: Install Rust
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - name: Install dependencies (Ubuntu)
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Dépendances système Linux
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libmpv-dev libmpv1
+          sudo apt-get install -y build-essential file curl wget libxdo-dev libssl-dev libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
-      - name: Install dependencies (macOS)
-        if: matrix.platform == 'macos-latest'
-        run: |
-          brew install mpv
-
-      - name: Install dependencies (Windows)
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: |
-          # 1. Création du dossier libs
-          New-Item -ItemType Directory -Force -Path "apps/desktop/src-tauri/libs" | Out-Null
-
-          # 2. Récupération de la dernière release via l'API GitHub
-          Write-Host "Recherche de la dernière release de shinchiro/mpv-winbuild-cmake..."
-          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest"
-          
-          # 3. Identification de l'asset (libmpv-dev ou mpv-dev)
-          $asset = $release.assets | Where-Object { $_.name -like "*libmpv-dev*x86_64*.7z" -or $_.name -like "*mpv-dev*x86_64*.7z" } | Select-Object -First 1
-
-          if (-not $asset) {
-            Write-Host "Assets disponibles :"
-            $release.assets | ForEach-Object { Write-Host " - $($_.name)" }
-            Write-Error "Aucun asset libmpv-dev-x86_64 trouvé dans la dernière release."
-            exit 1
-          }
-
-          $url = $asset.browser_download_url
-          $zipFile = "libmpv-dev.7z"
-          $extractPath = "libmpv_extracted"
-
-          Write-Host "Téléchargement depuis : $url"
-          
-          # 4. Téléchargement
-          Invoke-WebRequest -Uri $url -OutFile $zipFile -UseBasicParsing
-
-          # 5. Extraction
-          Write-Host "Extraction de l'archive..."
-          7z x $zipFile -o$extractPath -y | Out-Null
-
-          # 6. Copie du DLL (cherche libmpv-2.dll ou mpv-2.dll)
-          $dllSource = Get-ChildItem -Path $extractPath -Recurse -Filter "libmpv-2.dll" | Select-Object -First 1
-          if (-not $dllSource) {
-             $dllSource = Get-ChildItem -Path $extractPath -Recurse -Filter "mpv-2.dll" | Select-Object -First 1
-          }
-          
-          if ($dllSource) {
-            Copy-Item $dllSource.FullName -Destination "apps/desktop/src-tauri/libs/libmpv-2.dll" -Force
-            Write-Host "Succès : $($dllSource.Name) copié dans libs/"
-          } else {
-            Write-Error "Échec : Fichier DLL introuvable dans l'archive extraite."
-            exit 1
-          }
-
-          # 7. Nettoyage
-          Remove-Item $zipFile -Force
-          Remove-Item $extractPath -Recurse -Force
-
-      - name: Install app dependencies and build it
+      - name: Dépendances frontend
         run: pnpm install --frozen-lockfile
 
-      - name: Build Tauri App
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build + bundle Tauri
+        run: pnpm --filter @aethervault/desktop exec tauri build ${{ matrix.args }}
+
+      - name: Collecte des artefacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          find apps/desktop/src-tauri/target -path "*release/bundle*" \( -name "*.exe" -o -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) -exec cp {} dist/ \;
+          ls -la dist
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "AetherVault Media ${{ github.ref_name }}"
-          releaseBody: "Nouvelle version multiplateforme incluant les correctifs critiques v0.5.7."
-          releaseDraft: ${{ matrix.is-primary }}
-          prerelease: false
-          args: ${{ matrix.args }}
+          name: installers-${{ matrix.platform }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Télécharge les artefacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Crée la release GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          prerelease: true
+          generate_release_notes: true
