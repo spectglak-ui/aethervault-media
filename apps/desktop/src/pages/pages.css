@@ -810,6 +810,21 @@
   display: flex;
   gap: 0.35rem;
 }
+.avm-title-page__wallpaper--video {
+  overflow: hidden !important;
+}
+
+.avm-title-page__wallpaper--video iframe {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(1.15);
+  min-width: 100%;
+  min-height: 100%;
+  width: auto;
+  height: auto;
+  pointer-events: none;
+}
 
 .avm-title-page > *:not(.avm-title-page__wallpaper):not(.avm-title-page__wallpaper-actions) {
   position: relative;

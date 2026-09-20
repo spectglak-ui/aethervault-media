@@ -32,17 +32,17 @@ const RECOVERY_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 /// `$argon2id$v=19$m=19456,t=2,p=1$...`). Les paramètres par défaut
 /// d'Argon2 (19 MiB mémoire, 2 itérations, 1 thread) sont suffisants
 /// pour un fichier local non chiffré.
-///
+/// 
 /// Politique de mot de passe (Fix P1 - Sécurité) :
 /// - Minimum 8 caractères
 /// - Au moins une majuscule
-/// - Au moins une minuscule
+/// - Au moins une minuscule  
 /// - Au moins un chiffre
 /// - Au moins un caractère spécial
 pub fn hash_password(password: &str) -> Result<String, String> {
-	// Validation de la politique de mot de passe
+    // Validation de la politique de mot de passe
     validate_password_policy(password)?;
-
+    
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
     let hash = argon2

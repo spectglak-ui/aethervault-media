@@ -4,7 +4,7 @@
 
 **AetherVault Media** est un centre multimédia personnel, **local-first**, entièrement installé sur votre appareil. Gérez votre bibliothèque de films, séries, anime et galeries privées — sans serveur, sans compte en ligne, hors-ligne par défaut.
 
-**État actuel** : **0.4.0 Alpha** — Lecteur vidéo OpenGL intégré, coffre privé chiffré AES-256-GCM, partage sécurisé par code, galeries d'images chiffrées, scan parallélisé, installateur Windows NSIS complet, profils multi-utilisateurs.
+**État actuel** : **0.5.7** — Correctifs critiques (gestion erreurs Cobalt, détection suppressions fichiers, sécurité partage), cleanup automatique temporaire, buffer audio configurable, installateurs multiplateformes (Windows NSIS, macOS DMG, Linux AppImage/DEB).
 
 ---
 
@@ -109,28 +109,53 @@ pnpm dev
 
 L'application se lance en mode debug avec hot-reload Vite. Les modifications au frontend se reflètent instantanément.
 
-### Mode production — Installateur NSIS
+### Mode production — Installateurs multiplateformes
 
-**Générer l'installateur** :
+**Générer les installateurs** :
 ```bash
-# Assurez-vous que libmpv-2.dll est dans apps/desktop/src-tauri/libs/
+# Assurez-vous que libmpv-2.dll est dans apps/desktop/src-tauri/libs/ (Windows)
+# Pour macOS: libmpv.dylib dans libs/
+# Pour Linux: libmpv.so dans libs/
 pnpm build
 ```
 
-Cela produit :
+Cela produit selon la plateforme :
 ```
-apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault\ Media_0.4.0-alpha_x64-setup.exe
+# Windows
+apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.5.7_x64-setup.exe
+
+# macOS
+apps/desktop/src-tauri/target/release/bundle/dmg/AetherVault Media_0.5.7_x64.dmg
+
+# Linux (Debian/Ubuntu)
+apps/desktop/src-tauri/target/release/bundle/deb/aethervault-media_0.5.7_amd64.deb
+
+# Linux (AppImage)
+apps/desktop/src-tauri/target/release/bundle/appimage/AetherVault Media_0.5.7_amd64.AppImage
 ```
 
-**Caractéristiques de l'installateur (Étape 8)** :
+**Caractéristiques par plateforme** :
+
+**Windows (NSIS)** :
 - ✅ Interface de sélection de langue (FR/EN)
 - ✅ Installation par utilisateur (sans UAC)
 - ✅ Raccourci automatique au Menu Démarrer
 - ✅ Inscription dans « Applications installées »
 - ✅ Désinstallation complète et propre
-- ⚠️ Signature de code non incluse (avertissement SmartScreen possible au premier lancement)
+- ⚠️ Signature de code non incluse (avertissement SmartScreen possible)
 
-**Données utilisateur** : Les données sont stockées dans `%APPDATA%` et ne sont jamais modifiées par l'installation ou la désinstallation.
+**macOS (DMG)** :
+- ✅ Drag & drop vers /Applications
+- ✅ Intégration Dock
+- ⚠️ Signature de code requise pour Gatekeeper (à configurer)
+
+**Linux (DEB/AppImage)** :
+- ✅ Installation via `dpkg -i` (DEB)
+- ✅ Exécution directe (AppImage)
+- ✅ Intégration menu applications (DEB)
+- ✅ Désinstallation propre (DEB)
+
+**Données utilisateur** : Les données sont stockées dans `%APPDATA%` (Windows), `~/Library/Application Support/` (macOS), ou `~/.config/` (Linux) et ne sont jamais modifiées par l'installation ou la désinstallation.
 
 ---
 
@@ -156,7 +181,7 @@ apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault\ Media_0.4.0-alpha
 aethervault-media/
 ├── apps/
 │   └── desktop/
-│       ├── src-tauri/          # Rust (Tauri) 0.4.0-alpha
+│       ├── src-tauri/          # Rust (Tauri) 0.5.7
 │       │   ├── src/
 │       │   │   ├── commands/       # Handlers IPC (scan, playback, vault)
 │       │   │   ├── services/       # Métier (lecteur, scanner, chiffrement)
@@ -164,8 +189,8 @@ aethervault-media/
 │       │   │   └── security/       # Chiffrement AES-256-GCM
 │       │   ├── Cargo.toml
 │       │   └── libs/
-│       │       └── libmpv-2.dll    # À copier avant build
-│       ├── src/                # React + TypeScript 0.4.0-alpha
+│       │       └── libmpv-2.dll    # À copier avant build (Windows)
+│       ├── src/                # React + TypeScript 0.5.7
 │       │   ├── pages/
 │       │   ├── components/
 │       │   ├── hooks/
@@ -182,7 +207,7 @@ aethervault-media/
 └── pnpm-workspace.yaml
 ```
 
-### Dépendances principales (Rust 0.4.0-alpha)
+### Dépendances principales (Rust 0.5.7)
 
 | Domaine | Crates | Notes |
 |---------|--------|-------|
@@ -269,7 +294,7 @@ Pour les questions, bugs ou suggestions d'amélioration, ouvrez les issues sur G
 
 ---
 
-**Dernière mise à jour** : 3 septembre 2026  
-**Version** : 0.4.0-alpha (Rust/Tauri) + 0.4.0-alpha (TypeScript)  
+**Dernière mise à jour** : 18 septembre 2026  
+**Version** : 0.5.7 (Rust/Tauri) + 0.5.7 (TypeScript)  
 **Composition** : Rust 51.9% — TypeScript 43.1% — CSS 5%  
 **Mainteneur** : [@spectglak-ui](https://github.com/spectglak-ui)

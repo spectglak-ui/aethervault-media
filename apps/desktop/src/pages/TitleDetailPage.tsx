@@ -58,7 +58,6 @@ export function TitleDetailPage() {
   const [trailerKeys, setTrailerKeys] = useState<string[]>([]);
   const [trailerKeyIndex, setTrailerKeyIndex] = useState(0);
   const trailerKey = trailerKeys[trailerKeyIndex] ?? null;
-  
   // 0.6.0 : déclaration AVANT trailerActive (sinon ReferenceError TDZ).
   const [trailerMode, setTrailerMode] = useState<"backdrop" | "trailer">(() => {
     try {
@@ -67,7 +66,6 @@ export function TitleDetailPage() {
       return "backdrop";
     }
   });
-  
   // Le fond bande-annonce est DÉSACTIVÉ pendant toute lecture ; la
   // préférence utilisateur (localStorage) revient après la lecture.
   const trailerActive = trailerMode === "trailer" && !currentMedia;
@@ -236,7 +234,6 @@ export function TitleDetailPage() {
       console.warn("[title] changement de fond impossible :", err);
     }
   };
-  
   const handleResetWallpaper = async () => {
     try {
       await titleApi.setBanner(title.id, null);
@@ -293,7 +290,7 @@ export function TitleDetailPage() {
           <div
             style={{
               position: "absolute",
-              top: "26%",
+              top: "50%",
               left: "50%",
               minWidth: "100%",
               minHeight: "100%",
@@ -303,18 +300,7 @@ export function TitleDetailPage() {
               pointerEvents: "none",
             }}
           >
-            {/* CORRECTION ICI : Style propre et fermeture correcte du tag */}
-            <div
-  ref={trailerHostRef}
-  style={{
-    position: "absolute",
-    top: 0,
-    left: 0,
-    width: "100%",
-    height: "100%",
-    overflow: "hidden",
-  }}
-/>
+            <div ref={trailerHostRef} style={{ width: "100vw", height: "56.25vw", maxHeight: "177.78vh", maxWidth: "320vh" }} />
           </div>
           <div className="avm-title-page__wallpaper-overlay" />
         </div>
@@ -326,7 +312,6 @@ export function TitleDetailPage() {
           </div>
         )
       )}
-      
       <div className="avm-title-page__wallpaper-actions">
         <IconButton label="Ajouter à une collection" onClick={() => void openCollectionsMenu()}>
           <ListPlus size={16} />
@@ -334,13 +319,14 @@ export function TitleDetailPage() {
         <IconButton label="Changer le fond de page" onClick={() => void handlePickWallpaper()}>
           <ImageUp size={16} />
         </IconButton>
-        <IconButton
-          label="Réinitialiser le fond automatique"
-          onClick={() => void handleResetWallpaper()}
-        >
-          <RotateCcw size={16} />
-        </IconButton>
-        
+        {title.banner_is_custom && (
+          <IconButton
+            label="Réinitialiser le fond automatique"
+            onClick={() => void handleResetWallpaper()}
+          >
+            <RotateCcw size={16} />
+          </IconButton>
+        )}
         {trailerKey && (
           <IconButton
             label={
@@ -368,7 +354,6 @@ export function TitleDetailPage() {
           </IconButton>
         )}
       </div>
-
       <div className="avm-title-page__header">
         <div className="avm-title-page__poster">
           <PersonalizableImage
@@ -447,7 +432,6 @@ export function TitleDetailPage() {
           )}
         </div>
       </div>
-
       {title.technical &&
         (title.technical.resolutions.length > 0 ||
           title.technical.codecs.length > 0 ||
@@ -507,7 +491,6 @@ export function TitleDetailPage() {
             </div>
           </div>
         )}
-
       {title.kind === "series" && (
         <section className="avm-title-page__seasons">
           <h2>Saisons</h2>
@@ -532,9 +515,8 @@ export function TitleDetailPage() {
           )}
         </section>
       )}
-
       {/* 0.6.0 : rangées Distribution + Du même genre (zone basse). */}
-      <CastRow titleId={title.id} />
+            <CastRow titleId={title.id} />
       <GenreRow titleId={title.id} categoryKey={key ?? ""} />
     </div>
   );
