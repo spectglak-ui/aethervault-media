@@ -122,12 +122,26 @@ pub fn distinct_episode_ids(conn: &Connection, library_id: i64) -> rusqlite::Res
     rows.collect()
 }
 
+/// CORRECTIF (lecture automatique — mauvais épisode) : l'ancien tri SQL
+/// `ORDER BY file_name COLLATE NOCASE` est lexicographique pur, pas
+/// numérique. Or l'ordre renvoyé ici pilote directement l'attribution du
+/// numéro d'épisode de repli quand aucun motif `SxxEyy` n'est reconnu
+/// dans le nom de fichier (voir `services::metadata::mod::match_library`,
+/// `next_episode_number`, qui incrémente au fil du parcours de cette
+/// liste). Pour une saison de 10+ épisodes nommés sans balise `SxxEyy`
+/// (ex. anime en numérotation absolue "Show - 2.mkv" … "Show - 10.mkv"),
+/// le tri lexicographique classe "Show - 10.mkv" AVANT "Show - 2.mkv" —
+/// l'épisode 10 recevait alors le numéro 2, et vice-versa, corrompant
+/// durablement l'ordre stocké en base (donc "Épisode suivant" ensuite).
+/// On trie désormais en Rust avec `natural_cmp` (tri "naturel", qui
+/// compare les suites de chiffres numériquement). N'affecte QUE cette
+/// fonction — `list_by_library` et les autres tris de ce fichier restent
+/// inchangés (portée volontairement minimale du correctif).
 pub fn list_unmatched(conn: &Connection, library_id: i64) -> rusqlite::Result<Vec<MediaFileRecord>> {
     let mut stmt = conn.prepare(
         "SELECT id, library_id, folder_id, path, file_name, size_bytes, modified_at, is_available, discovered_at, title_id, episode_id
          FROM media_files
-         WHERE library_id = ?1 AND title_id IS NULL AND episode_id IS NULL
-         ORDER BY file_name COLLATE NOCASE",
+         WHERE library_id = ?1 AND title_id IS NULL AND episode_id IS NULL",
     )?;
 
     let rows = stmt.query_map(rusqlite::params![library_id], |row| {
@@ -146,7 +160,103 @@ pub fn list_unmatched(conn: &Connection, library_id: i64) -> rusqlite::Result<Ve
         })
     })?;
 
-    rows.collect()
+    let mut records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    records.sort_by(|a, b| natural_cmp(&a.file_name, &b.file_name));
+    Ok(records)
+}
+
+/// Tri "naturel" (numérique) de deux chaînes : les suites de chiffres
+/// sont comparées comme des nombres plutôt que caractère par caractère,
+/// pour que "2" précède "10". Insensible à la casse sur le reste. Voir
+/// `list_unmatched` pour le contexte du correctif.
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut ai = a.chars().peekable();
+    let mut bi = b.chars().peekable();
+    loop {
+        let (ac, bc) = match (ai.peek(), bi.peek()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(&ac), Some(&bc)) => (ac, bc),
+        };
+        if ac.is_ascii_digit() && bc.is_ascii_digit() {
+            let mut an = String::new();
+            while let Some(&c) = ai.peek() {
+                if c.is_ascii_digit() {
+                    an.push(c);
+                    ai.next();
+                } else {
+                    break;
+                }
+            }
+            let mut bn = String::new();
+            while let Some(&c) = bi.peek() {
+                if c.is_ascii_digit() {
+                    bn.push(c);
+                    bi.next();
+                } else {
+                    break;
+                }
+            }
+            let (at, bt) = (an.trim_start_matches('0'), bn.trim_start_matches('0'));
+            let cmp = if at.len() != bt.len() {
+                at.len().cmp(&bt.len())
+            } else {
+                at.cmp(bt)
+            };
+            if cmp != Ordering::Equal {
+                return cmp;
+            }
+        } else {
+            let (al, bl) = (ac.to_ascii_lowercase(), bc.to_ascii_lowercase());
+            if al != bl {
+                return al.cmp(&bl);
+            }
+            ai.next();
+            bi.next();
+        }
+    }
+}
+
+#[cfg(test)]
+mod natural_sort_tests {
+    use super::natural_cmp;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn orders_bare_episode_numbers_numerically() {
+        let mut names = vec![
+            "Show - 10.mkv".to_string(),
+            "Show - 2.mkv".to_string(),
+            "Show - 1.mkv".to_string(),
+        ];
+        names.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(names, vec!["Show - 1.mkv", "Show - 2.mkv", "Show - 10.mkv"]);
+    }
+
+    #[test]
+    fn treats_equal_numeric_value_as_equal_regardless_of_padding() {
+        assert_eq!(natural_cmp("Ep 07.mkv", "Ep 7.mkv"), Ordering::Equal);
+    }
+
+    #[test]
+    fn falls_back_to_case_insensitive_comparison_without_digits() {
+        assert_eq!(natural_cmp("Alpha.mkv", "alpha.mkv"), Ordering::Equal);
+        assert_eq!(natural_cmp("Alpha.mkv", "Beta.mkv"), Ordering::Less);
+    }
+
+    /// Reproduit le scénario du bug : une saison de 12 épisodes sans
+    /// motif `SxxEyy`, découverte par le scanner dans un ordre arbitraire
+    /// — doit retrouver l'ordre de visionnage 1..12 après tri.
+    #[test]
+    fn realistic_season_of_twelve_episodes_sorts_in_watch_order() {
+        let mut names: Vec<String> = (1..=12).map(|n| format!("Naruto - {n}.mkv")).collect();
+        names.reverse();
+        names.sort_by(|a, b| natural_cmp(a, b));
+        let expected: Vec<String> = (1..=12).map(|n| format!("Naruto - {n}.mkv")).collect();
+        assert_eq!(names, expected);
+    }
 }
 
 /// Rattache un fichier à un Titre de nature `"movie"`. Exclusif avec
@@ -172,10 +282,20 @@ pub fn link_to_episode(conn: &Connection, media_file_id: i64, episode_id: i64) -
 /// Le Média rattaché à un Titre de nature `"movie"` (relation 1-1 en
 /// pratique aujourd'hui) — utilisé par la page Titre pour retrouver le
 /// fichier à lire (doc §6.3 : "bouton Lecture").
+/// DURCISSEMENT (défensif) : `ORDER BY` explicite ajouté par précaution —
+/// en usage normal une seule ligne `media_files` référence ce `title_id`
+/// (voir `link_to_title`), donc ceci ne change rien aujourd'hui. Mais
+/// sans `ORDER BY`, SQLite ne garantit AUCUN ordre pour `LIMIT 1` : si
+/// jamais deux lignes finissaient par référencer le même Titre (ex.
+/// futur flux d'import, fichier déplacé hors du dossier surveillé sans
+/// nettoyage de l'ancienne ligne), la ligne renvoyée serait non
+/// déterministe. On préfère désormais, à égalité, le fichier disponible
+/// le plus récemment découvert.
 pub fn find_by_title(conn: &Connection, title_id: i64) -> rusqlite::Result<Option<MediaFileRecord>> {
     conn.query_row(
         "SELECT id, library_id, folder_id, path, file_name, size_bytes, modified_at, is_available, discovered_at, title_id, episode_id
-         FROM media_files WHERE title_id = ?1 LIMIT 1",
+         FROM media_files WHERE title_id = ?1
+         ORDER BY is_available DESC, id DESC LIMIT 1",
         rusqlite::params![title_id],
         |row| {
             Ok(MediaFileRecord {
@@ -198,10 +318,14 @@ pub fn find_by_title(conn: &Connection, title_id: i64) -> rusqlite::Result<Optio
 
 /// Le Média rattaché à un Épisode donné — utilisé par la page Épisode pour
 /// retrouver le fichier à lire.
+/// DURCISSEMENT (défensif) : même correctif que `find_by_title` ci-dessus
+/// — `ORDER BY` déterministe, sans changement de comportement dans le
+/// cas normal (une seule ligne par épisode).
 pub fn find_by_episode(conn: &Connection, episode_id: i64) -> rusqlite::Result<Option<MediaFileRecord>> {
     conn.query_row(
         "SELECT id, library_id, folder_id, path, file_name, size_bytes, modified_at, is_available, discovered_at, title_id, episode_id
-         FROM media_files WHERE episode_id = ?1 LIMIT 1",
+         FROM media_files WHERE episode_id = ?1
+         ORDER BY is_available DESC, id DESC LIMIT 1",
         rusqlite::params![episode_id],
         |row| {
             Ok(MediaFileRecord {
