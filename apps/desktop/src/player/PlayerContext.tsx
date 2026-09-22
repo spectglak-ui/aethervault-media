@@ -165,6 +165,25 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const shuffleRef = useRef(shuffleEnabled);
   shuffleRef.current = shuffleEnabled;
 
+  // CORRECTIF (lecture automatique — mauvais épisode/film) : la fenêtre
+  // "player" (PiP, aujourd'hui masquée côté frontend mais toujours
+  // PRÉ-CRÉÉE et active — voir commands::window::open_player_window)
+  // monte, elle aussi, un <PlayerProvider> complet et reçoit les MÊMES
+  // événements globaux ("player-state", "player-queue-changed") que la
+  // fenêtre "main", puisque `emit`/`app_handle.emit(...)` diffusent à
+  // toutes les fenêtres. Sans ce garde-fou, les DEUX fenêtres réagissent
+  // chacune de leur côté à un même événement de fin de lecture et
+  // décident, indépendamment, du média suivant (deux tirages aléatoires
+  // différents en mode Aléatoire, ou deux appels `player_load`
+  // concurrents en mode séquentiel) — c'est la cause du bug "épisode/
+  // film suivant aléatoire". Seule la fenêtre "main" reste autorisée à
+  // piloter l'avance automatique et la sauvegarde périodique de
+  // progression ; la fenêtre "player" continue de simplement refléter
+  // l'état reçu (elle garde ses boutons Suivant/Précédent manuels, qui
+  // restent des actions utilisateur ponctuelles et ne posent pas ce
+  // problème de duplication).
+  const isPipWindow = useRef(getWindowLabel() === "player").current;
+
   const currentMedia =
     queue.currentIndex !== null ? queue.items[queue.currentIndex] ?? null : null;
 
@@ -177,6 +196,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const durationRef = useRef(0);
   durationRef.current = duration;
   const endedHandledRef = useRef<number | null>(null);
+  // CORRECTIF (mineur, lié) : distingue une pause VOLONTAIRE (utilisateur)
+  // du repli heuristique de fin de lecture ci-dessous — sans cela, une
+  // pause manuelle dans la dernière seconde d'un média déclenchait un
+  // enchaînement automatique non désiré vers le média suivant.
+  const userPausedRef = useRef(false);
 
   const seekDebounceRef = useRef<number | null>(null);
   const volumeDebounceRef = useRef<number | null>(null);
@@ -197,6 +221,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const handleEnded = () => {
+    // Seule la fenêtre "main" décide de l'avance automatique — voir le
+    // commentaire sur `isPipWindow` plus haut.
+    if (isPipWindow) return;
     const media = currentMediaRef.current;
     if (!media || endedHandledRef.current === media.id) return;
     endedHandledRef.current = media.id;
@@ -280,10 +307,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       if (ended) {
         handleEnded();
       } else if (
+        !userPausedRef.current &&
         playing === false &&
         durationRef.current > 0 &&
         positionRef.current >= durationRef.current - 1
       ) {
+        // Repli : certains flux ne renvoient jamais `ended: true` — mais
+        // on ignore ce repli si la pause vient d'un clic utilisateur
+        // (voir `userPausedRef`), pour ne pas enchaîner sur le média
+        // suivant quand l'utilisateur met simplement en pause dans la
+        // dernière seconde.
         handleEnded();
       }
     });
@@ -302,6 +335,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         setDuration(0);
         setBuffered(0);
         endedHandledRef.current = null;
+        userPausedRef.current = false;
         if (media?.mode) setImmersiveOpen(true);
         if (media === null) {
           setImmersiveOpen(false);
@@ -354,6 +388,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    // Idem : évite d'écrire la progression / l'activité amis en double
+    // (une fois par fenêtre) à chaque tick de 5 s.
+    if (isPipWindow) return;
     if (!currentMedia || !isPlaying) return;
     const interval = window.setInterval(saveProgressNow, PROGRESS_SAVE_INTERVAL_MS);
     return () => window.clearInterval(interval);
@@ -420,6 +457,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       },
       togglePlay: () => {
         const next = !isPlaying;
+        userPausedRef.current = !next;
         setIsPlaying(next);
         void playerApi.setPaused(!next);
       },
