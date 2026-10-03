@@ -2,12 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import type { AppStatus, VaultStatus } from "@aethervault/shared-types";
 import { Button, IconButton, PageHeader, useTheme } from "@aethervault/ui-kit";
 import { useActiveProfile } from "../profile/ActiveProfileContext";
 import { privacyApi } from "../features/privacy/api";
 import "./pages.css";
 import { metadataApi } from "../features/settings/api";
+import { playerApi } from "../features/player/api";
+import { readPersistedTheme, writePersistedTheme } from "../theme/persistedCustomTheme";
 import { RenderQualitySection } from "./RenderQualitySection";
 
 type DiagnosticsState =
@@ -250,6 +253,62 @@ function ProfileAvatarSection() {
   );
 }
 
+/**
+ * FONCTIONNALITÉ (Accès rapide) : l'UI manquait — les commandes Rust
+ * (`get_/set_quick_access_enabled`) et le flux de connexion en un clic
+ * (`AuthGate.tsx`) existaient déjà, mais rien ne permettait de
+ * l'activer. Placée juste après la section Profil, comme demandé.
+ */
+function QuickAccessSection() {
+  const [enabled, setEnabled] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<boolean>("get_quick_access_enabled")
+      .then((value) => {
+        setEnabled(value);
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+  }, []);
+
+  const toggle = async (value: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("set_quick_access_enabled", { enabled: value });
+      setEnabled(value);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossible d'enregistrer ce réglage.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="avm-settings-section">
+      <h2>Accès rapide</h2>
+      <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={!loaded || busy}
+          onChange={(e) => void toggle(e.target.checked)}
+        />
+        Se connecter en un clic, sans mot de passe
+      </label>
+      <p className="avm-settings-muted">
+        Une fois activé, cliquer sur un profil à l'écran de connexion ouvre directement
+        la session, sans demander le mot de passe. Le Coffre privé n'est jamais concerné
+        : il continue d'exiger sa propre phrase secrète, indépendamment de ce réglage.
+      </p>
+      {error && <p className="avm-settings-error">{error}</p>}
+    </section>
+  );
+}
+
 function HomeBackdropSection() {
   const [backdrop, setBackdrop] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -325,6 +384,132 @@ function HomeBackdropSection() {
           </Button>
         )}
       </div>
+      {error && <p className="avm-settings-error">{error}</p>}
+    </section>
+  );
+}
+
+/**
+ * FONCTIONNALITÉ (fond animé) : remplace le fond image par une vidéo en
+ * boucle, appliquée globalement (voir components/AppBackdrop.tsx — déjà
+ * une couche derrière toute l'appli, pas seulement l'Accueil). Choix du
+ * fichier via le sélecteur natif (`@tauri-apps/plugin-dialog`, déjà
+ * utilisé ailleurs dans l'app pour les vidéos — voir
+ * ExperimentalPlayerPage.tsx) plutôt qu'un `<input type="file">` : une
+ * vidéo peut peser bien plus qu'une image, autant éviter de la faire
+ * transiter par l'IPC Tauri sous forme de tableau d'octets JSON.
+ *
+ * Granularité "par page" volontairement absente ici — prévue pour plus
+ * tard, une fois cette première version en place.
+ */
+function AnimatedBackdropSection() {
+  const [videoPath, setVideoPath] = useState<string | null>(null);
+  const [enabled, setEnabled] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    Promise.all([
+      invoke<string | null>("get_home_backdrop_video").catch(() => null),
+      invoke<boolean>("get_backdrop_video_enabled").catch(() => false),
+    ]).then(([path, isEnabled]) => {
+      setVideoPath(path);
+      setEnabled(isEnabled);
+      setLoaded(true);
+    });
+  }, []);
+
+  const handlePick = async () => {
+    setError(null);
+    let selected: string | null;
+    try {
+      selected = await open({
+        multiple: false,
+        filters: [{ name: "Vidéo", extensions: ["mp4", "webm"] }],
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Sélection impossible.");
+      return;
+    }
+    if (typeof selected !== "string") return; // annulé par l'utilisateur
+    setBusy(true);
+    try {
+      await invoke("set_home_backdrop_video", { sourcePath: selected });
+      const refreshed = await invoke<string | null>("get_home_backdrop_video");
+      setVideoPath(refreshed);
+      window.dispatchEvent(new Event("avm-home-backdrop-changed"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Enregistrement impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleClear = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("clear_home_backdrop_video");
+      setVideoPath(null);
+      window.dispatchEvent(new Event("avm-home-backdrop-changed"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Suppression impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleEnabled = async (value: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("set_backdrop_video_enabled", { enabled: value });
+      setEnabled(value);
+      window.dispatchEvent(new Event("avm-home-backdrop-changed"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossible d'enregistrer ce réglage.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="avm-settings-section">
+      <h2>Fond animé</h2>
+      <p className="avm-settings-muted">
+        Remplace le fond image par une vidéo en boucle, partout dans le logiciel (pas seulement
+        l'Accueil). Formats acceptés : .mp4, .webm — 300 Mo maximum.
+      </p>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        {videoPath && (
+          <video
+            src={convertFileSrc(videoPath)}
+            autoPlay
+            loop
+            muted
+            playsInline
+            style={{ width: 128, height: 72, objectFit: "cover", borderRadius: 6 }}
+          />
+        )}
+        <Button variant="secondary" onClick={() => void handlePick()} disabled={busy}>
+          Choisir une vidéo
+        </Button>
+        {videoPath && (
+          <Button variant="ghost" onClick={() => void handleClear()} disabled={busy}>
+            Retirer
+          </Button>
+        )}
+      </div>
+      <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={!loaded || busy || !videoPath}
+          onChange={(e) => void toggleEnabled(e.target.checked)}
+        />
+        Utiliser le fond animé (remplace le fond image partout, tant qu'il est activé)
+      </label>
       {error && <p className="avm-settings-error">{error}</p>}
     </section>
   );
@@ -555,6 +740,68 @@ function SystemInfoSection() {
   );
 }
 
+/**
+ * FONCTIONNALITÉ (amélioration audio) : élargissement stéréo /
+ * virtualisation casque via le filtre FFmpeg `earwax`, déjà lié par mpv
+ * — pas de dépendance supplémentaire, pas de fichier de données externe
+ * (contrairement à un vrai rendu binaural HRTF type "sofalizer", qui
+ * demanderait d'embarquer un fichier SOFA de plusieurs Mo). Réglage
+ * global, réappliqué automatiquement à chaque nouveau média (voir
+ * commands::playback::player_load côté Rust) — l'utilisateur ne
+ * l'active qu'une fois.
+ */
+function AudioSection() {
+  const [spatialization, setSpatialization] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<boolean>("get_audio_spatialization_enabled")
+      .then((value) => {
+        setSpatialization(value);
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+  }, []);
+
+  const toggle = async (value: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("set_audio_spatialization_enabled", { enabled: value });
+      setSpatialization(value);
+      // Effet immédiat si un média est déjà en cours de lecture, sans
+      // attendre le prochain chargement.
+      await playerApi.setAudioSpatialization(value).catch(() => {});
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossible d'enregistrer ce réglage.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="avm-settings-section">
+      <h2>Audio</h2>
+      <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input
+          type="checkbox"
+          checked={spatialization}
+          disabled={!loaded || busy}
+          onChange={(e) => void toggle(e.target.checked)}
+        />
+        Spatialisation audio (virtualisation casque)
+      </label>
+      <p className="avm-settings-muted">
+        Élargit le rendu stéréo pour une écoute au casque plus enveloppante.
+        S'applique à toute nouvelle lecture ; effet immédiat si un média est déjà en cours.
+      </p>
+      {error && <p className="avm-settings-error">{error}</p>}
+    </section>
+  );
+}
+
 function ExperimentalPlayerSection() {
   return (
     <section className="avm-settings-section">
@@ -683,7 +930,24 @@ function ThemeCustomizerSection() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // CORRECTIF (le thème se réinitialise au redémarrage) : `main.tsx`
+  // réapplique déjà le thème persisté avant ce montage — ici, on lit la
+  // même source pour resynchroniser l'état de CE composant (le preset
+  // sélectionné, les valeurs affichées dans l'éditeur), au lieu de
+  // toujours repartir des variables par défaut de la feuille de style.
   useEffect(() => {
+    const saved = readPersistedTheme();
+    if (saved && Object.keys(saved.vars).length > 0) {
+      // CORRECTIF : réapplique aussi les variables ici (pas seulement
+      // l'état React qui sélectionne le bouton) — filet de sécurité si
+      // jamais elles ont été écrasées entre le démarrage et l'ouverture
+      // de cette page (voir le correctif dans App.tsx pour la cause
+      // réelle : le système de thème de `ThemeProvider`).
+      applyVars(saved.vars);
+      setEdited(saved.vars);
+      setCurrentPreset(saved.preset || "default");
+      return;
+    }
     const style = getComputedStyle(document.documentElement);
     const initial: Record<string, string> = {};
     for (const key of Object.keys(THEME_PRESETS.ocean)) {
@@ -713,9 +977,11 @@ function ThemeCustomizerSection() {
         fresh[key] = style.getPropertyValue(key).trim() || "";
       }
       setEdited(fresh);
+      writePersistedTheme({ preset: name, vars: fresh });
     } else {
       applyVars(vars);
       setEdited({ ...vars });
+      writePersistedTheme({ preset: name, vars });
     }
   };
 
@@ -723,6 +989,7 @@ function ThemeCustomizerSection() {
     const next = { ...edited, [key]: value };
     setEdited(next);
     document.documentElement.style.setProperty(key, value);
+    writePersistedTheme({ preset: currentPreset, vars: next });
   };
 
   const handleExport = () => {
@@ -749,6 +1016,8 @@ function ThemeCustomizerSection() {
         const vars = JSON.parse(text) as Record<string, string>;
         applyVars(vars);
         setEdited(vars);
+        setCurrentPreset("importé");
+        writePersistedTheme({ preset: "importé", vars });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Application impossible.");
       } finally {
@@ -952,13 +1221,16 @@ export function SettingsPage() {
         description="Apparence, sécurité du coffre privé et informations système."
       />
       <ProfileAvatarSection />
+      <QuickAccessSection />
       <HomeBackdropSection />
+      <AnimatedBackdropSection />
       <ThemeCustomizerSection />
       <TypographySection />
       <SkipSettingsSection />
 	  <RenderQualitySection />
       <TmdbSection />
       <HidePrivateSection />
+      <AudioSection />
       <SecuritySection />
       <ExperimentalPlayerSection />
       <SystemInfoSection />

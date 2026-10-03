@@ -344,6 +344,32 @@ pub fn orphaned(conn: &Connection, title_ids: &[i64]) -> rusqlite::Result<Vec<i6
 /// non NULL marque le Titre comme enrichi (l'appariement local initial
 /// reste dans `metadata_source` jusqu'à ce qu'un rafraîchissement le
 /// remplace par "tmdb").
+/// FONCTIONNALITÉ (correction manuelle de correspondance TMDB) :
+/// réinitialise les associations issues d'un fournisseur en ligne avant
+/// d'en réappliquer de nouvelles (voir
+/// `services::metadata::tmdb::TmdbClient::apply_match`). Nécessaire car
+/// `attach_genre`/`attach_studio`/`attach_credit` sont de purs
+/// `INSERT OR IGNORE` : sans ce nettoyage préalable, rejouer une
+/// correspondance ajouterait les nouvelles données À CÔTÉ des
+/// anciennes (mauvaises) au lieu de les remplacer. Ne touche jamais aux
+/// dictionnaires partagés `genres`/`studios`/`people`, seulement aux
+/// tables de liaison propres à ce Titre.
+pub fn clear_provider_associations(conn: &Connection, title_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM title_genres WHERE title_id = ?1",
+        rusqlite::params![title_id],
+    )?;
+    conn.execute(
+        "DELETE FROM title_studios WHERE title_id = ?1",
+        rusqlite::params![title_id],
+    )?;
+    conn.execute(
+        "DELETE FROM title_credits WHERE title_id = ?1",
+        rusqlite::params![title_id],
+    )?;
+    Ok(())
+}
+
 pub fn set_online_ids(
     conn: &Connection,
     title_id: i64,

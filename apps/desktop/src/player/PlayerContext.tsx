@@ -76,8 +76,29 @@ const EMPTY_QUEUE: PlaybackQueueState = { items: [], currentIndex: null };
 
 export const FULLSCREEN_TARGET_ID = "avm-player-fullscreen-root";
 
+// CORRECTIF (lecture automatique — mauvais épisode, suite aux retours) :
+// `loadAndBroadcast` met à jour l'UI de façon SYNCHRONE (`emit` juste en
+// dessous) mais ne charge le fichier dans mpv qu'après un aller-retour
+// asynchrone (`getProgress`, une commande Tauri). Si cette fonction est
+// appelée une deuxième fois avant que le premier appel n'ait fini sa
+// chaîne (ex. l'utilisateur clique "Épisode suivant" ou un épisode de la
+// liste plusieurs fois de suite, un peu trop vite, en pensant que le
+// premier clic n'a pas été pris en compte), RIEN ne garantit que les deux
+// appels asynchrones à `playerApi.load(...)` arrivent à mpv dans l'ORDRE
+// de leurs appels : celui du PREMIER clic peut très bien se résoudre
+// APRÈS celui du second, et donc "gagner" et rester affiché en lecture —
+// alors que l'UI (mise à jour, elle, de façon synchrone) affiche déjà le
+// second choix. C'est exactement le symptôme rapporté : "l'écran affiche
+// l'épisode 2 mais rejoue l'épisode 1", corrigé en un ou deux essais
+// supplémentaires (l'appel le plus récent finit par gagner la course).
+// Le compteur `loadGeneration` ci-dessous annule les suites (`.then`) des
+// appels devenus obsolètes : seul le DERNIER `loadAndBroadcast` appelé a
+// le droit d'atteindre `playerApi.load()`/`seek()`.
+let loadGeneration = 0;
+
 function loadAndBroadcast(items: PlayableMedia[], index: number): void {
   const media = items[index];
+  const generation = ++loadGeneration;
   void emit("player-queue-changed", {
     items,
     currentIndex: index,
@@ -87,13 +108,16 @@ function loadAndBroadcast(items: PlayableMedia[], index: number): void {
     : playerApi.getProgress;
   getProgress(media.id)
     .then((progress) => {
+      if (generation !== loadGeneration) return; // supplanté par une sélection plus récente
       void playerApi.load(media.path).then(() => {
+        if (generation !== loadGeneration) return;
         if (progress && progress.position_seconds > MIN_RESUMABLE_SECONDS) {
           void playerApi.seek(progress.position_seconds);
         }
       });
     })
     .catch(() => {
+      if (generation !== loadGeneration) return;
       void playerApi.load(media.path);
     });
 }

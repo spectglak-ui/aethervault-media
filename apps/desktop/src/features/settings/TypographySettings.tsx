@@ -6,6 +6,10 @@ type TypographySettings = { display: string; ui: string; body: string; mono: str
 const FONT_OPTIONS = [
   "Panchang",
   "Space Grotesk",
+  // FONCTIONNALITÉ : police ajoutée à la bibliothèque (embarquée
+  // localement, voir styles/fonts.css) — géométrique/mono, plutôt
+  // pensée pour un titre ou un accent que pour du corps de texte.
+  "Major Mono Display",
   "Manrope",
   "Inter",
   "Roboto",

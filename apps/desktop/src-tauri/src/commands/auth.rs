@@ -67,6 +67,40 @@ pub fn login_profile(
     Ok(profile)
 }
 
+/// FONCTIONNALITÉ (Accès rapide) : connexion en un clic, en contournant
+/// la vérification du mot de passe. Le réglage est revérifié CÔTÉ
+/// SERVEUR (jamais fait confiance à l'UI) avant de contourner quoi que
+/// ce soit — voir `commands::settings::get_quick_access_enabled` pour
+/// où/comment ce réglage est activé. Le Coffre privé n'est jamais
+/// concerné : il exige sa propre phrase secrète (dérivation de clé
+/// AES, `security::vault`), entièrement indépendante de la connexion
+/// de profil.
+#[tauri::command]
+pub fn quick_login_profile(
+    state: tauri::State<AppState>,
+    profile_id: i64,
+) -> Result<ProfileRecord, String> {
+    let conn = state.get_conn()?;
+    let enabled = crate::db::repositories::settings_repository::get(&conn, "quick_access_enabled")
+        .map_err(|e| e.to_string())?
+        .as_deref()
+        == Some("1");
+    if !enabled {
+        return Err("Accès rapide désactivé.".to_string());
+    }
+    let profile = profile_repository::get_by_id(&conn, profile_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Profil introuvable.".to_string())?;
+
+    let mut guard = state
+        .active_profile_id
+        .lock()
+        .map_err(|_| "État du profil actif inaccessible.".to_string())?;
+    *guard = Some(profile.id);
+
+    Ok(profile)
+}
+
 #[tauri::command]
 pub fn logout_profile(state: tauri::State<AppState>) -> Result<(), String> {
     let mut guard = state

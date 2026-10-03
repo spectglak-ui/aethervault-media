@@ -1,11 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Clapperboard, ImageUp, ListPlus, Play, RotateCcw, Volume2, VolumeX } from "lucide-react";
+import {
+  Clapperboard,
+  ImageUp,
+  ListPlus,
+  Play,
+  RotateCcw,
+  Search,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { Menu, CheckMenuItem } from "@tauri-apps/api/menu";
-import { Button, EmptyState, IconButton, PageHeader } from "@aethervault/ui-kit";
+import { Button, EmptyState, IconButton, Modal, PageHeader } from "@aethervault/ui-kit";
 import type { TitleDetails } from "@aethervault/shared-types";
-import { titleApi } from "../features/title/api";
+import { titleApi, type TmdbSearchCandidate } from "../features/title/api";
+import { useAnimatedBackdropActive } from "../hooks/useAnimatedBackdropActive";
 import { libraryApi } from "../features/library/api";
 import { PersonalizableImage } from "../features/personalization/PersonalizableImage";
 import { CastRow, GenreRow } from "../components/TitleRows";
@@ -53,6 +63,10 @@ export function TitleDetailPage() {
   const { key, titleId } = useParams<{ key: string; titleId: string }>();
   const navigate = useNavigate();
   const { play, currentMedia } = usePlayer();
+  // FONCTIONNALITÉ : masque le fond IMAGE statique quand le fond animé
+  // global est actif — jamais appliqué à la bande-annonce ci-dessous,
+  // qui doit rester visible par-dessus le fond animé (demande explicite).
+  const animatedBackdropActive = useAnimatedBackdropActive();
   const [title, setTitle] = useState<TitleDetails | null | undefined>(undefined);
   const [starting, setStarting] = useState(false);
   const [trailerKeys, setTrailerKeys] = useState<string[]>([]);
@@ -171,6 +185,59 @@ export function TitleDetailPage() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // FONCTIONNALITÉ (correction manuelle de correspondance TMDB) : le
+  // scan retient parfois une mauvaise source (homonymes, remakes...) —
+  // ce dialogue permet de rechercher et d'appliquer manuellement le bon
+  // identifiant TMDB, sans repasser par un rescan complet.
+  const [tmdbModalOpen, setTmdbModalOpen] = useState(false);
+  const [tmdbQuery, setTmdbQuery] = useState("");
+  const [tmdbResults, setTmdbResults] = useState<TmdbSearchCandidate[]>([]);
+  const [tmdbSearching, setTmdbSearching] = useState(false);
+  const [tmdbApplyingId, setTmdbApplyingId] = useState<number | null>(null);
+  const [tmdbError, setTmdbError] = useState<string | null>(null);
+
+  const runTmdbSearch = useCallback(
+    async (query: string) => {
+      if (!title || !query.trim()) return;
+      setTmdbSearching(true);
+      setTmdbError(null);
+      try {
+        const results = await titleApi.searchTmdbMatches(title.kind, query.trim());
+        setTmdbResults(results);
+      } catch (err) {
+        setTmdbError(err instanceof Error ? err.message : "Recherche TMDB impossible.");
+        setTmdbResults([]);
+      } finally {
+        setTmdbSearching(false);
+      }
+    },
+    [title]
+  );
+
+  const openTmdbModal = () => {
+    if (!title) return;
+    setTmdbQuery(title.name);
+    setTmdbResults([]);
+    setTmdbError(null);
+    setTmdbModalOpen(true);
+    void runTmdbSearch(title.name);
+  };
+
+  const applyTmdbMatch = async (candidate: TmdbSearchCandidate) => {
+    if (!title) return;
+    setTmdbApplyingId(candidate.tmdb_id);
+    setTmdbError(null);
+    try {
+      await titleApi.rematchTmdb(title.id, candidate.tmdb_id);
+      setTmdbModalOpen(false);
+      refresh();
+    } catch (err) {
+      setTmdbError(err instanceof Error ? err.message : "Impossible d'appliquer cette correspondance.");
+    } finally {
+      setTmdbApplyingId(null);
+    }
+  };
 
   // 0.5.1 : TMDB d'abord ; si injoignable, repli YouTube local (yt-dlp).
   const titleName = title?.name ?? null;
@@ -305,7 +372,9 @@ export function TitleDetailPage() {
           <div className="avm-title-page__wallpaper-overlay" />
         </div>
       ) : (
-        wallpaper && (
+        // FONCTIONNALITÉ : variante image uniquement — la bande-annonce
+        // ci-dessus (autre branche) reste toujours affichée, elle.
+        wallpaper && !animatedBackdropActive && (
           <div className="avm-title-page__wallpaper" aria-hidden="true">
             <img src={wallpaper} alt="" />
             <div className="avm-title-page__wallpaper-overlay" />
@@ -318,6 +387,9 @@ export function TitleDetailPage() {
         </IconButton>
         <IconButton label="Changer le fond de page" onClick={() => void handlePickWallpaper()}>
           <ImageUp size={16} />
+        </IconButton>
+        <IconButton label="Corriger la correspondance TMDB" onClick={openTmdbModal}>
+          <Search size={16} />
         </IconButton>
         {title.banner_is_custom && (
           <IconButton
@@ -518,6 +590,97 @@ export function TitleDetailPage() {
       {/* 0.6.0 : rangées Distribution + Du même genre (zone basse). */}
             <CastRow titleId={title.id} />
       <GenreRow titleId={title.id} categoryKey={key ?? ""} />
+
+      {/* FONCTIONNALITÉ : correction manuelle de correspondance TMDB. */}
+      <Modal open={tmdbModalOpen} onClose={() => setTmdbModalOpen(false)} title="Corriger la correspondance TMDB">
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 360 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              type="text"
+              value={tmdbQuery}
+              onChange={(e) => setTmdbQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void runTmdbSearch(tmdbQuery);
+              }}
+              placeholder="Titre à rechercher sur TMDB…"
+              style={{
+                flex: 1,
+                padding: "8px 10px",
+                borderRadius: 6,
+                border: "1px solid rgba(255,255,255,.18)",
+                background: "#111",
+                color: "#fff",
+              }}
+            />
+            <Button
+              variant="secondary"
+              onClick={() => void runTmdbSearch(tmdbQuery)}
+              disabled={tmdbSearching || !tmdbQuery.trim()}
+            >
+              Rechercher
+            </Button>
+          </div>
+          {tmdbError && (
+            <p style={{ color: "#ff6b6b", fontSize: 13, margin: 0 }}>{tmdbError}</p>
+          )}
+          {tmdbSearching ? (
+            <p style={{ fontSize: 13, color: "var(--color-text-muted, #9a9aa3)" }}>Recherche…</p>
+          ) : tmdbResults.length === 0 ? (
+            <p style={{ fontSize: 13, color: "var(--color-text-muted, #9a9aa3)" }}>
+              Aucun résultat pour l'instant.
+            </p>
+          ) : (
+            <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8, maxHeight: 420, overflowY: "auto" }}>
+              {tmdbResults.map((candidate) => (
+                <li
+                  key={candidate.tmdb_id}
+                  style={{
+                    display: "flex",
+                    gap: 10,
+                    padding: 8,
+                    borderRadius: 8,
+                    background: "#181818",
+                    alignItems: "flex-start",
+                  }}
+                >
+                  <div style={{ width: 46, height: 69, flexShrink: 0, borderRadius: 4, overflow: "hidden", background: "#000" }}>
+                    {candidate.poster_url && (
+                      <img src={candidate.poster_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    )}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>
+                      {candidate.name} {candidate.year ? `(${candidate.year})` : ""}
+                    </div>
+                    {candidate.overview && (
+                      <p
+                        style={{
+                          fontSize: 12,
+                          color: "var(--color-text-muted, #9a9aa3)",
+                          margin: "4px 0 0",
+                          display: "-webkit-box",
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: "vertical",
+                          overflow: "hidden",
+                        }}
+                      >
+                        {candidate.overview}
+                      </p>
+                    )}
+                  </div>
+                  <Button
+                    variant="secondary"
+                    onClick={() => void applyTmdbMatch(candidate)}
+                    disabled={tmdbApplyingId !== null}
+                  >
+                    {tmdbApplyingId === candidate.tmdb_id ? "…" : "Choisir"}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }

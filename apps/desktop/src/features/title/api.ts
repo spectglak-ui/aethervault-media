@@ -65,6 +65,15 @@ export const personApi = {
   titles: (personId: number) => invoke<TitleSummary[]>("list_person_titles", { personId }),
 };
 
+/** FONCTIONNALITÉ (correction manuelle de correspondance TMDB). */
+export interface TmdbSearchCandidate {
+  tmdb_id: number;
+  name: string;
+  year: number | null;
+  overview: string | null;
+  poster_url: string | null;
+}
+
 export const titleApi = {
   listByCategory: (categoryId: number) =>
     invoke<TitleSummary[]>("list_titles_by_category", { categoryId }),
@@ -103,4 +112,9 @@ export const titleApi = {
     invoke<TitleSummary[]>("list_similar_titles", { titleId, limit }),
   recordWatch: (mediaFileId: number, positionSeconds: number, durationSeconds: number) =>
     invoke<void>("record_watch", { mediaFileId, positionSeconds, durationSeconds }),
+  /** FONCTIONNALITÉ : correction manuelle de correspondance TMDB. */
+  searchTmdbMatches: (kind: string, query: string) =>
+    invoke<TmdbSearchCandidate[]>("search_tmdb_matches", { kind, query }),
+  rematchTmdb: (titleId: number, tmdbId: number) =>
+    invoke<void>("rematch_title_tmdb", { titleId, tmdbId }),
 };

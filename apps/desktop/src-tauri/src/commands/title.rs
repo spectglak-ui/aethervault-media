@@ -203,6 +203,53 @@ pub fn get_title_cast(
     Ok(client.fetch_title_cast(&kind, tmdb_id, &state.data_dir))
 }
 
+/// FONCTIONNALITÉ (correction manuelle de correspondance TMDB) :
+/// candidats pour le sélecteur affiché quand le scan a retenu une
+/// mauvaise source pour un Titre.
+#[tauri::command]
+pub fn search_tmdb_matches(
+    state: tauri::State<AppState>,
+    kind: String,
+    query: String,
+) -> Result<Vec<crate::services::metadata::tmdb::TmdbSearchCandidate>, String> {
+    let conn = state.get_conn()?;
+    let settings = crate::services::metadata::tmdb::load_settings(&conn);
+    if settings.api_key.is_empty() {
+        return Err("Clé API TMDB absente (Paramètres → Métadonnées).".to_string());
+    }
+    let client = crate::services::metadata::tmdb::TmdbClient {
+        api_key: settings.api_key,
+        lang: settings.language,
+    };
+    Ok(client.search_candidates(&kind, &query))
+}
+
+/// FONCTIONNALITÉ (correction manuelle de correspondance TMDB) : corrige
+/// la correspondance d'un Titre à partir du `tmdb_id` choisi par
+/// l'utilisateur dans `search_tmdb_matches` — réinitialise puis
+/// réapplique tout ce qui vient du fournisseur (synopsis, genres,
+/// casting, affiche/bannière, tmdb_id/imdb_id).
+#[tauri::command]
+pub fn rematch_title_tmdb(
+    state: tauri::State<AppState>,
+    title_id: i64,
+    tmdb_id: i64,
+) -> Result<(), String> {
+    let conn = state.get_conn()?;
+    let record = crate::db::repositories::title_repository::get(&conn, title_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Titre introuvable.".to_string())?;
+    let settings = crate::services::metadata::tmdb::load_settings(&conn);
+    if settings.api_key.is_empty() {
+        return Err("Clé API TMDB absente (Paramètres → Métadonnées).".to_string());
+    }
+    let client = crate::services::metadata::tmdb::TmdbClient {
+        api_key: settings.api_key,
+        lang: settings.language,
+    };
+    client.apply_match(&conn, title_id, &record.kind, tmdb_id, &state.data_dir)
+}
+
 /// 0.6.0 : fiche personne TMDB.
 #[tauri::command]
 pub fn get_person(

@@ -49,4 +49,9 @@ export const playerApi = {
   getPostShader: () => invoke<string>("get_post_shader"),
     setPostShader: (preset: string) => invoke<void>("set_post_shader", { preset }),
 	setRenderScale: (percent: number) => invoke<void>("player_set_render_scale", { percent }),
+  // FONCTIONNALITÉ (amélioration audio — spatialisation) : application
+  // immédiate sur le média en cours — la préférence elle-même se règle
+  // via settingsApi (Paramètres → Audio), voir features/settings/api.ts.
+  setAudioSpatialization: (enabled: boolean) =>
+    invoke<void>("player_set_audio_spatialization", { enabled }),
 };

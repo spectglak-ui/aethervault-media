@@ -10,6 +10,7 @@ import {
 } from "../features/vaulttube/api";
 import { usePlayer } from "../player/PlayerContext";
 import { formatDuration } from "./VaultTubeVideoGrid";
+import { VaultTubeTrackList } from "./VaultTubeTrackList";
 import "./pages.css";
 
 const rowBtn: CSSProperties = {
@@ -139,6 +140,45 @@ export function VaultTubeUserPlaylistPage() {
         </p>
       )}
 
+      {/* FONCTIONNALITÉ (refonte UI AetherFy, Phase 2) : habillage dédié
+          en mode musique — pochettes carrées, ▶ au survol, durée alignée
+          à droite. Le mode vidéo garde le rendu d'origine ci-dessous,
+          entièrement inchangé (risque nul pour les playlists vidéo). */}
+      {isAudio ? (
+        <VaultTubeTrackList
+          items={items.map((it) => ({
+            key: it.id,
+            title: it.title,
+            subtitle: it.channel,
+            thumbnailUrl: it.thumbnail_url ?? `https://i.ytimg.com/vi/${it.youtube_id}/hqdefault.jpg`,
+            durationSeconds: it.duration_seconds,
+          }))}
+          onPlay={handlePlayFrom}
+          renderActions={(index) => (
+            <>
+              <button
+                title="Monter"
+                style={rowBtn}
+                disabled={index === 0}
+                onClick={() => void handleMove(index, -1)}
+              >
+                <ArrowUp size={15} />
+              </button>
+              <button
+                title="Descendre"
+                style={rowBtn}
+                disabled={index === items.length - 1}
+                onClick={() => void handleMove(index, 1)}
+              >
+                <ArrowDown size={15} />
+              </button>
+              <button title="Retirer de la playlist" style={rowBtn} onClick={() => void handleRemove(items[index])}>
+                <Trash2 size={15} />
+              </button>
+            </>
+          )}
+        />
+      ) : (
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {items.map((it, index) => (
           <div
@@ -218,6 +258,7 @@ export function VaultTubeUserPlaylistPage() {
           </div>
         ))}
       </div>
+      )}
     </div>
   );
 }

@@ -22,6 +22,7 @@ import { ScanProgressBar } from "../components/ScanProgressBar";
 import { TitleRoulette } from "../components/TitleRoulette";
 import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
+import { useAnimatedBackdropActive } from "../hooks/useAnimatedBackdropActive";
 import "./pages.css";
 
 /**
@@ -51,6 +52,10 @@ import "./pages.css";
 export function CategoryPage() {
   const { key } = useParams<{ key: string }>();
   const navigate = useNavigate();
+  // FONCTIONNALITÉ : masque le fond statique de CETTE page quand le fond
+  // animé global est actif, plutôt que de compter sur l'empilement
+  // z-index (voir le hook pour le pourquoi).
+  const animatedBackdropActive = useAnimatedBackdropActive();
   const [category, setCategory] = useState<Category | null | undefined>(undefined);
   const [titles, setTitles] = useState<TitleSummary[] | null>(null);
   const [libraries, setLibraries] = useState<Library[]>([]);
@@ -213,8 +218,10 @@ export function CategoryPage() {
     <div className="avm-category-page">
       {/* 0.5.4 — fond de page en couche FIXE plein-fenêtre : couvre TOUTE
           la fenêtre (derrière sidebar/barre du haut) et passe DERRIÈRE le
-          contenu (z-index 0 vs 1) — indispensable au thème Transparent. */}
-      {wallpaper && (
+          contenu (z-index 0 vs 1) — indispensable au thème Transparent.
+          FONCTIONNALITÉ : masqué quand le fond animé est actif, pour
+          qu'il ne reste jamais visible par-dessus. */}
+      {wallpaper && !animatedBackdropActive && (
         <div
           aria-hidden="true"
           style={{
@@ -239,7 +246,11 @@ export function CategoryPage() {
           />
         </div>
       )}
-      <div className="avm-category-page__content" style={{ position: "relative", zIndex: 1 }}>
+      {/* FONCTIONNALITÉ : zIndex 1 → 3, pour laisser le fond animé global
+          (z-index 1 quand actif, voir styles/global.css) passer par-dessus
+          le fond statique de CETTE page (ci-dessus, resté à 0) sans jamais
+          couvrir ce contenu. */}
+      <div className="avm-category-page__content" style={{ position: "relative", zIndex: 3 }}>
         <PageHeader
           title={`${category.icon ?? ""} ${category.name}`.trim()}
           description={

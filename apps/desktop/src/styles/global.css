@@ -57,3 +57,38 @@ body,
     opacity: 1;
   }
 }
+
+/* CORRECTIF (découvert en ajoutant le fond animé) : `AppBackdrop`
+   (components/AppBackdrop.tsx) référence cette classe depuis la version
+   0.5.4 ("couche FIXE plein-fenêtre, derrière toute l'appli",
+   "indispensable au thème Transparent"), mais aucune règle CSS ne
+   l'implémentait nulle part dans le projet — le fond restait donc
+   invisible (une div/vidéo sans position ni taille ne s'affiche pas),
+   y compris pour le thème Transparent lui-même, qui n'avait donc rien
+   de particulier à laisser transparaître derrière les surfaces en
+   rgba(). Nécessaire aussi pour que le nouveau fond animé (vidéo)
+   s'affiche tout court. */
+.avm-app-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+.avm-app-backdrop--video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* FONCTIONNALITÉ (superposition demandée) : le fond animé doit passer
+     PAR-DESSUS les fonds statiques propres à chaque page (catégories,
+     fiche média) mais rester SOUS la bande-annonce quand elle joue en
+     fond sur une fiche média. Voir le barème complet dans le commentaire
+     au-dessus de `.avm-title-page__wallpaper--video` (pages.css) :
+     0 = fonds statiques de page (inchangé) < 1 = fond animé (ici) <
+     2 = bande-annonce < 3 = contenu de page < 4 = barre d'actions. Le
+     fond image (`.avm-app-backdrop` sans `--video`) reste à -1, comme
+     avant — cette demande ne concerne que le mode animé. */
+  z-index: 1;
+}
