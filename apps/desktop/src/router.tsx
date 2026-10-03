@@ -47,6 +47,14 @@ export const router = createHashRouter([
       { path: "/private/videos/:id", element: <PrivateVideoLibraryPage /> },
       { path: "/private/images/:id", element: <PrivateImageLibraryPage /> },
       { path: "/vaulttube", element: <VaultTubePage /> },
+      // FONCTIONNALITÉ (refonte UI AetherFy, Phase 1) : deux entrées de
+      // navigation dédiées — voir layout/Sidebar.tsx et
+      // pages/VaultTubePage.tsx (prop `defaultMode`). Déclarées avant la
+      // route dynamique `/vaulttube/:id` par lisibilité (React Router
+      // classe de toute façon les segments statiques avant les
+      // dynamiques, quel que soit l'ordre).
+      { path: "/vaulttube/video", element: <VaultTubePage defaultMode="video" /> },
+      { path: "/vaulttube/music", element: <VaultTubePage defaultMode="audio" /> },
       { path: "/vaulttube/:id", element: <VaultTubeVideosPage /> },
 	  { path: "/vaulttube/playlist/:playlistId", element: <VaultTubePlaylistPreviewPage /> },
       { path: "/vaulttube/:id/playlists", element: <VaultTubePlaylistsPage /> },

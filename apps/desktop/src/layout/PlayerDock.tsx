@@ -58,6 +58,11 @@ function AudioMiniBar() {
         backdropFilter: "blur(8px)",
       }}
     >
+      {/* FONCTIONNALITÉ (refonte UI AetherFy, Phase 3) : cette mini-barre
+          existait déjà et remplissait déjà le rôle demandé (lecture
+          persistante en bas d'écran). Seule retouche : le violet
+          générique devient le vert Spotify, cohérent avec le reste de
+          l'habillage "Musique" (badges, playlists). */}
       <div
         style={{
           position: "absolute",
@@ -65,7 +70,7 @@ function AudioMiniBar() {
           left: 0,
           height: 2,
           width: `${pct}%`,
-          background: "var(--color-accent, #7c5cff)",
+          background: "#1db954",
           transition: "width .3s linear",
         }}
       />

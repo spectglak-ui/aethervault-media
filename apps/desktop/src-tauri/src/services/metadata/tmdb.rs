@@ -190,6 +190,21 @@ pub struct TmdbClient {
     pub lang: String,
 }
 
+/// FONCTIONNALITÉ (correction manuelle de correspondance TMDB) : un
+/// candidat de résultat de recherche, pour affichage dans un sélecteur
+/// visuel — l'affiche pointe vers TMDB directement (pas de
+/// téléchargement local tant que l'utilisateur n'a pas choisi ce
+/// candidat ; voir `apply_match`, qui rapatrie l'image en local via
+/// `fetch_details` une fois la correspondance confirmée).
+#[derive(Debug, Clone, Serialize)]
+pub struct TmdbSearchCandidate {
+    pub tmdb_id: i64,
+    pub name: String,
+    pub year: Option<i32>,
+    pub overview: Option<String>,
+    pub poster_url: Option<String>,
+}
+
 pub struct TmdbDetails {
     pub name: String,
     pub description: Option<String>,
@@ -246,6 +261,105 @@ impl TmdbClient {
             })
             .or_else(|| results.first());
         pick.and_then(|r| r.get("id").and_then(|i| i.as_i64()))
+    }
+
+    /// FONCTIONNALITÉ (correction manuelle) : jusqu'à 6 candidats pour un
+    /// ré-appariement manuel — contrairement à `search_title` (qui ne
+    /// renvoie qu'un seul ID "meilleure estimation", utilisé par
+    /// l'enrichissement automatique), celle-ci renvoie plusieurs
+    /// résultats pour que l'utilisateur choisisse visuellement le bon
+    /// (cas d'une mauvaise source obtenue durant le scan).
+    pub fn search_candidates(&self, kind: &str, query: &str) -> Vec<TmdbSearchCandidate> {
+        let path = if kind == "movie" {
+            "/search/movie"
+        } else {
+            "/search/tv"
+        };
+        let Some(v) = get_json(&self.url(path, &format!("&query={}", url_encode(query)), &self.lang))
+        else {
+            return Vec::new();
+        };
+        let Some(results) = v.get("results").and_then(|r| r.as_array()) else {
+            return Vec::new();
+        };
+        results
+            .iter()
+            .take(6)
+            .filter_map(|r| {
+                let tmdb_id = r.get("id")?.as_i64()?;
+                let name = r
+                    .get("title")
+                    .or_else(|| r.get("name"))
+                    .and_then(|n| n.as_str())?
+                    .to_string();
+                let date = r
+                    .get("release_date")
+                    .or_else(|| r.get("first_air_date"))
+                    .and_then(|d| d.as_str())
+                    .unwrap_or_default();
+                let year = date.get(0..4).and_then(|y| y.parse::<i32>().ok());
+                let overview = r
+                    .get("overview")
+                    .and_then(|o| o.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
+                let poster_url = r
+                    .get("poster_path")
+                    .and_then(|p| p.as_str())
+                    .map(|p| format!("{IMG_BASE}/w200{p}"));
+                Some(TmdbSearchCandidate { tmdb_id, name, year, overview, poster_url })
+            })
+            .collect()
+    }
+
+    /// FONCTIONNALITÉ (correction manuelle) : applique une correspondance
+    /// TMDB — recherche automatique (`enrich_library`) OU choix manuel
+    /// (`commands::title::rematch_title_tmdb`) — à un Titre : télécharge
+    /// la fiche détaillée, réinitialise les associations précédentes
+    /// (genres/studios/casting — voir
+    /// `title_repository::clear_provider_associations`) puis les
+    /// reconstruit, et enregistre `tmdb_id`/`imdb_id`. Factorisée hors de
+    /// la boucle `enrich_library` pour n'avoir qu'un seul endroit où
+    /// cette séquence est écrite.
+    pub fn apply_match(
+        &self,
+        conn: &rusqlite::Connection,
+        title_id: i64,
+        kind: &str,
+        tmdb_id: i64,
+        data_dir: &str,
+    ) -> Result<(), String> {
+        let details = self
+            .fetch_details(kind, tmdb_id, data_dir)
+            .ok_or_else(|| "Fiche TMDB introuvable ou inaccessible.".to_string())?;
+        title_repository::clear_provider_associations(conn, title_id).map_err(|e| e.to_string())?;
+        title_repository::apply_metadata(
+            conn,
+            title_id,
+            details.description.as_deref(),
+            None,
+            details.rating,
+            details.poster_path.as_deref(),
+            details.banner_path.as_deref(),
+            "tmdb",
+        )
+        .map_err(|e| e.to_string())?;
+        for genre in &details.genres {
+            title_repository::attach_genre(conn, title_id, genre).map_err(|e| e.to_string())?;
+        }
+        for studio in &details.studios {
+            title_repository::attach_studio(conn, title_id, studio).map_err(|e| e.to_string())?;
+        }
+        for (index, (name, character)) in details.cast.iter().enumerate() {
+            title_repository::attach_credit(conn, title_id, name, "actor", character.as_deref(), index as i64)
+                .map_err(|e| e.to_string())?;
+        }
+        for (index, name) in details.directors.iter().enumerate() {
+            title_repository::attach_credit(conn, title_id, name, "director", None, index as i64)
+                .map_err(|e| e.to_string())?;
+        }
+        title_repository::set_online_ids(conn, title_id, tmdb_id, details.imdb_id.as_deref())
+            .map_err(|e| e.to_string())
     }
 
     /// Fiche détaillée + crédits + IDs externes ; images téléchargées en
@@ -599,50 +713,18 @@ pub fn enrich_library(app: &AppHandle, pool: &DbPool, data_dir: &str, library_id
                 }),
             );
         }
+        // 0.6.1 : la séquence "télécharger la fiche + persister
+        // genres/studios/casting/affiche + tmdb_id/imdb_id" est
+        // désormais factorisée dans `TmdbClient::apply_match`, partagée
+        // avec le ré-appariement manuel (correction d'une mauvaise
+        // source — voir `commands::title::rematch_title_tmdb`).
         let result = client
             .search_title(&title.kind, &title.name, title.year.map(|y| y as i32))
             .and_then(|tmdb_id| {
-                let details = client.fetch_details(&title.kind, tmdb_id, data_dir)?;
-                let applied = title_repository::apply_metadata(
-                    &conn,
-                    title.id,
-                    details.description.as_deref(),
-                    None,
-                    details.rating,
-                    details.poster_path.as_deref(),
-                    details.banner_path.as_deref(),
-                    "tmdb",
-                )
-                .and_then(|()| {
-                    for genre in &details.genres {
-                        title_repository::attach_genre(&conn, title.id, genre)?;
-                    }
-                    for studio in &details.studios {
-                        title_repository::attach_studio(&conn, title.id, studio)?;
-                    }
-                    for (index, (name, character)) in details.cast.iter().enumerate() {
-                        title_repository::attach_credit(
-                            &conn,
-                            title.id,
-                            name,
-                            "actor",
-                            character.as_deref(),
-                            index as i64,
-                        )?;
-                    }
-                    for (index, name) in details.directors.iter().enumerate() {
-                        title_repository::attach_credit(
-                            &conn,
-                            title.id,
-                            name,
-                            "director",
-                            None,
-                            index as i64,
-                        )?;
-                    }
-                    title_repository::set_online_ids(&conn, title.id, tmdb_id, details.imdb_id.as_deref())
-                });
-                applied.map(|()| tmdb_id).ok()
+                client
+                    .apply_match(&conn, title.id, &title.kind, tmdb_id, data_dir)
+                    .ok()
+                    .map(|()| tmdb_id)
             });
         match result {
             Some(_) => enriched += 1,

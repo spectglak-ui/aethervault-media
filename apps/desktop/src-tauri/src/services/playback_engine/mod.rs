@@ -771,6 +771,36 @@ impl PlaybackEngineHandle {
         self.command(&["set", "aid", &track_id.to_string()])
     }
 
+    /// FONCTIONNALITÉ (amélioration audio — spatialisation) : élargissement
+    /// stéréo / crossfeed casque, via le filtre `crossfeed` de FFmpeg
+    /// (algorithme Bauer stereophonic-to-binaural — bs2b) — déjà lié par
+    /// mpv, donc aucune dépendance supplémentaire ni fichier de données
+    /// externe (contrairement à un vrai rendu binaural HRTF type
+    /// "sofalizer", qui nécessiterait d'embarquer un fichier SOFA de
+    /// plusieurs Mo — écarté pour rester proportionné).
+    ///
+    /// CORRECTIF (retour utilisateur : « son étouffé, seules les basses
+    /// passent ») : premier essai avec le filtre `earwax`, remplacé ici
+    /// par `crossfeed`. Ce n'était pas un bug de branchement — `earwax`
+    /// produit VRAIMENT ce son-là par nature (un filtre RIF ancien et
+    /// assez brutal, qui atténue nettement les aigus, ce qui fait
+    /// paraître les basses proéminentes en comparaison). `crossfeed` est
+    /// spécifiquement conçu pour l'écoute au casque (mélange progressif
+    /// gauche/droite, sans toucher au reste du spectre) et est largement
+    /// considéré comme bien plus transparent. Réglages par défaut de
+    /// FFmpeg conservés (`strength=0.2, range=0.5, slope=0.5`), déjà
+    /// pensés pour rester subtils.
+    ///
+    /// Réglage global : `commands::playback::player_load` le réapplique
+    /// automatiquement à chaque nouveau média, à partir de la préférence
+    /// persistée (voir `commands::settings::get_/set_audio_spatialization_enabled`)
+    /// — aucune action requise de l'utilisateur après l'avoir activé une
+    /// fois.
+    pub fn set_audio_spatialization(&self, enabled: bool) -> Result<(), String> {
+        let filter = if enabled { "lavfi=[crossfeed]" } else { "" };
+        self.command(&["set", "af", filter])
+    }
+
     pub fn set_subtitle_track(&self, track_id: Option<i64>) -> Result<(), String> {
         match track_id {
             Some(id) => self.command(&["set", "sid", &id.to_string()]),

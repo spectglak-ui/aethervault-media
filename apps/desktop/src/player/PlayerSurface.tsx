@@ -190,6 +190,28 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
     let lastScaleChangeAt = 0;
     let r4GraceUntil = 0;
     let fpsProbe: number | undefined;
+    // TENTATIVE DE CORRECTIF (saccades de démarrage, surtout visibles en
+    // 1080p) : le pipeline décodage Rust → canal IPC → dessin WebGL a un
+    // débit d'images plus bas le temps d'atteindre son régime de
+    // croisière — déjà repéré par l'équipe (voir le commentaire sur
+    // `r4GraceUntil` ci-dessus : « 8-14 fps les 4 premières secondes »),
+    // qui ne fait qu'empêcher R4 de réagir en cascade à ce ralenti, sans
+    // le supprimer. Cette amorce retient les 3 toutes premières trames
+    // (== la taille du garde-fou de file existant, inchangée) avant de
+    // démarrer la présentation cadencée, pour absorber ce démarrage à
+    // froid — UNIQUEMENT au chargement d'un nouveau média (cet effet ne
+    // se remonte que sur changement de `currentMedia`, jamais sur un
+    // simple `seek`). Filet de sécurité 400 ms : ne retarde jamais
+    // l'affichage au-delà d'un délai perceptible si la source livre peu
+    // de trames au départ.
+    // Non vérifié en conditions réelles (pas d'environnement de lecture
+    // disponible ici) — à confirmer avec les journaux [AV-DIAG] fps
+    // dessiné (déjà présents, voir plus bas) sur les 2-3 premières
+    // secondes d'une vidéo 1080p.
+    const PRIME_FRAMES = 3;
+    const PRIME_TIMEOUT_MS = 400;
+    let primed = false;
+    let primeStartedAt = 0;
 
     const physicalSize = () => {
       const rect = canvas.getBoundingClientRect();
@@ -401,6 +423,19 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
       while (frameQueue.length > 3) {
         frameQueue.shift();
         ack();
+      }
+      // Amorce de démarrage (voir commentaire sur PRIME_FRAMES) : tant
+      // qu'elle n'a pas assez de trames ET que le filet 400 ms n'a pas
+      // expiré, on continue d'accumuler sans lancer la présentation.
+      if (!primed) {
+        if (primeStartedAt === 0) primeStartedAt = performance.now();
+        if (
+          frameQueue.length < PRIME_FRAMES &&
+          performance.now() - primeStartedAt < PRIME_TIMEOUT_MS
+        ) {
+          return;
+        }
+        primed = true;
       }
       schedulePresent();
     };

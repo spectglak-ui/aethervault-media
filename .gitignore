@@ -30,3 +30,6 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+node_modules/
+apps/desktop/src-tauri/target/
+target/

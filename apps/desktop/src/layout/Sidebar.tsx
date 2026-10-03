@@ -1,12 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Home, Compass, Layers, Users, Settings, Share2, BarChart3, PanelLeftClose, PanelLeft } from "lucide-react";
+import {
+  Home,
+  Compass,
+  Layers,
+  Users,
+  Settings,
+  Share2,
+  BarChart3,
+  PanelLeftClose,
+  PanelLeft,
+  Youtube,
+  Music,
+} from "lucide-react";
 import { NavItem, IconButton } from "@aethervault/ui-kit";
 import type { Category } from "@aethervault/shared-types";
 import { categoryApi } from "../features/category/api";
 import { categoryRoute } from "../lib/categoryRoute";
 import { categoryIcon } from "../lib/categoryIcon";
-import { Youtube } from "lucide-react";
 
 const SECONDARY_NAV_ITEMS = [
   { path: "/explore", label: "Explorer", icon: Compass },
@@ -89,13 +100,36 @@ export function Sidebar({ collapsed, canToggle, onToggleCollapsed }: SidebarProp
             />
           </li>
         ))}
+        {/* FONCTIONNALITÉ (refonte UI AetherFy, Phase 1) : l'unique entrée
+            "AetherFy" (route générique `/vaulttube`, non filtrée, conservée
+            pour compatibilité) devient deux entrées dédiées — voir
+            router.tsx et pages/VaultTubePage.tsx. */}
         <li>
           <NavItem
             icon={<Youtube size={18} />}
-            label="AetherFy"
+            label={
+              <>
+                <span className="avm-brand-aetherfy">AetherFy</span> Vidéo
+              </>
+            }
+            titleText="AetherFy Vidéo"
             collapsed={collapsed}
-            active={isActive("/vaulttube")}
-            onClick={() => navigate("/vaulttube")}
+            active={isActive("/vaulttube/video")}
+            onClick={() => navigate("/vaulttube/video")}
+          />
+        </li>
+        <li>
+          <NavItem
+            icon={<Music size={18} />}
+            label={
+              <>
+                <span className="avm-brand-aetherfy">AetherFy</span> Musique
+              </>
+            }
+            titleText="AetherFy Musique"
+            collapsed={collapsed}
+            active={isActive("/vaulttube/music")}
+            onClick={() => navigate("/vaulttube/music")}
           />
         </li>
         {SECONDARY_NAV_ITEMS.map(({ path, label, icon: Icon }) => (

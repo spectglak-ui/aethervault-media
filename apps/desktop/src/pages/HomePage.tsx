@@ -9,6 +9,7 @@ import { titleApi, type ContinueWatchingItem } from "../features/title/api";
 import { libraryApi } from "../features/library/api";
 import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
+import { useAnimatedBackdropActive } from "../hooks/useAnimatedBackdropActive";
 import "./pages.css";
 
 /** 0.4.0 : détection tolérante de la catégorie Animés. */
@@ -29,6 +30,10 @@ function isAnimeCategory(c: Category): boolean {
 export function HomePage() {
   const navigate = useNavigate();
   const { play } = usePlayer();
+  // FONCTIONNALITÉ : masque le fond statique de CETTE page quand le fond
+  // animé global est actif (voir le hook pour le pourquoi — empilement
+  // z-index entre arbres séparés jugé pas assez fiable).
+  const animatedBackdropActive = useAnimatedBackdropActive();
   const [categories, setCategories] = useState<Category[] | null>(null);
   const [rows, setRows] = useState<Record<number, TitleSummary[]>>({});
   const [recent, setRecent] = useState<TitleSummary[] | null>(null);
@@ -129,11 +134,11 @@ export function HomePage() {
           justifyContent: "center",
         }}
       >
+        {/* FONCTIONNALITÉ : identité "AetherFy" en Major Mono Display. */}
         <span
+          className="avm-brand-aetherfy"
           style={{
-            fontSize: 26,
-            fontWeight: 800,
-            letterSpacing: 1,
+            fontSize: 22,
             color: "#fff",
             textShadow: "0 2px 14px rgba(0,0,0,.5)",
           }}
@@ -172,8 +177,10 @@ export function HomePage() {
     <div>
       {/* 0.5.4 — fond personnalisé en couche FIXE plein-fenêtre : couvre
           TOUTE la fenêtre (y compris derrière sidebar/barre du haut) et
-          passe DERRIÈRE le contenu (z-index 0 vs 1). */}
-      {homeBackdrop && (
+          passe DERRIÈRE le contenu (z-index 0 vs 1).
+          FONCTIONNALITÉ : masqué quand le fond animé est actif, pour
+          qu'il ne reste jamais visible par-dessus. */}
+      {homeBackdrop && !animatedBackdropActive && (
         <div
           className="avm-page-backdrop"
           aria-hidden="true"
@@ -188,8 +195,12 @@ export function HomePage() {
           }}
         />
       )}
-      {/* Contenu remonté au-dessus de la couche fixe. */}
-      <div style={{ position: "relative", zIndex: 1 }}>
+      {/* Contenu remonté au-dessus de la couche fixe.
+          FONCTIONNALITÉ : zIndex 1 → 3, pour laisser le fond animé global
+          (z-index 1 quand actif, voir styles/global.css) passer par-dessus
+          le fond statique de CETTE page (ci-dessus, resté à 0) sans jamais
+          couvrir ce contenu. */}
+      <div style={{ position: "relative", zIndex: 3 }}>
         {hero && assetUrl(hero.banner) ? (
           <section className="avm-home-hero">
             <img src={assetUrl(hero.banner)} alt="" />

@@ -35,6 +35,13 @@ const authApi = {
       password: password ?? null,
       recoveryCode: recoveryCode ?? null,
     }),
+  // FONCTIONNALITÉ (Accès rapide) : lu avant toute connexion — voir
+  // commands::settings::get_quick_access_enabled côté Rust, qui est le
+  // seul endroit habilité à modifier ce réglage (paramètres, une fois
+  // connecté).
+  getQuickAccessEnabled: () => invoke<boolean>("get_quick_access_enabled"),
+  quickLogin: (profileId: number) =>
+    invoke<LoginProfile>("quick_login_profile", { profileId }),
   setupFirstAdmin: (name: string, password?: string) =>
     invoke<[LoginProfile, string | null]>("setup_first_admin", {
       name,
@@ -132,6 +139,32 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [avatars, setAvatars] = useState<Record<number, string>>({});
+  // FONCTIONNALITÉ (Accès rapide).
+  const [quickAccessEnabled, setQuickAccessEnabled] = useState(false);
+
+  useEffect(() => {
+    authApi
+      .getQuickAccessEnabled()
+      .then(setQuickAccessEnabled)
+      .catch(() => setQuickAccessEnabled(false));
+  }, []);
+
+  const handleProfileClick = (p: LoginProfile) => {
+    if (quickAccessEnabled) {
+      setBusy(true);
+      setError(null);
+      authApi
+        .quickLogin(p.id)
+        .then(onDone)
+        .catch((err) => setError(String(err)))
+        .finally(() => setBusy(false));
+      return;
+    }
+    setSelected(p);
+    setPassword("");
+    setError(null);
+    setRecovering(false);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -179,17 +212,14 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
       {!selected ? (
         <>
           <h1 className="avm-auth__title">Qui êtes-vous ?</h1>
+          {error && <p className="avm-auth__error">{error}</p>}
           <div className="avm-auth__profiles">
             {profiles.map((p) => (
               <button
                 key={p.id}
                 className="avm-auth__profile"
-                onClick={() => {
-                  setSelected(p);
-                  setPassword("");
-                  setError(null);
-                  setRecovering(false);
-                }}
+                disabled={busy}
+                onClick={() => handleProfileClick(p)}
               >
                 <span className="avm-auth__avatar" style={avatarStyle(p.name)}>
                   {avatars[p.id] ? (

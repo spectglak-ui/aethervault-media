@@ -60,7 +60,26 @@ playback::save_progress(
 /// par rapport à l'Étape 3a).
 #[tauri::command]
 pub fn player_load(state: tauri::State<AppState>, path: String) -> Result<(), String> {
-    state.playback_engine.handle()?.load(&path)
+    let handle = state.playback_engine.handle()?;
+    handle.load(&path)?;
+    // FONCTIONNALITÉ (amélioration audio — spatialisation) : réappliquée
+    // automatiquement à chaque nouveau média à partir de la préférence
+    // persistée, pour que l'utilisateur n'ait à l'activer qu'une seule
+    // fois (voir commands::settings::get_audio_spatialization_enabled).
+    // Best-effort : une erreur ici (ex. connexion DB momentanément
+    // indisponible) ne doit jamais empêcher la lecture de démarrer.
+    if let Ok(conn) = state.get_conn() {
+        let enabled = crate::db::repositories::settings_repository::get(
+            &conn,
+            "audio_spatialization_enabled",
+        )
+        .ok()
+        .flatten()
+        .as_deref()
+            == Some("1");
+        let _ = handle.set_audio_spatialization(enabled);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -89,6 +108,20 @@ pub fn player_set_muted(state: tauri::State<AppState>, muted: bool) -> Result<()
 #[tauri::command]
 pub fn player_set_rate(state: tauri::State<AppState>, rate: f64) -> Result<(), String> {
     state.playback_engine.handle()?.set_rate(rate)
+}
+
+/// FONCTIONNALITÉ (amélioration audio — spatialisation) : application
+/// immédiate sur le média en cours de lecture (voir Paramètres → Audio).
+/// La préférence elle-même est enregistrée séparément par
+/// `commands::settings::set_audio_spatialization_enabled`, qui est ce
+/// que le frontend appelle réellement au moment du clic — celle-ci n'est
+/// là que pour éviter d'attendre le prochain chargement de média.
+#[tauri::command]
+pub fn player_set_audio_spatialization(
+    state: tauri::State<AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    state.playback_engine.handle()?.set_audio_spatialization(enabled)
 }
 
 /// Liste les pistes audio et sous-titres du fichier actuellement chargé

@@ -7,6 +7,7 @@ import {
   Plus,
   Radio,
   Search,
+  Trash2,
   UserCircle2,
   Video,
 } from "lucide-react";
@@ -107,6 +108,7 @@ function AetherCard({
   onOpen,
   onPlayAll,
   onToggleMode,
+  onRemove,
 }: {
   title: string;
   subtitle: string;
@@ -116,6 +118,7 @@ function AetherCard({
   onOpen: () => void;
   onPlayAll?: () => void;
   onToggleMode?: () => void;
+  onRemove?: () => void;
 }) {
   return (
     <div
@@ -166,6 +169,38 @@ function AetherCard({
           <span style={{ position: "absolute", top: 6, left: 6 }}>
             <SourceBadge source={source} />
           </span>
+        )}
+        {onRemove && (
+          <button
+            className="avm-af-card__remove"
+            title="Supprimer"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove();
+            }}
+            style={{
+              position: "absolute",
+              top: 6,
+              right: 6,
+              width: 28,
+              height: 28,
+              borderRadius: "50%",
+              background: "rgba(0,0,0,.78)",
+              border: "1px solid rgba(255,255,255,.22)",
+              color: "#fff",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              opacity: 0,
+              transition: "opacity .15s ease, background .15s ease",
+              zIndex: 2,
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(220,38,38,.85)")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(0,0,0,.78)")}
+          >
+            <Trash2 size={13} />
+          </button>
         )}
         {mode && <ModeBadge mode={mode} />}
         {onToggleMode && (
@@ -268,10 +303,24 @@ const sectionTitle: CSSProperties = {
   margin: "26px 0 14px",
 };
 
+/**
+ * FONCTIONNALITÉ (refonte UI AetherFy, Phase 1 — séparation navigation) :
+ * `defaultMode` filtre l'affichage sur les chaînes/playlists de ce mode
+ * (`sub.mode`/`p.mode`, déjà stocké par élément — aucun changement
+ * backend nécessaire). `undefined` = comportement d'origine, tout
+ * confondu (route `/vaulttube` historique, conservée pour compatibilité
+ * des liens existants). Voir `router.tsx` (`/vaulttube/video`,
+ * `/vaulttube/music`) et `layout/Sidebar.tsx` pour les deux nouvelles
+ * entrées de navigation.
+ */
+export interface VaultTubePageProps {
+  defaultMode?: PlaybackMode;
+}
+
 /** 0.4.0 — AetherFy : hub multi-sources façon Spotify (YouTube,
  * Dailymotion, Vimeo, PeerTube) — abonnements, playlists locales avec
  * mode musique/vidéo, recherche unifiée, lecture en un clic. */
-export function VaultTubePage() {
+export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
   const navigate = useNavigate();
   const { playQueue } = usePlayer();
 
@@ -279,7 +328,7 @@ export function VaultTubePage() {
   const [userPlaylists, setUserPlaylists] = useState<UserPlaylist[]>([]);
   const [newUrl, setNewUrl] = useState("");
   const [newPlaylist, setNewPlaylist] = useState("");
-  const [newPlaylistMode, setNewPlaylistMode] = useState<PlaybackMode>("video");
+  const [newPlaylistMode, setNewPlaylistMode] = useState<PlaybackMode>(defaultMode ?? "video");
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -297,6 +346,15 @@ export function VaultTubePage() {
     vaultTubeApi.listSubscriptions().then(setSubscriptions).catch(() => setSubscriptions([]));
     vaultTubeApi.listUserPlaylists().then(setUserPlaylists).catch(() => setUserPlaylists([]));
   }, []);
+
+  // FONCTIONNALITÉ (Phase 1) : pré-filtrage local sur `mode` — les
+  // données ne changent pas, seul l'affichage est restreint.
+  const visibleSubscriptions = defaultMode
+    ? subscriptions.filter((s) => s.mode === defaultMode)
+    : subscriptions;
+  const visibleUserPlaylists = defaultMode
+    ? userPlaylists.filter((p) => p.mode === defaultMode)
+    : userPlaylists;
 
   useEffect(() => {
     refresh();
@@ -362,6 +420,12 @@ export function VaultTubePage() {
   const handleRemove = async (id: number) => {
     if (!window.confirm("Supprimer cet abonnement et toutes ses vidéos ?")) return;
     await vaultTubeApi.removeSubscription(id);
+    refresh();
+  };
+
+  const handleDeletePlaylistFromGrid = async (id: number, name: string) => {
+    if (!window.confirm(`Supprimer la playlist « ${name} » ?`)) return;
+    await vaultTubeApi.deleteUserPlaylist(id);
     refresh();
   };
 
@@ -453,7 +517,13 @@ export function VaultTubePage() {
               boxShadow: "0 6px 18px rgba(0,0,0,.45)",
             }}
           >
-            <Radio size={26} color="#fff" />
+            {defaultMode === "audio" ? (
+              <Music size={26} color="#fff" />
+            ) : defaultMode === "video" ? (
+              <Video size={26} color="#fff" />
+            ) : (
+              <Radio size={26} color="#fff" />
+            )}
           </div>
           <div>
             <div
@@ -464,9 +534,19 @@ export function VaultTubePage() {
                 color: "var(--color-text-muted, #9a9aa3)",
               }}
             >
-              Streaming multi-sources
+              {defaultMode === "audio"
+                ? "Vos playlists et chaînes musicales"
+                : defaultMode === "video"
+                  ? "Vos chaînes et playlists vidéo"
+                  : "Streaming multi-sources"}
             </div>
-            <div style={{ fontSize: 30, fontWeight: 800, margin: 0 }}>AetherFy</div>
+            <div style={{ fontSize: 30, fontWeight: 800, margin: 0 }}>
+              {/* FONCTIONNALITÉ : identité "AetherFy" en Major Mono
+                  Display — seul ce mot change de police, "Vidéo"/
+                  "Musique" restent dans la police de titres habituelle. */}
+              <span className="avm-brand-aetherfy">AetherFy</span>
+              {defaultMode === "audio" ? " Musique" : defaultMode === "video" ? " Vidéo" : ""}
+            </div>
           </div>
         </div>
 
@@ -712,7 +792,7 @@ export function VaultTubePage() {
         </Button>
       </div>
       <div style={gridStyle}>
-        {userPlaylists.map((p) => (
+        {visibleUserPlaylists.map((p) => (
           <AetherCard
             key={p.id}
             title={p.name}
@@ -722,11 +802,14 @@ export function VaultTubePage() {
             onOpen={() => navigate(`/vaulttube/myplaylist/${p.id}`)}
             onPlayAll={() => void handlePlayAllPlaylist(p)}
             onToggleMode={() => void handleTogglePlaylistMode(p)}
+            onRemove={() => void handleDeletePlaylistFromGrid(p.id, p.name)}
           />
         ))}
-        {userPlaylists.length === 0 && (
+        {visibleUserPlaylists.length === 0 && (
           <p style={{ fontSize: 13, color: "var(--color-text-muted, #9a9aa3)" }}>
-            Aucune playlist locale — créez-en une ci-dessus.
+            {defaultMode
+              ? "Aucune playlist locale dans ce mode — créez-en une ci-dessus."
+              : "Aucune playlist locale — créez-en une ci-dessus."}
           </p>
         )}
       </div>
@@ -734,7 +817,7 @@ export function VaultTubePage() {
       {/* Abonnements (chaînes + playlists suivies, toutes sources) */}
       <div style={sectionTitle}>Abonnements</div>
       <div style={gridStyle}>
-        {subscriptions.map((sub) => (
+        {visibleSubscriptions.map((sub) => (
           <AetherCard
             key={sub.id}
             title={sub.name}
@@ -745,11 +828,14 @@ export function VaultTubePage() {
             onOpen={() => navigate(`/vaulttube/${sub.id}`)}
             onPlayAll={() => void handlePlayAllSub(sub)}
             onToggleMode={() => void handleToggleSubMode(sub)}
+            onRemove={() => void handleRemove(sub.id)}
           />
         ))}
-        {subscriptions.length === 0 && (
+        {visibleSubscriptions.length === 0 && (
           <p style={{ fontSize: 13, color: "var(--color-text-muted, #9a9aa3)" }}>
-            Aucun abonnement — suivez une chaîne via la recherche ou l'URL ci-dessous.
+            {defaultMode
+              ? "Aucun abonnement dans ce mode — suivez une chaîne via la recherche ou l'URL ci-dessous."
+              : "Aucun abonnement — suivez une chaîne via la recherche ou l'URL ci-dessous."}
           </p>
         )}
       </div>

@@ -1,0 +1,1124 @@
+--- a/apps/desktop/src/player/PlayerContext.tsx	2026-09-23 19:48:54.087297982 +0000
++++ b/apps/desktop/src/player/PlayerContext.tsx	2026-09-23 19:48:54.089745243 +0000
+@@ -76,8 +76,29 @@
+ 
+ export const FULLSCREEN_TARGET_ID = "avm-player-fullscreen-root";
+ 
++// CORRECTIF (lecture automatique — mauvais épisode, suite aux retours) :
++// `loadAndBroadcast` met à jour l'UI de façon SYNCHRONE (`emit` juste en
++// dessous) mais ne charge le fichier dans mpv qu'après un aller-retour
++// asynchrone (`getProgress`, une commande Tauri). Si cette fonction est
++// appelée une deuxième fois avant que le premier appel n'ait fini sa
++// chaîne (ex. l'utilisateur clique "Épisode suivant" ou un épisode de la
++// liste plusieurs fois de suite, un peu trop vite, en pensant que le
++// premier clic n'a pas été pris en compte), RIEN ne garantit que les deux
++// appels asynchrones à `playerApi.load(...)` arrivent à mpv dans l'ORDRE
++// de leurs appels : celui du PREMIER clic peut très bien se résoudre
++// APRÈS celui du second, et donc "gagner" et rester affiché en lecture —
++// alors que l'UI (mise à jour, elle, de façon synchrone) affiche déjà le
++// second choix. C'est exactement le symptôme rapporté : "l'écran affiche
++// l'épisode 2 mais rejoue l'épisode 1", corrigé en un ou deux essais
++// supplémentaires (l'appel le plus récent finit par gagner la course).
++// Le compteur `loadGeneration` ci-dessous annule les suites (`.then`) des
++// appels devenus obsolètes : seul le DERNIER `loadAndBroadcast` appelé a
++// le droit d'atteindre `playerApi.load()`/`seek()`.
++let loadGeneration = 0;
++
+ function loadAndBroadcast(items: PlayableMedia[], index: number): void {
+   const media = items[index];
++  const generation = ++loadGeneration;
+   void emit("player-queue-changed", {
+     items,
+     currentIndex: index,
+@@ -87,13 +108,16 @@
+     : playerApi.getProgress;
+   getProgress(media.id)
+     .then((progress) => {
++      if (generation !== loadGeneration) return; // supplanté par une sélection plus récente
+       void playerApi.load(media.path).then(() => {
++        if (generation !== loadGeneration) return;
+         if (progress && progress.position_seconds > MIN_RESUMABLE_SECONDS) {
+           void playerApi.seek(progress.position_seconds);
+         }
+       });
+     })
+     .catch(() => {
++      if (generation !== loadGeneration) return;
+       void playerApi.load(media.path);
+     });
+ }
+@@ -165,6 +189,25 @@
+   const shuffleRef = useRef(shuffleEnabled);
+   shuffleRef.current = shuffleEnabled;
+ 
++  // CORRECTIF (lecture automatique — mauvais épisode/film) : la fenêtre
++  // "player" (PiP, aujourd'hui masquée côté frontend mais toujours
++  // PRÉ-CRÉÉE et active — voir commands::window::open_player_window)
++  // monte, elle aussi, un <PlayerProvider> complet et reçoit les MÊMES
++  // événements globaux ("player-state", "player-queue-changed") que la
++  // fenêtre "main", puisque `emit`/`app_handle.emit(...)` diffusent à
++  // toutes les fenêtres. Sans ce garde-fou, les DEUX fenêtres réagissent
++  // chacune de leur côté à un même événement de fin de lecture et
++  // décident, indépendamment, du média suivant (deux tirages aléatoires
++  // différents en mode Aléatoire, ou deux appels `player_load`
++  // concurrents en mode séquentiel) — c'est la cause du bug "épisode/
++  // film suivant aléatoire". Seule la fenêtre "main" reste autorisée à
++  // piloter l'avance automatique et la sauvegarde périodique de
++  // progression ; la fenêtre "player" continue de simplement refléter
++  // l'état reçu (elle garde ses boutons Suivant/Précédent manuels, qui
++  // restent des actions utilisateur ponctuelles et ne posent pas ce
++  // problème de duplication).
++  const isPipWindow = useRef(getWindowLabel() === "player").current;
++
+   const currentMedia =
+     queue.currentIndex !== null ? queue.items[queue.currentIndex] ?? null : null;
+ 
+@@ -177,6 +220,11 @@
+   const durationRef = useRef(0);
+   durationRef.current = duration;
+   const endedHandledRef = useRef<number | null>(null);
++  // CORRECTIF (mineur, lié) : distingue une pause VOLONTAIRE (utilisateur)
++  // du repli heuristique de fin de lecture ci-dessous — sans cela, une
++  // pause manuelle dans la dernière seconde d'un média déclenchait un
++  // enchaînement automatique non désiré vers le média suivant.
++  const userPausedRef = useRef(false);
+ 
+   const seekDebounceRef = useRef<number | null>(null);
+   const volumeDebounceRef = useRef<number | null>(null);
+@@ -197,6 +245,9 @@
+   }, []);
+ 
+   const handleEnded = () => {
++    // Seule la fenêtre "main" décide de l'avance automatique — voir le
++    // commentaire sur `isPipWindow` plus haut.
++    if (isPipWindow) return;
+     const media = currentMediaRef.current;
+     if (!media || endedHandledRef.current === media.id) return;
+     endedHandledRef.current = media.id;
+@@ -280,10 +331,16 @@
+       if (ended) {
+         handleEnded();
+       } else if (
++        !userPausedRef.current &&
+         playing === false &&
+         durationRef.current > 0 &&
+         positionRef.current >= durationRef.current - 1
+       ) {
++        // Repli : certains flux ne renvoient jamais `ended: true` — mais
++        // on ignore ce repli si la pause vient d'un clic utilisateur
++        // (voir `userPausedRef`), pour ne pas enchaîner sur le média
++        // suivant quand l'utilisateur met simplement en pause dans la
++        // dernière seconde.
+         handleEnded();
+       }
+     });
+@@ -302,6 +359,7 @@
+         setDuration(0);
+         setBuffered(0);
+         endedHandledRef.current = null;
++        userPausedRef.current = false;
+         if (media?.mode) setImmersiveOpen(true);
+         if (media === null) {
+           setImmersiveOpen(false);
+@@ -354,6 +412,9 @@
+   }, []);
+ 
+   useEffect(() => {
++    // Idem : évite d'écrire la progression / l'activité amis en double
++    // (une fois par fenêtre) à chaque tick de 5 s.
++    if (isPipWindow) return;
+     if (!currentMedia || !isPlaying) return;
+     const interval = window.setInterval(saveProgressNow, PROGRESS_SAVE_INTERVAL_MS);
+     return () => window.clearInterval(interval);
+@@ -420,6 +481,7 @@
+       },
+       togglePlay: () => {
+         const next = !isPlaying;
++        userPausedRef.current = !next;
+         setIsPlaying(next);
+         void playerApi.setPaused(!next);
+       },
+--- a/apps/desktop/src-tauri/src/db/repositories/media_repository.rs	2026-09-23 19:48:54.092506782 +0000
++++ b/apps/desktop/src-tauri/src/db/repositories/media_repository.rs	2026-09-23 19:48:54.095229512 +0000
+@@ -122,12 +122,26 @@
+     rows.collect()
+ }
+ 
++/// CORRECTIF (lecture automatique — mauvais épisode) : l'ancien tri SQL
++/// `ORDER BY file_name COLLATE NOCASE` est lexicographique pur, pas
++/// numérique. Or l'ordre renvoyé ici pilote directement l'attribution du
++/// numéro d'épisode de repli quand aucun motif `SxxEyy` n'est reconnu
++/// dans le nom de fichier (voir `services::metadata::mod::match_library`,
++/// `next_episode_number`, qui incrémente au fil du parcours de cette
++/// liste). Pour une saison de 10+ épisodes nommés sans balise `SxxEyy`
++/// (ex. anime en numérotation absolue "Show - 2.mkv" … "Show - 10.mkv"),
++/// le tri lexicographique classe "Show - 10.mkv" AVANT "Show - 2.mkv" —
++/// l'épisode 10 recevait alors le numéro 2, et vice-versa, corrompant
++/// durablement l'ordre stocké en base (donc "Épisode suivant" ensuite).
++/// On trie désormais en Rust avec `natural_cmp` (tri "naturel", qui
++/// compare les suites de chiffres numériquement). N'affecte QUE cette
++/// fonction — `list_by_library` et les autres tris de ce fichier restent
++/// inchangés (portée volontairement minimale du correctif).
+ pub fn list_unmatched(conn: &Connection, library_id: i64) -> rusqlite::Result<Vec<MediaFileRecord>> {
+     let mut stmt = conn.prepare(
+         "SELECT id, library_id, folder_id, path, file_name, size_bytes, modified_at, is_available, discovered_at, title_id, episode_id
+          FROM media_files
+-         WHERE library_id = ?1 AND title_id IS NULL AND episode_id IS NULL
+-         ORDER BY file_name COLLATE NOCASE",
++         WHERE library_id = ?1 AND title_id IS NULL AND episode_id IS NULL",
+     )?;
+ 
+     let rows = stmt.query_map(rusqlite::params![library_id], |row| {
+@@ -146,7 +160,103 @@
+         })
+     })?;
+ 
+-    rows.collect()
++    let mut records = rows.collect::<rusqlite::Result<Vec<_>>>()?;
++    records.sort_by(|a, b| natural_cmp(&a.file_name, &b.file_name));
++    Ok(records)
++}
++
++/// Tri "naturel" (numérique) de deux chaînes : les suites de chiffres
++/// sont comparées comme des nombres plutôt que caractère par caractère,
++/// pour que "2" précède "10". Insensible à la casse sur le reste. Voir
++/// `list_unmatched` pour le contexte du correctif.
++fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
++    use std::cmp::Ordering;
++    let mut ai = a.chars().peekable();
++    let mut bi = b.chars().peekable();
++    loop {
++        let (ac, bc) = match (ai.peek(), bi.peek()) {
++            (None, None) => return Ordering::Equal,
++            (None, Some(_)) => return Ordering::Less,
++            (Some(_), None) => return Ordering::Greater,
++            (Some(&ac), Some(&bc)) => (ac, bc),
++        };
++        if ac.is_ascii_digit() && bc.is_ascii_digit() {
++            let mut an = String::new();
++            while let Some(&c) = ai.peek() {
++                if c.is_ascii_digit() {
++                    an.push(c);
++                    ai.next();
++                } else {
++                    break;
++                }
++            }
++            let mut bn = String::new();
++            while let Some(&c) = bi.peek() {
++                if c.is_ascii_digit() {
++                    bn.push(c);
++                    bi.next();
++                } else {
++                    break;
++                }
++            }
++            let (at, bt) = (an.trim_start_matches('0'), bn.trim_start_matches('0'));
++            let cmp = if at.len() != bt.len() {
++                at.len().cmp(&bt.len())
++            } else {
++                at.cmp(bt)
++            };
++            if cmp != Ordering::Equal {
++                return cmp;
++            }
++        } else {
++            let (al, bl) = (ac.to_ascii_lowercase(), bc.to_ascii_lowercase());
++            if al != bl {
++                return al.cmp(&bl);
++            }
++            ai.next();
++            bi.next();
++        }
++    }
++}
++
++#[cfg(test)]
++mod natural_sort_tests {
++    use super::natural_cmp;
++    use std::cmp::Ordering;
++
++    #[test]
++    fn orders_bare_episode_numbers_numerically() {
++        let mut names = vec![
++            "Show - 10.mkv".to_string(),
++            "Show - 2.mkv".to_string(),
++            "Show - 1.mkv".to_string(),
++        ];
++        names.sort_by(|a, b| natural_cmp(a, b));
++        assert_eq!(names, vec!["Show - 1.mkv", "Show - 2.mkv", "Show - 10.mkv"]);
++    }
++
++    #[test]
++    fn treats_equal_numeric_value_as_equal_regardless_of_padding() {
++        assert_eq!(natural_cmp("Ep 07.mkv", "Ep 7.mkv"), Ordering::Equal);
++    }
++
++    #[test]
++    fn falls_back_to_case_insensitive_comparison_without_digits() {
++        assert_eq!(natural_cmp("Alpha.mkv", "alpha.mkv"), Ordering::Equal);
++        assert_eq!(natural_cmp("Alpha.mkv", "Beta.mkv"), Ordering::Less);
++    }
++
++    /// Reproduit le scénario du bug : une saison de 12 épisodes sans
++    /// motif `SxxEyy`, découverte par le scanner dans un ordre arbitraire
++    /// — doit retrouver l'ordre de visionnage 1..12 après tri.
++    #[test]
++    fn realistic_season_of_twelve_episodes_sorts_in_watch_order() {
++        let mut names: Vec<String> = (1..=12).map(|n| format!("Naruto - {n}.mkv")).collect();
++        names.reverse();
++        names.sort_by(|a, b| natural_cmp(a, b));
++        let expected: Vec<String> = (1..=12).map(|n| format!("Naruto - {n}.mkv")).collect();
++        assert_eq!(names, expected);
++    }
+ }
+ 
+ /// Rattache un fichier à un Titre de nature `"movie"`. Exclusif avec
+@@ -172,10 +282,20 @@
+ /// Le Média rattaché à un Titre de nature `"movie"` (relation 1-1 en
+ /// pratique aujourd'hui) — utilisé par la page Titre pour retrouver le
+ /// fichier à lire (doc §6.3 : "bouton Lecture").
++/// DURCISSEMENT (défensif) : `ORDER BY` explicite ajouté par précaution —
++/// en usage normal une seule ligne `media_files` référence ce `title_id`
++/// (voir `link_to_title`), donc ceci ne change rien aujourd'hui. Mais
++/// sans `ORDER BY`, SQLite ne garantit AUCUN ordre pour `LIMIT 1` : si
++/// jamais deux lignes finissaient par référencer le même Titre (ex.
++/// futur flux d'import, fichier déplacé hors du dossier surveillé sans
++/// nettoyage de l'ancienne ligne), la ligne renvoyée serait non
++/// déterministe. On préfère désormais, à égalité, le fichier disponible
++/// le plus récemment découvert.
+ pub fn find_by_title(conn: &Connection, title_id: i64) -> rusqlite::Result<Option<MediaFileRecord>> {
+     conn.query_row(
+         "SELECT id, library_id, folder_id, path, file_name, size_bytes, modified_at, is_available, discovered_at, title_id, episode_id
+-         FROM media_files WHERE title_id = ?1 LIMIT 1",
++         FROM media_files WHERE title_id = ?1
++         ORDER BY is_available DESC, id DESC LIMIT 1",
+         rusqlite::params![title_id],
+         |row| {
+             Ok(MediaFileRecord {
+@@ -198,10 +318,14 @@
+ 
+ /// Le Média rattaché à un Épisode donné — utilisé par la page Épisode pour
+ /// retrouver le fichier à lire.
++/// DURCISSEMENT (défensif) : même correctif que `find_by_title` ci-dessus
++/// — `ORDER BY` déterministe, sans changement de comportement dans le
++/// cas normal (une seule ligne par épisode).
+ pub fn find_by_episode(conn: &Connection, episode_id: i64) -> rusqlite::Result<Option<MediaFileRecord>> {
+     conn.query_row(
+         "SELECT id, library_id, folder_id, path, file_name, size_bytes, modified_at, is_available, discovered_at, title_id, episode_id
+-         FROM media_files WHERE episode_id = ?1 LIMIT 1",
++         FROM media_files WHERE episode_id = ?1
++         ORDER BY is_available DESC, id DESC LIMIT 1",
+         rusqlite::params![episode_id],
+         |row| {
+             Ok(MediaFileRecord {
+--- a/apps/desktop/src-tauri/src/db/repositories/title_repository.rs	2026-09-23 19:48:54.098809318 +0000
++++ b/apps/desktop/src-tauri/src/db/repositories/title_repository.rs	2026-09-23 19:48:54.100112415 +0000
+@@ -344,6 +344,32 @@
+ /// non NULL marque le Titre comme enrichi (l'appariement local initial
+ /// reste dans `metadata_source` jusqu'à ce qu'un rafraîchissement le
+ /// remplace par "tmdb").
++/// FONCTIONNALITÉ (correction manuelle de correspondance TMDB) :
++/// réinitialise les associations issues d'un fournisseur en ligne avant
++/// d'en réappliquer de nouvelles (voir
++/// `services::metadata::tmdb::TmdbClient::apply_match`). Nécessaire car
++/// `attach_genre`/`attach_studio`/`attach_credit` sont de purs
++/// `INSERT OR IGNORE` : sans ce nettoyage préalable, rejouer une
++/// correspondance ajouterait les nouvelles données À CÔTÉ des
++/// anciennes (mauvaises) au lieu de les remplacer. Ne touche jamais aux
++/// dictionnaires partagés `genres`/`studios`/`people`, seulement aux
++/// tables de liaison propres à ce Titre.
++pub fn clear_provider_associations(conn: &Connection, title_id: i64) -> rusqlite::Result<()> {
++    conn.execute(
++        "DELETE FROM title_genres WHERE title_id = ?1",
++        rusqlite::params![title_id],
++    )?;
++    conn.execute(
++        "DELETE FROM title_studios WHERE title_id = ?1",
++        rusqlite::params![title_id],
++    )?;
++    conn.execute(
++        "DELETE FROM title_credits WHERE title_id = ?1",
++        rusqlite::params![title_id],
++    )?;
++    Ok(())
++}
++
+ pub fn set_online_ids(
+     conn: &Connection,
+     title_id: i64,
+--- a/apps/desktop/src-tauri/src/services/metadata/tmdb.rs	2026-09-23 19:48:54.103704740 +0000
++++ b/apps/desktop/src-tauri/src/services/metadata/tmdb.rs	2026-09-23 19:48:54.104976091 +0000
+@@ -190,6 +190,21 @@
+     pub lang: String,
+ }
+ 
++/// FONCTIONNALITÉ (correction manuelle de correspondance TMDB) : un
++/// candidat de résultat de recherche, pour affichage dans un sélecteur
++/// visuel — l'affiche pointe vers TMDB directement (pas de
++/// téléchargement local tant que l'utilisateur n'a pas choisi ce
++/// candidat ; voir `apply_match`, qui rapatrie l'image en local via
++/// `fetch_details` une fois la correspondance confirmée).
++#[derive(Debug, Clone, Serialize)]
++pub struct TmdbSearchCandidate {
++    pub tmdb_id: i64,
++    pub name: String,
++    pub year: Option<i32>,
++    pub overview: Option<String>,
++    pub poster_url: Option<String>,
++}
++
+ pub struct TmdbDetails {
+     pub name: String,
+     pub description: Option<String>,
+@@ -248,6 +263,105 @@
+         pick.and_then(|r| r.get("id").and_then(|i| i.as_i64()))
+     }
+ 
++    /// FONCTIONNALITÉ (correction manuelle) : jusqu'à 6 candidats pour un
++    /// ré-appariement manuel — contrairement à `search_title` (qui ne
++    /// renvoie qu'un seul ID "meilleure estimation", utilisé par
++    /// l'enrichissement automatique), celle-ci renvoie plusieurs
++    /// résultats pour que l'utilisateur choisisse visuellement le bon
++    /// (cas d'une mauvaise source obtenue durant le scan).
++    pub fn search_candidates(&self, kind: &str, query: &str) -> Vec<TmdbSearchCandidate> {
++        let path = if kind == "movie" {
++            "/search/movie"
++        } else {
++            "/search/tv"
++        };
++        let Some(v) = get_json(&self.url(path, &format!("&query={}", url_encode(query)), &self.lang))
++        else {
++            return Vec::new();
++        };
++        let Some(results) = v.get("results").and_then(|r| r.as_array()) else {
++            return Vec::new();
++        };
++        results
++            .iter()
++            .take(6)
++            .filter_map(|r| {
++                let tmdb_id = r.get("id")?.as_i64()?;
++                let name = r
++                    .get("title")
++                    .or_else(|| r.get("name"))
++                    .and_then(|n| n.as_str())?
++                    .to_string();
++                let date = r
++                    .get("release_date")
++                    .or_else(|| r.get("first_air_date"))
++                    .and_then(|d| d.as_str())
++                    .unwrap_or_default();
++                let year = date.get(0..4).and_then(|y| y.parse::<i32>().ok());
++                let overview = r
++                    .get("overview")
++                    .and_then(|o| o.as_str())
++                    .filter(|s| !s.is_empty())
++                    .map(String::from);
++                let poster_url = r
++                    .get("poster_path")
++                    .and_then(|p| p.as_str())
++                    .map(|p| format!("{IMG_BASE}/w200{p}"));
++                Some(TmdbSearchCandidate { tmdb_id, name, year, overview, poster_url })
++            })
++            .collect()
++    }
++
++    /// FONCTIONNALITÉ (correction manuelle) : applique une correspondance
++    /// TMDB — recherche automatique (`enrich_library`) OU choix manuel
++    /// (`commands::title::rematch_title_tmdb`) — à un Titre : télécharge
++    /// la fiche détaillée, réinitialise les associations précédentes
++    /// (genres/studios/casting — voir
++    /// `title_repository::clear_provider_associations`) puis les
++    /// reconstruit, et enregistre `tmdb_id`/`imdb_id`. Factorisée hors de
++    /// la boucle `enrich_library` pour n'avoir qu'un seul endroit où
++    /// cette séquence est écrite.
++    pub fn apply_match(
++        &self,
++        conn: &rusqlite::Connection,
++        title_id: i64,
++        kind: &str,
++        tmdb_id: i64,
++        data_dir: &str,
++    ) -> Result<(), String> {
++        let details = self
++            .fetch_details(kind, tmdb_id, data_dir)
++            .ok_or_else(|| "Fiche TMDB introuvable ou inaccessible.".to_string())?;
++        title_repository::clear_provider_associations(conn, title_id).map_err(|e| e.to_string())?;
++        title_repository::apply_metadata(
++            conn,
++            title_id,
++            details.description.as_deref(),
++            None,
++            details.rating,
++            details.poster_path.as_deref(),
++            details.banner_path.as_deref(),
++            "tmdb",
++        )
++        .map_err(|e| e.to_string())?;
++        for genre in &details.genres {
++            title_repository::attach_genre(conn, title_id, genre).map_err(|e| e.to_string())?;
++        }
++        for studio in &details.studios {
++            title_repository::attach_studio(conn, title_id, studio).map_err(|e| e.to_string())?;
++        }
++        for (index, (name, character)) in details.cast.iter().enumerate() {
++            title_repository::attach_credit(conn, title_id, name, "actor", character.as_deref(), index as i64)
++                .map_err(|e| e.to_string())?;
++        }
++        for (index, name) in details.directors.iter().enumerate() {
++            title_repository::attach_credit(conn, title_id, name, "director", None, index as i64)
++                .map_err(|e| e.to_string())?;
++        }
++        title_repository::set_online_ids(conn, title_id, tmdb_id, details.imdb_id.as_deref())
++            .map_err(|e| e.to_string())
++    }
++
+     /// Fiche détaillée + crédits + IDs externes ; images téléchargées en
+     /// local. Repli `en-US` pour le synopsis si le français est vide.
+     pub fn fetch_details(&self, kind: &str, tmdb_id: i64, data_dir: &str) -> Option<TmdbDetails> {
+@@ -599,50 +713,18 @@
+                 }),
+             );
+         }
++        // 0.6.1 : la séquence "télécharger la fiche + persister
++        // genres/studios/casting/affiche + tmdb_id/imdb_id" est
++        // désormais factorisée dans `TmdbClient::apply_match`, partagée
++        // avec le ré-appariement manuel (correction d'une mauvaise
++        // source — voir `commands::title::rematch_title_tmdb`).
+         let result = client
+             .search_title(&title.kind, &title.name, title.year.map(|y| y as i32))
+             .and_then(|tmdb_id| {
+-                let details = client.fetch_details(&title.kind, tmdb_id, data_dir)?;
+-                let applied = title_repository::apply_metadata(
+-                    &conn,
+-                    title.id,
+-                    details.description.as_deref(),
+-                    None,
+-                    details.rating,
+-                    details.poster_path.as_deref(),
+-                    details.banner_path.as_deref(),
+-                    "tmdb",
+-                )
+-                .and_then(|()| {
+-                    for genre in &details.genres {
+-                        title_repository::attach_genre(&conn, title.id, genre)?;
+-                    }
+-                    for studio in &details.studios {
+-                        title_repository::attach_studio(&conn, title.id, studio)?;
+-                    }
+-                    for (index, (name, character)) in details.cast.iter().enumerate() {
+-                        title_repository::attach_credit(
+-                            &conn,
+-                            title.id,
+-                            name,
+-                            "actor",
+-                            character.as_deref(),
+-                            index as i64,
+-                        )?;
+-                    }
+-                    for (index, name) in details.directors.iter().enumerate() {
+-                        title_repository::attach_credit(
+-                            &conn,
+-                            title.id,
+-                            name,
+-                            "director",
+-                            None,
+-                            index as i64,
+-                        )?;
+-                    }
+-                    title_repository::set_online_ids(&conn, title.id, tmdb_id, details.imdb_id.as_deref())
+-                });
+-                applied.map(|()| tmdb_id).ok()
++                client
++                    .apply_match(&conn, title.id, &title.kind, tmdb_id, data_dir)
++                    .ok()
++                    .map(|()| tmdb_id)
+             });
+         match result {
+             Some(_) => enriched += 1,
+--- a/apps/desktop/src-tauri/src/commands/title.rs	2026-09-23 19:48:54.108470234 +0000
++++ b/apps/desktop/src-tauri/src/commands/title.rs	2026-09-23 19:48:54.109751175 +0000
+@@ -203,6 +203,53 @@
+     Ok(client.fetch_title_cast(&kind, tmdb_id, &state.data_dir))
+ }
+ 
++/// FONCTIONNALITÉ (correction manuelle de correspondance TMDB) :
++/// candidats pour le sélecteur affiché quand le scan a retenu une
++/// mauvaise source pour un Titre.
++#[tauri::command]
++pub fn search_tmdb_matches(
++    state: tauri::State<AppState>,
++    kind: String,
++    query: String,
++) -> Result<Vec<crate::services::metadata::tmdb::TmdbSearchCandidate>, String> {
++    let conn = state.get_conn()?;
++    let settings = crate::services::metadata::tmdb::load_settings(&conn);
++    if settings.api_key.is_empty() {
++        return Err("Clé API TMDB absente (Paramètres → Métadonnées).".to_string());
++    }
++    let client = crate::services::metadata::tmdb::TmdbClient {
++        api_key: settings.api_key,
++        lang: settings.language,
++    };
++    Ok(client.search_candidates(&kind, &query))
++}
++
++/// FONCTIONNALITÉ (correction manuelle de correspondance TMDB) : corrige
++/// la correspondance d'un Titre à partir du `tmdb_id` choisi par
++/// l'utilisateur dans `search_tmdb_matches` — réinitialise puis
++/// réapplique tout ce qui vient du fournisseur (synopsis, genres,
++/// casting, affiche/bannière, tmdb_id/imdb_id).
++#[tauri::command]
++pub fn rematch_title_tmdb(
++    state: tauri::State<AppState>,
++    title_id: i64,
++    tmdb_id: i64,
++) -> Result<(), String> {
++    let conn = state.get_conn()?;
++    let record = crate::db::repositories::title_repository::get(&conn, title_id)
++        .map_err(|e| e.to_string())?
++        .ok_or_else(|| "Titre introuvable.".to_string())?;
++    let settings = crate::services::metadata::tmdb::load_settings(&conn);
++    if settings.api_key.is_empty() {
++        return Err("Clé API TMDB absente (Paramètres → Métadonnées).".to_string());
++    }
++    let client = crate::services::metadata::tmdb::TmdbClient {
++        api_key: settings.api_key,
++        lang: settings.language,
++    };
++    client.apply_match(&conn, title_id, &record.kind, tmdb_id, &state.data_dir)
++}
++
+ /// 0.6.0 : fiche personne TMDB.
+ #[tauri::command]
+ pub fn get_person(
+--- a/apps/desktop/src-tauri/src/commands/auth.rs	2026-09-23 19:48:54.114715531 +0000
++++ b/apps/desktop/src-tauri/src/commands/auth.rs	2026-09-23 19:48:54.116292122 +0000
+@@ -67,6 +67,40 @@
+     Ok(profile)
+ }
+ 
++/// FONCTIONNALITÉ (Accès rapide) : connexion en un clic, en contournant
++/// la vérification du mot de passe. Le réglage est revérifié CÔTÉ
++/// SERVEUR (jamais fait confiance à l'UI) avant de contourner quoi que
++/// ce soit — voir `commands::settings::get_quick_access_enabled` pour
++/// où/comment ce réglage est activé. Le Coffre privé n'est jamais
++/// concerné : il exige sa propre phrase secrète (dérivation de clé
++/// AES, `security::vault`), entièrement indépendante de la connexion
++/// de profil.
++#[tauri::command]
++pub fn quick_login_profile(
++    state: tauri::State<AppState>,
++    profile_id: i64,
++) -> Result<ProfileRecord, String> {
++    let conn = state.get_conn()?;
++    let enabled = crate::db::repositories::settings_repository::get(&conn, "quick_access_enabled")
++        .map_err(|e| e.to_string())?
++        .as_deref()
++        == Some("1");
++    if !enabled {
++        return Err("Accès rapide désactivé.".to_string());
++    }
++    let profile = profile_repository::get_by_id(&conn, profile_id)
++        .map_err(|e| e.to_string())?
++        .ok_or_else(|| "Profil introuvable.".to_string())?;
++
++    let mut guard = state
++        .active_profile_id
++        .lock()
++        .map_err(|_| "État du profil actif inaccessible.".to_string())?;
++    *guard = Some(profile.id);
++
++    Ok(profile)
++}
++
+ #[tauri::command]
+ pub fn logout_profile(state: tauri::State<AppState>) -> Result<(), String> {
+     let mut guard = state
+--- a/apps/desktop/src-tauri/src/commands/settings.rs	2026-09-23 19:48:54.121141653 +0000
++++ b/apps/desktop/src-tauri/src/commands/settings.rs	2026-09-23 19:48:54.122826745 +0000
+@@ -18,6 +18,56 @@
+     tmdb::save_settings(&conn, &settings)
+ }
+ 
++// ---- Accès rapide (FONCTIONNALITÉ) --------------------------------
++//
++// Un profil protégé par mot de passe peut, si ce réglage est activé,
++// être ouvert d'un simple clic depuis l'écran de connexion (voir
++// `commands::auth::quick_login_profile`). Réglage global (pas par
++// profil pour l'instant), stocké dans `app_settings` (non sensible :
++// c'est un booléen d'activation, jamais un secret).
++//
++// N'affecte JAMAIS le Coffre privé, qui dérive sa propre clé de
++// chiffrement à partir d'une phrase secrète distincte (voir
++// `security::vault`/`security::kdf`) — l'Accès rapide contourne
++// uniquement la porte de connexion de PROFIL, pas le chiffrement du
++// Coffre.
++const QUICK_ACCESS_KEY: &str = "quick_access_enabled";
++
++/// Lisible AVANT connexion — l'écran de login en a besoin pour savoir
++/// s'il doit proposer un clic direct sur le profil ou exiger le mot de
++/// passe. N'expose rien de sensible (un simple booléen).
++#[tauri::command]
++pub fn get_quick_access_enabled(state: tauri::State<AppState>) -> Result<bool, String> {
++    let conn = state.get_conn()?;
++    Ok(
++        crate::db::repositories::settings_repository::get(&conn, QUICK_ACCESS_KEY)
++            .map_err(|e| e.to_string())?
++            .as_deref()
++            == Some("1"),
++    )
++}
++
++/// Modifiable UNIQUEMENT depuis un profil déjà connecté
++/// (`read_active_profile_id` échoue sinon) : jamais depuis l'écran de
++/// login lui-même, pour qu'un simple accès physique à l'écran de
++/// verrouillage ne suffise pas à l'activer soi-même — conformément à la
++/// demande (« activable/désactivable uniquement depuis les paramètres
++/// utilisateur »).
++#[tauri::command]
++pub fn set_quick_access_enabled(
++    state: tauri::State<AppState>,
++    enabled: bool,
++) -> Result<(), String> {
++    state.read_active_profile_id()?;
++    let conn = state.get_conn()?;
++    crate::db::repositories::settings_repository::set(
++        &conn,
++        QUICK_ACCESS_KEY,
++        if enabled { "1" } else { "0" },
++    )
++    .map_err(|e| e.to_string())
++}
++
+ // ---- Fond d'Accueil personnalisé (0.3.0) -------------------------
+ 
+ /// Fond d'Accueil (0.3.0) : même pattern que l'avatar de profil —
+--- a/apps/desktop/src-tauri/src/lib.rs	2026-09-23 19:48:54.127846582 +0000
++++ b/apps/desktop/src-tauri/src/lib.rs	2026-09-23 19:48:54.128506784 +0000
+@@ -173,6 +173,7 @@
+             // Authentification des profils (Étape 6c)
+             commands::auth::get_login_state,
+             commands::auth::login_profile,
++            commands::auth::quick_login_profile,
+             commands::auth::logout_profile,
+             commands::auth::setup_first_admin,
+             commands::auth::change_own_password,
+@@ -180,6 +181,8 @@
+             commands::auth::recover_with_code,
+             commands::settings::get_metadata_settings,
+             commands::settings::save_metadata_settings,
++            commands::settings::get_quick_access_enabled,
++            commands::settings::set_quick_access_enabled,
+             commands::security::get_vault_status,
+             commands::security::setup_vault,
+             commands::security::unlock_vault,
+@@ -242,6 +245,8 @@
+ 			commands::title::get_title_cast,
+             commands::title::get_person,
+             commands::title::list_person_titles,
++            commands::title::search_tmdb_matches,
++            commands::title::rematch_title_tmdb,
+             commands::playback::get_playback_progress,
+             commands::playback::save_playback_progress,
+             commands::playback::list_continue_watching,
+--- a/apps/desktop/src/features/title/api.ts	2026-09-23 19:48:54.134034536 +0000
++++ b/apps/desktop/src/features/title/api.ts	2026-09-23 19:48:54.135622114 +0000
+@@ -65,6 +65,15 @@
+   titles: (personId: number) => invoke<TitleSummary[]>("list_person_titles", { personId }),
+ };
+ 
++/** FONCTIONNALITÉ (correction manuelle de correspondance TMDB). */
++export interface TmdbSearchCandidate {
++  tmdb_id: number;
++  name: string;
++  year: number | null;
++  overview: string | null;
++  poster_url: string | null;
++}
++
+ export const titleApi = {
+   listByCategory: (categoryId: number) =>
+     invoke<TitleSummary[]>("list_titles_by_category", { categoryId }),
+@@ -103,4 +112,9 @@
+     invoke<TitleSummary[]>("list_similar_titles", { titleId, limit }),
+   recordWatch: (mediaFileId: number, positionSeconds: number, durationSeconds: number) =>
+     invoke<void>("record_watch", { mediaFileId, positionSeconds, durationSeconds }),
++  /** FONCTIONNALITÉ : correction manuelle de correspondance TMDB. */
++  searchTmdbMatches: (kind: string, query: string) =>
++    invoke<TmdbSearchCandidate[]>("search_tmdb_matches", { kind, query }),
++  rematchTmdb: (titleId: number, tmdbId: number) =>
++    invoke<void>("rematch_title_tmdb", { titleId, tmdbId }),
+ };
+\ No newline at end of file
+--- a/apps/desktop/src/pages/TitleDetailPage.tsx	2026-09-23 19:48:54.139496910 +0000
++++ b/apps/desktop/src/pages/TitleDetailPage.tsx	2026-09-23 19:48:54.140937509 +0000
+@@ -1,11 +1,20 @@
+ import { useCallback, useEffect, useRef, useState } from "react";
+ import { useNavigate, useParams } from "react-router-dom";
+-import { Clapperboard, ImageUp, ListPlus, Play, RotateCcw, Volume2, VolumeX } from "lucide-react";
++import {
++  Clapperboard,
++  ImageUp,
++  ListPlus,
++  Play,
++  RotateCcw,
++  Search,
++  Volume2,
++  VolumeX,
++} from "lucide-react";
+ import { invoke } from "@tauri-apps/api/core";
+ import { Menu, CheckMenuItem } from "@tauri-apps/api/menu";
+-import { Button, EmptyState, IconButton, PageHeader } from "@aethervault/ui-kit";
++import { Button, EmptyState, IconButton, Modal, PageHeader } from "@aethervault/ui-kit";
+ import type { TitleDetails } from "@aethervault/shared-types";
+-import { titleApi } from "../features/title/api";
++import { titleApi, type TmdbSearchCandidate } from "../features/title/api";
+ import { libraryApi } from "../features/library/api";
+ import { PersonalizableImage } from "../features/personalization/PersonalizableImage";
+ import { CastRow, GenreRow } from "../components/TitleRows";
+@@ -172,6 +181,59 @@
+     refresh();
+   }, [refresh]);
+ 
++  // FONCTIONNALITÉ (correction manuelle de correspondance TMDB) : le
++  // scan retient parfois une mauvaise source (homonymes, remakes...) —
++  // ce dialogue permet de rechercher et d'appliquer manuellement le bon
++  // identifiant TMDB, sans repasser par un rescan complet.
++  const [tmdbModalOpen, setTmdbModalOpen] = useState(false);
++  const [tmdbQuery, setTmdbQuery] = useState("");
++  const [tmdbResults, setTmdbResults] = useState<TmdbSearchCandidate[]>([]);
++  const [tmdbSearching, setTmdbSearching] = useState(false);
++  const [tmdbApplyingId, setTmdbApplyingId] = useState<number | null>(null);
++  const [tmdbError, setTmdbError] = useState<string | null>(null);
++
++  const runTmdbSearch = useCallback(
++    async (query: string) => {
++      if (!title || !query.trim()) return;
++      setTmdbSearching(true);
++      setTmdbError(null);
++      try {
++        const results = await titleApi.searchTmdbMatches(title.kind, query.trim());
++        setTmdbResults(results);
++      } catch (err) {
++        setTmdbError(err instanceof Error ? err.message : "Recherche TMDB impossible.");
++        setTmdbResults([]);
++      } finally {
++        setTmdbSearching(false);
++      }
++    },
++    [title]
++  );
++
++  const openTmdbModal = () => {
++    if (!title) return;
++    setTmdbQuery(title.name);
++    setTmdbResults([]);
++    setTmdbError(null);
++    setTmdbModalOpen(true);
++    void runTmdbSearch(title.name);
++  };
++
++  const applyTmdbMatch = async (candidate: TmdbSearchCandidate) => {
++    if (!title) return;
++    setTmdbApplyingId(candidate.tmdb_id);
++    setTmdbError(null);
++    try {
++      await titleApi.rematchTmdb(title.id, candidate.tmdb_id);
++      setTmdbModalOpen(false);
++      refresh();
++    } catch (err) {
++      setTmdbError(err instanceof Error ? err.message : "Impossible d'appliquer cette correspondance.");
++    } finally {
++      setTmdbApplyingId(null);
++    }
++  };
++
+   // 0.5.1 : TMDB d'abord ; si injoignable, repli YouTube local (yt-dlp).
+   const titleName = title?.name ?? null;
+   useEffect(() => {
+@@ -319,6 +381,9 @@
+         <IconButton label="Changer le fond de page" onClick={() => void handlePickWallpaper()}>
+           <ImageUp size={16} />
+         </IconButton>
++        <IconButton label="Corriger la correspondance TMDB" onClick={openTmdbModal}>
++          <Search size={16} />
++        </IconButton>
+         {title.banner_is_custom && (
+           <IconButton
+             label="Réinitialiser le fond automatique"
+@@ -518,6 +583,97 @@
+       {/* 0.6.0 : rangées Distribution + Du même genre (zone basse). */}
+             <CastRow titleId={title.id} />
+       <GenreRow titleId={title.id} categoryKey={key ?? ""} />
++
++      {/* FONCTIONNALITÉ : correction manuelle de correspondance TMDB. */}
++      <Modal open={tmdbModalOpen} onClose={() => setTmdbModalOpen(false)} title="Corriger la correspondance TMDB">
++        <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 360 }}>
++          <div style={{ display: "flex", gap: 8 }}>
++            <input
++              type="text"
++              value={tmdbQuery}
++              onChange={(e) => setTmdbQuery(e.target.value)}
++              onKeyDown={(e) => {
++                if (e.key === "Enter") void runTmdbSearch(tmdbQuery);
++              }}
++              placeholder="Titre à rechercher sur TMDB…"
++              style={{
++                flex: 1,
++                padding: "8px 10px",
++                borderRadius: 6,
++                border: "1px solid rgba(255,255,255,.18)",
++                background: "#111",
++                color: "#fff",
++              }}
++            />
++            <Button
++              variant="secondary"
++              onClick={() => void runTmdbSearch(tmdbQuery)}
++              disabled={tmdbSearching || !tmdbQuery.trim()}
++            >
++              Rechercher
++            </Button>
++          </div>
++          {tmdbError && (
++            <p style={{ color: "#ff6b6b", fontSize: 13, margin: 0 }}>{tmdbError}</p>
++          )}
++          {tmdbSearching ? (
++            <p style={{ fontSize: 13, color: "var(--color-text-muted, #9a9aa3)" }}>Recherche…</p>
++          ) : tmdbResults.length === 0 ? (
++            <p style={{ fontSize: 13, color: "var(--color-text-muted, #9a9aa3)" }}>
++              Aucun résultat pour l'instant.
++            </p>
++          ) : (
++            <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8, maxHeight: 420, overflowY: "auto" }}>
++              {tmdbResults.map((candidate) => (
++                <li
++                  key={candidate.tmdb_id}
++                  style={{
++                    display: "flex",
++                    gap: 10,
++                    padding: 8,
++                    borderRadius: 8,
++                    background: "#181818",
++                    alignItems: "flex-start",
++                  }}
++                >
++                  <div style={{ width: 46, height: 69, flexShrink: 0, borderRadius: 4, overflow: "hidden", background: "#000" }}>
++                    {candidate.poster_url && (
++                      <img src={candidate.poster_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
++                    )}
++                  </div>
++                  <div style={{ flex: 1, minWidth: 0 }}>
++                    <div style={{ fontWeight: 700, fontSize: 13 }}>
++                      {candidate.name} {candidate.year ? `(${candidate.year})` : ""}
++                    </div>
++                    {candidate.overview && (
++                      <p
++                        style={{
++                          fontSize: 12,
++                          color: "var(--color-text-muted, #9a9aa3)",
++                          margin: "4px 0 0",
++                          display: "-webkit-box",
++                          WebkitLineClamp: 2,
++                          WebkitBoxOrient: "vertical",
++                          overflow: "hidden",
++                        }}
++                      >
++                        {candidate.overview}
++                      </p>
++                    )}
++                  </div>
++                  <Button
++                    variant="secondary"
++                    onClick={() => void applyTmdbMatch(candidate)}
++                    disabled={tmdbApplyingId !== null}
++                  >
++                    {tmdbApplyingId === candidate.tmdb_id ? "…" : "Choisir"}
++                  </Button>
++                </li>
++              ))}
++            </ul>
++          )}
++        </div>
++      </Modal>
+     </div>
+   );
+ }
+--- a/apps/desktop/src/pages/VaultTubePage.tsx	2026-09-23 19:48:54.144408985 +0000
++++ b/apps/desktop/src/pages/VaultTubePage.tsx	2026-09-23 19:48:54.144506785 +0000
+@@ -7,6 +7,7 @@
+   Plus,
+   Radio,
+   Search,
++  Trash2,
+   UserCircle2,
+   Video,
+ } from "lucide-react";
+@@ -107,6 +108,7 @@
+   onOpen,
+   onPlayAll,
+   onToggleMode,
++  onRemove,
+ }: {
+   title: string;
+   subtitle: string;
+@@ -116,6 +118,7 @@
+   onOpen: () => void;
+   onPlayAll?: () => void;
+   onToggleMode?: () => void;
++  onRemove?: () => void;
+ }) {
+   return (
+     <div
+@@ -167,6 +170,38 @@
+             <SourceBadge source={source} />
+           </span>
+         )}
++        {onRemove && (
++          <button
++            className="avm-af-card__remove"
++            title="Supprimer"
++            onClick={(e) => {
++              e.stopPropagation();
++              onRemove();
++            }}
++            style={{
++              position: "absolute",
++              top: 6,
++              right: 6,
++              width: 28,
++              height: 28,
++              borderRadius: "50%",
++              background: "rgba(0,0,0,.78)",
++              border: "1px solid rgba(255,255,255,.22)",
++              color: "#fff",
++              display: "flex",
++              alignItems: "center",
++              justifyContent: "center",
++              cursor: "pointer",
++              opacity: 0,
++              transition: "opacity .15s ease, background .15s ease",
++              zIndex: 2,
++            }}
++            onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(220,38,38,.85)")}
++            onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(0,0,0,.78)")}
++          >
++            <Trash2 size={13} />
++          </button>
++        )}
+         {mode && <ModeBadge mode={mode} />}
+         {onToggleMode && (
+           <button
+@@ -365,6 +400,12 @@
+     refresh();
+   };
+ 
++  const handleDeletePlaylistFromGrid = async (id: number, name: string) => {
++    if (!window.confirm(`Supprimer la playlist « ${name} » ?`)) return;
++    await vaultTubeApi.deleteUserPlaylist(id);
++    refresh();
++  };
++
+   const handleToggleSubMode = async (sub: VaultTubeSubscription) => {
+     const next: PlaybackMode = sub.mode === "audio" ? "video" : "audio";
+     await vaultTubeApi.setSubscriptionMode(sub.id, next);
+@@ -722,6 +763,7 @@
+             onOpen={() => navigate(`/vaulttube/myplaylist/${p.id}`)}
+             onPlayAll={() => void handlePlayAllPlaylist(p)}
+             onToggleMode={() => void handleTogglePlaylistMode(p)}
++            onRemove={() => void handleDeletePlaylistFromGrid(p.id, p.name)}
+           />
+         ))}
+         {userPlaylists.length === 0 && (
+@@ -745,6 +787,7 @@
+             onOpen={() => navigate(`/vaulttube/${sub.id}`)}
+             onPlayAll={() => void handlePlayAllSub(sub)}
+             onToggleMode={() => void handleToggleSubMode(sub)}
++            onRemove={() => void handleRemove(sub.id)}
+           />
+         ))}
+         {subscriptions.length === 0 && (
+--- a/apps/desktop/src/pages/pages.css	2026-09-23 19:48:54.149105889 +0000
++++ b/apps/desktop/src/pages/pages.css	2026-09-23 19:48:54.150384356 +0000
+@@ -1379,6 +1379,9 @@
+ .avm-af-card:hover .avm-af-card__mode {
+   opacity: 1 !important;
+ }
++.avm-af-card:hover .avm-af-card__remove {
++  opacity: 1 !important;
++}
+ /* ----- Lecteur audio AetherFy (0.4.0) ----- */
+ .avm-audio-range {
+   -webkit-appearance: none;
+--- a/apps/desktop/src/auth/AuthGate.tsx	2026-09-23 19:48:54.153969522 +0000
++++ b/apps/desktop/src/auth/AuthGate.tsx	2026-09-23 19:48:54.155451267 +0000
+@@ -35,6 +35,13 @@
+       password: password ?? null,
+       recoveryCode: recoveryCode ?? null,
+     }),
++  // FONCTIONNALITÉ (Accès rapide) : lu avant toute connexion — voir
++  // commands::settings::get_quick_access_enabled côté Rust, qui est le
++  // seul endroit habilité à modifier ce réglage (paramètres, une fois
++  // connecté).
++  getQuickAccessEnabled: () => invoke<boolean>("get_quick_access_enabled"),
++  quickLogin: (profileId: number) =>
++    invoke<LoginProfile>("quick_login_profile", { profileId }),
+   setupFirstAdmin: (name: string, password?: string) =>
+     invoke<[LoginProfile, string | null]>("setup_first_admin", {
+       name,
+@@ -132,6 +139,32 @@
+   const [error, setError] = useState<string | null>(null);
+   const [busy, setBusy] = useState(false);
+   const [avatars, setAvatars] = useState<Record<number, string>>({});
++  // FONCTIONNALITÉ (Accès rapide).
++  const [quickAccessEnabled, setQuickAccessEnabled] = useState(false);
++
++  useEffect(() => {
++    authApi
++      .getQuickAccessEnabled()
++      .then(setQuickAccessEnabled)
++      .catch(() => setQuickAccessEnabled(false));
++  }, []);
++
++  const handleProfileClick = (p: LoginProfile) => {
++    if (quickAccessEnabled) {
++      setBusy(true);
++      setError(null);
++      authApi
++        .quickLogin(p.id)
++        .then(onDone)
++        .catch((err) => setError(String(err)))
++        .finally(() => setBusy(false));
++      return;
++    }
++    setSelected(p);
++    setPassword("");
++    setError(null);
++    setRecovering(false);
++  };
+ 
+   useEffect(() => {
+     let cancelled = false;
+@@ -179,17 +212,14 @@
+       {!selected ? (
+         <>
+           <h1 className="avm-auth__title">Qui êtes-vous ?</h1>
++          {error && <p className="avm-auth__error">{error}</p>}
+           <div className="avm-auth__profiles">
+             {profiles.map((p) => (
+               <button
+                 key={p.id}
+                 className="avm-auth__profile"
+-                onClick={() => {
+-                  setSelected(p);
+-                  setPassword("");
+-                  setError(null);
+-                  setRecovering(false);
+-                }}
++                disabled={busy}
++                onClick={() => handleProfileClick(p)}
+               >
+                 <span className="avm-auth__avatar" style={avatarStyle(p.name)}>
+                   {avatars[p.id] ? (

@@ -806,12 +806,23 @@
   position: absolute;
   top: 0.75rem;
   right: 0.75rem;
-  z-index: 2;
+  /* FONCTIONNALITÉ (fond animé au-dessus des fonds statiques, mais pas
+     de la bande-annonce) : bascule d'échelle pour intercaler le fond
+     animé global (voir .avm-app-backdrop--video, global.css) entre le
+     fond statique de page (0, inchangé) et la bande-annonce (2 ci-
+     dessous) — 3 = contenu de page, 4 = cette barre, pour rester
+     cliquable en toutes circonstances. Auparavant 2, alors que rien
+     d'autre ne montait aussi haut ; remonté par cohérence avec le
+     nouveau barème. */
+  z-index: 4;
   display: flex;
   gap: 0.35rem;
 }
 .avm-title-page__wallpaper--video {
   overflow: hidden !important;
+  /* Voir le commentaire sur .avm-title-page__wallpaper-actions
+     ci-dessus pour le barème complet. */
+  z-index: 2;
 }
 
 .avm-title-page__wallpaper--video iframe {
@@ -828,7 +839,12 @@
 
 .avm-title-page > *:not(.avm-title-page__wallpaper):not(.avm-title-page__wallpaper-actions) {
   position: relative;
-  z-index: 1;
+  /* Bascule de 1 à 3 : voir le commentaire sur
+     .avm-title-page__wallpaper-actions plus haut pour le barème complet
+     (fond animé global intercalé entre le fond statique et la
+     bande-annonce). Reste, comme avant, au-dessus de la bande-annonce
+     (2) pour que le texte/les boutons de la fiche restent lisibles. */
+  z-index: 3;
 }
 /* ---- Étape 7 (lot 4) : fond d'écran de page des catégories ------------
    Même contrat que la page Titre : la bannière horizontale disparaît,
@@ -865,7 +881,10 @@
 }
 .avm-category-page__content {
   position: relative;
-  z-index: 1;
+  /* Cohérence avec le style inline de CategoryPage.tsx (qui prévaut
+     réellement à l'affichage) — voir le barème dans pages.css sur
+     .avm-title-page__wallpaper-actions. */
+  z-index: 3;
 }
 /* ---- Étape 7 : Accueil v2 (héro + tuiles 16:9 + rangées Netflix) ------ */
 .avm-home-hero {
@@ -1378,6 +1397,84 @@
 }
 .avm-af-card:hover .avm-af-card__mode {
   opacity: 1 !important;
+}
+.avm-af-card:hover .avm-af-card__remove {
+  opacity: 1 !important;
+}
+/* ----- Refonte UI AetherFy, Phase 2 — liste de pistes façon Spotify ----- */
+.avm-af-tracklist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.avm-af-track {
+  display: grid;
+  grid-template-columns: 28px 40px 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.avm-af-track:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.avm-af-track__index {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted, #9a9aa3);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.avm-af-track:hover .avm-af-track__index {
+  color: #1db954;
+}
+.avm-af-track__art {
+  width: 40px;
+  height: 40px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #000;
+  flex-shrink: 0;
+}
+.avm-af-track__art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.avm-af-track__info {
+  min-width: 0;
+}
+.avm-af-track__title {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.avm-af-track__subtitle {
+  font-size: 11px;
+  color: var(--color-text-muted, #9a9aa3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+.avm-af-track__duration {
+  font-size: 12px;
+  color: var(--color-text-muted, #9a9aa3);
+  font-variant-numeric: tabular-nums;
+}
+.avm-af-track__actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.avm-af-track:hover .avm-af-track__actions {
+  opacity: 1;
 }
 /* ----- Lecteur audio AetherFy (0.4.0) ----- */
 .avm-audio-range {

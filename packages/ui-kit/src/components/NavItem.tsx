@@ -3,7 +3,17 @@ import { motion } from "framer-motion";
 
 interface NavItemProps {
   icon: ReactNode;
-  label: string;
+  /** FONCTIONNALITÉ : élargi de `string` à `ReactNode` pour permettre un
+   * libellé partiellement stylisé (ex. un mot dans une police dédiée),
+   * en restant rétrocompatible — une simple chaîne reste un `ReactNode`
+   * valide, tous les usages existants continuent de fonctionner tels
+   * quels. */
+  label: ReactNode;
+  /** Texte pour l'infobulle en mode réduit, utile quand `label` n'est
+   * pas une simple chaîne (l'attribut HTML `title` n'accepte pas de
+   * JSX). Si omis et que `label` est une chaîne, celle-ci est réutilisée
+   * automatiquement — aucun changement pour les usages existants. */
+  titleText?: string;
   active?: boolean;
   /** Masque visuellement le libellé (barre latérale réduite) sans le
    * retirer du DOM, pour rester accessible aux lecteurs d'écran. */
@@ -22,7 +32,8 @@ interface NavItemProps {
  * disparaître/réapparaître, un détail "premium" à moindre coût car partagé
  * par tous les usages de `NavItem`.
  */
-export function NavItem({ icon, label, active, collapsed, onClick }: NavItemProps) {
+export function NavItem({ icon, label, titleText, active, collapsed, onClick }: NavItemProps) {
+  const resolvedTitle = titleText ?? (typeof label === "string" ? label : undefined);
   return (
     <button
       type="button"
@@ -31,7 +42,7 @@ export function NavItem({ icon, label, active, collapsed, onClick }: NavItemProp
         .join(" ")}
       onClick={onClick}
       aria-current={active ? "page" : undefined}
-      title={collapsed ? label : undefined}
+      title={collapsed ? resolvedTitle : undefined}
     >
       {active && (
         <motion.span
