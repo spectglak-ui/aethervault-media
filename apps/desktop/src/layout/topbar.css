@@ -1,0 +1,64 @@
+/* topbar.css — barre supérieure frameless (drag region + layout) */
+
+.avm-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  padding: 0 14px;
+  background: var(--color-surface, #121216);
+  border-bottom: 1px solid var(--color-border, #2c2c33);
+  user-select: none;
+  -webkit-user-select: none;
+  position: relative;
+  z-index: 100;
+}
+
+/* Zone centrale (recherche) : prend tout l'espace entre les clusters gauche/droite */
+.avm-topbar > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Cluster de droite : profil + AetherFy + boutons de fenêtre */
+.avm-topbar__right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* Bouton profil (disque + nom) */
+.avm-topbar__profile {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 4px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border, #2c2c33);
+  background: transparent;
+  color: var(--color-text, #f2f2f5);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.avm-topbar__profile:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: color-mix(in srgb, var(--color-accent, #7c5cff) 45%, var(--color-border, #2c2c33));
+}
+
+.avm-topbar__profile img,
+.avm-topbar__profile .avm-avatar {
+  flex-shrink: 0;
+}
+
+.avm-topbar__profile span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}

@@ -23,6 +23,9 @@ import { VaultTubePlaylistsPage } from "./pages/VaultTubePlaylistsPage";
 import { VaultTubePlaylistPreviewPage } from "./pages/VaultTubePlaylistPreviewPage";
 import { VaultTubeUserPlaylistPage } from "./pages/VaultTubeUserPlaylistPage";
 import { PersonPage } from "./pages/PersonPage";
+import { ReadingHomePage } from "./pages/ReadingHomePage";
+import { ReadingLibraryPage } from "./pages/ReadingLibraryPage";
+import { ReadingBookPage } from "./pages/ReadingBookPage";
 
 /**
  * Routeur "hash" (#/...) plutôt que "browser" : évite d'avoir à configurer
@@ -40,6 +43,9 @@ export const router = createHashRouter([
     element: <AppShell />,
     children: [
       { path: "/", element: <HomePage /> },
+	  { path: "/reading", element: <ReadingHomePage /> },
+      { path: "/reading/library/:id", element: <ReadingLibraryPage /> },
+	  { path: "/reading/book/:id", element: <ReadingBookPage /> },
       { path: "/category/:key", element: <CategoryPage /> },
       { path: "/category/:key/title/:titleId", element: <TitleDetailPage /> },
       { path: "/category/:key/title/:titleId/season/:seasonId", element: <SeasonEpisodesPage /> },

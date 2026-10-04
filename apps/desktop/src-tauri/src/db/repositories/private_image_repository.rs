@@ -2,7 +2,6 @@
 //! toutes à l'intérieur de `vault.db` (doc §6.4 quater). Même principe que
 //! `private_video_repository` (Étape 6b-i), avec en plus la gestion de la
 //! couverture d'album et des vignettes chiffrées.
-
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashSet;
@@ -299,6 +298,124 @@ pub fn mark_folder_unavailable(conn: &Connection, folder_id: i64) -> rusqlite::R
     conn.execute(
         "UPDATE private_image_files SET is_available = 0 WHERE folder_id = ?1",
         rusqlite::params![folder_id],
+    )?;
+    Ok(())
+}
+
+/// Renomme un album : met à jour le nom du dossier sur disque puis
+/// reflète le nouveau chemin dans `private_image_folders` et tous les
+/// `private_image_files` qu'il contient. Renvoie le nouveau chemin.
+/// Échoue si `new_name` est invalide, si le dossier source n'existe
+/// plus, ou si un dossier homonyme existe déjà au même niveau.
+pub fn rename_folder(
+    conn: &Connection,
+    folder_id: i64,
+    new_name: &str,
+) -> rusqlite::Result<String> {
+    // 1. Validation du nouveau nom (simple nom de dossier, pas un chemin).
+    let trimmed = new_name.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\') // Corrigé : '\' était une erreur de syntaxe
+        || trimmed == "."         // Corrigé : ". " n'était pas standard
+        || trimmed == ".."
+    {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "Nom d'album invalide.".to_string(),
+        ));
+    }
+    
+    // 2. Lecture de l'ancien chemin.
+    let old_path: String = conn.query_row(
+        "SELECT path FROM private_image_folders WHERE id = ?1",
+        [folder_id],
+        |row| row.get(0),
+    )?;
+    
+    // 3. Construction du nouveau chemin (même parent).
+    let old_pb = std::path::PathBuf::from(&old_path);
+    let Some(parent) = old_pb.parent().map(|p| p.to_path_buf()) else {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "Chemin racine invalide.".to_string(),
+        ));
+    };
+    let new_pb = parent.join(trimmed);
+    let new_path = new_pb.to_string_lossy().to_string();
+    if new_path == old_path {
+        return Ok(new_path); // rien à faire
+    }
+    
+    // 4. Vérifications disque.
+    if !old_pb.exists() {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "Le dossier source n'existe plus sur le disque.".to_string(),
+        ));
+    }
+    if new_pb.exists() {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "Un dossier homonyme existe déjà à cet emplacement.".to_string(),
+        ));
+    }
+    
+    // 5. Renommage physique.
+    std::fs::rename(&old_pb, &new_pb).map_err(|e| {
+        rusqlite::Error::InvalidParameterName(format!(
+            "Impossible de renommer le dossier sur le disque : {e}"
+        ))
+    })?;
+    
+    // 6. Mise à jour du folder.
+    conn.execute(
+        "UPDATE private_image_folders SET path = ?1 WHERE id = ?2",
+        rusqlite::params![new_path, folder_id],
+    )?;
+    
+    // 7. Mise à jour en masse des fichiers contenus (leur chemin absolu
+    //    commence par l'ancien chemin du dossier).
+    let old_prefix = if old_path.ends_with('/') || old_path.ends_with('\\') {
+        old_path.clone()
+    } else {
+        format!("{old_path}/")
+    };
+    let new_prefix = if new_path.ends_with('/') || new_path.ends_with('\\') {
+        new_path.clone()
+    } else {
+        format!("{new_path}/")
+    };
+    
+    let mut stmt = conn.prepare(
+        "SELECT id, path FROM private_image_files WHERE folder_id = ?1",
+    )?;
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([folder_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+        
+    for (file_id, file_path) in rows {
+        if let Some(suffix) = file_path.strip_prefix(&old_prefix) {
+            let new_file_path = format!("{new_prefix}{suffix}");
+            conn.execute(
+                "UPDATE private_image_files SET path = ?1 WHERE id = ?2",
+                rusqlite::params![new_file_path, file_id],
+            )?;
+        }
+    }
+    Ok(new_path)
+}
+pub fn get_folder_path(conn: &Connection, folder_id: i64) -> rusqlite::Result<Option<String>> {
+    let mut stmt = conn.prepare("SELECT path FROM private_image_folders WHERE id = ?1")?;
+    let mut rows = stmt.query_map([folder_id], |row| row.get::<_, String>(0))?;
+    match rows.next() {
+        Some(Ok(path)) => Ok(Some(path)),
+        Some(Err(e)) => Err(e),
+        None => Ok(None),
+    }
+}
+
+pub fn update_folder_path(conn: &Connection, folder_id: i64, new_path: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE private_image_folders SET path = ?1 WHERE id = ?2",
+        rusqlite::params![new_path, folder_id],
     )?;
     Ok(())
 }

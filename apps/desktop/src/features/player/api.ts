@@ -10,6 +10,7 @@ export interface ExtractedMedia {
 
 export const playerApi = {
   load: (path: string) => invoke<void>("player_load", { path }),
+  loadMode: (path: string, mode: string) => invoke("player_load_mode", { path, mode }),
   loadUrl: (url: string) => invoke<void>("player_load_url", { url }),
   extractMedia: (url: string) => invoke<ExtractedMedia>("player_extract_media", { url }),
   unload: () => invoke<void>("player_unload"),

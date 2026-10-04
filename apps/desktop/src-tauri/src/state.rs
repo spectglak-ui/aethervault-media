@@ -3,6 +3,7 @@ use crate::db::DbPool;
 use crate::security::vault::VaultState;
 use crate::services::metadata::MetadataService;
 use crate::services::playback_engine::PlaybackEngineState;
+use crate::services::visualizer::VisualizerHandle;
 use crate::services::watcher::{ScanningLibraries, WatcherHandle};
 use std::sync::{Arc, Mutex};
 
@@ -42,20 +43,28 @@ pub struct AppState {
     /// comportement existant — le basculement vers l'écran de login
     /// arrivera avec l'intro animée (6c-ii/iv). `domain::profile` est seul
     /// responsable d'y écrire.
-	/// GARDE : Ce Mutex n'a pas de timeout. Les sections protégées ne
+    /// GARDE : Ce Mutex n'a pas de timeout. Les sections protégées ne
     /// doivent JAMAIS contenir d'opérations bloquantes longues (I/O réseau,
     /// attente utilisateur). En cas de panic d'un thread détenteur, utiliser
-    /// `unwrap_or_else(|p| p.into_inner())` pour récupérer le verrou.
-    /// GARDE : Ce Mutex n'a pas de timeout. Les sections protégées ne
-/// doivent JAMAIS contenir d'opérations bloquantes longues (I/O réseau,
-/// attente utilisateur). En cas de panic d'un thread détenteur, utiliser
-/// `unwrap_or_else(|p| p.into_inner())` pour récupérer le verrou sans crash.
-pub active_profile_id: Mutex<Option<i64>>,
+    /// `unwrap_or_else(|p| p.into_inner())` pour récupérer le verrou sans crash.
+    pub active_profile_id: Mutex<Option<i64>>,
     /// État du coffre privé (Privacy/Security Manager, Étape 6a, doc
     /// §6.4/§6.4 bis) : `Locked` par défaut à chaque lancement, jamais
     /// persisté sur disque. `domain::privacy` est seul responsable d'y
     /// écrire.
     pub vault: Mutex<VaultState>,
+    /// Visualiseur audio (AetherFy) : handle de la capture spectrale
+    /// actuellement en cours, ou `None` si aucune lecture audio n'est
+    /// analysée. Écrit uniquement par les commandes `visualizer_start` /
+    /// `visualizer_stop` — jamais par le frontend directement.
+    /// GARDE : même règle que `active_profile_id` — le Mutex ne protège
+    /// que la prise/dépose de l'`Arc` (opération atomique en pratique) ;
+    /// l'arrêt réel de la capture passe par le flag interne du handle
+    /// (`VisualizerHandle::stop`), jamais sous ce verrou.
+    pub visualizer: Mutex<Option<Arc<VisualizerHandle>>>,
+    /// Synchronisation automatique VaultTube (0.6.1) : thread dédié qui
+    /// sync tous les abonnements toutes les 6h. `None` si pas encore lancé.
+    pub auto_sync_handle: std::sync::Mutex<Option<crate::services::vaulttube::auto_sync::AutoSyncHandle>>,
 }
 
 impl AppState {
@@ -79,5 +88,25 @@ impl AppState {
         &self,
     ) -> Result<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>, String> {
         self.db_pool.get().map_err(|e| format!("DB pool error: {e}"))
+    }
+}
+
+impl AppState {
+    /// Helpers VaultTube (0.6.1) : créent des instances Arc-wrapped du
+    /// repository et du service de sync à partir de l'état partagé.
+    /// Utilisés par les commandes de synchronisation automatique.
+    pub fn vaulttube_repository(
+        &self,
+    ) -> Result<std::sync::Arc<crate::services::vaulttube::VaultTubeRepository>, String> {
+        Ok(std::sync::Arc::new(crate::services::vaulttube::VaultTubeRepository::new(
+            self.db_pool.clone(),
+        )))
+    }
+
+    pub fn vaulttube_sync(
+        &self,
+    ) -> Result<std::sync::Arc<crate::services::vaulttube::VaultTubeSync>, String> {
+        let repo = crate::services::vaulttube::VaultTubeRepository::new(self.db_pool.clone());
+        Ok(std::sync::Arc::new(crate::services::vaulttube::VaultTubeSync::new(repo)))
     }
 }

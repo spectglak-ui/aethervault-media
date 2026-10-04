@@ -158,3 +158,23 @@ pub fn set_album_cover(
     private_image_repository::set_cover(conn, folder_id, file_id).map_err(|e| e.to_string())?;
     vault_state.persist_if_unlocked()
 }
+
+/// Renomme l'album en déléguant au repository pour garantir que les
+/// fichiers contenus voient également leur chemin mis à jour en base.
+pub fn rename_folder(
+    pool: &DbPool,
+    active_profile_id: i64,
+    vault_state: &crate::security::vault::VaultState,
+    folder_id: i64,
+    new_name: &str,
+) -> Result<(), String> {
+    crate::domain::privacy::require_private_access(pool, active_profile_id)?;
+    let vault_conn = crate::domain::privacy::require_unlocked_connection(vault_state)?;
+    
+    // Délégation au repository qui gère le renommage physique, la validation
+    // du nom, et la mise à jour en masse des chemins de `private_image_files`.
+    crate::db::repositories::private_image_repository::rename_folder(vault_conn, folder_id, new_name)
+        .map_err(|e| e.to_string())?;
+        
+    vault_state.persist_if_unlocked()
+}

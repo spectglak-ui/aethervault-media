@@ -31,6 +31,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle().clone();
+
             // Répertoire de données de l'application (ex. %APPDATA%\com.aethervault.media
             // sous Windows), fourni par Tauri de façon standard par OS.
             let data_dir = handle
@@ -39,14 +40,17 @@ pub fn run() {
                 .expect("impossible de résoudre le répertoire de données de l'application");
             std::fs::create_dir_all(&data_dir)
                 .expect("impossible de créer le répertoire de données");
+
             // Privacy/Security Manager (Étape 6a, architecture A2, doc §6.4
             // bis) : nettoie un éventuel fichier de travail resté sur disque
             // après un arrêt brutal pendant un déverrouillage/une
             // persistance du coffre privé.
             security::vault::cleanup_stale_temp_file(&data_dir);
+
             let database_path = data_dir.join("aethervault.db");
             let pool = db::init_pool(&database_path)
                 .expect("impossible d'initialiser le pool de connexions SQLite");
+
             // 0.5.1 (correctif installation fraîche) : les tables VaultTube
             // DOIVENT exister AVANT que les migrations 18→21 ne les modifient
             // (ALTER TABLE). Auparavant create_tables() tournait après
@@ -57,6 +61,17 @@ pub fn run() {
             services::vaulttube::VaultTubeRepository::new(pool.clone())
                 .create_tables()
                 .expect("impossible de créer les tables VaultTube");
+				
+		    // 0.7.0 : catégorie Lecture — tables idempotentes + catégorie
+            // système « reading » (même précédent que VaultTube).
+         {
+             let conn = pool.get().expect("impossible d'ouvrir une connexion pour les tables Lecture");
+             crate::db::repositories::reading_repository::ensure_tables(&conn)
+                 .expect("impossible de créer les tables Lecture");
+             crate::db::repositories::reading_repository::ensure_category(&conn)
+                 .expect("impossible de créer la catégorie Lecture");
+         }
+
             // Schéma appliqué de façon versionnée (voir db::migrations), puis
             // données par défaut insérées séparément (voir db::seed).
             db::migrations::apply_migrations(&pool)
@@ -67,6 +82,7 @@ pub fn run() {
                 .expect("impossible d'initialiser les catégories par défaut");
             db::seed::backfill_library_categories(&pool)
                 .expect("impossible de rattacher les bibliothèques existantes à une catégorie");
+
             let log_dir = handle
                 .path()
                 .app_log_dir()
@@ -75,6 +91,7 @@ pub fn run() {
                 "AetherVault Media démarre — base de données : {:?}",
                 database_path
             );
+
             // 0.3.0 : fenêtre « quasi-max » dès le démarrage — inset de 4 px de
             // la zone de travail : jamais l'état « maximisé » (artefacts DWM
             // après les transitions plein écran), jamais en contact avec les
@@ -92,12 +109,14 @@ pub fn run() {
                     let _ = window.center();
                 }
             }
+
             let scanning_libraries = std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             ));
             let watcher =
                 services::watcher::start(pool.clone(), handle.clone(), scanning_libraries.clone())
                     .expect("impossible de démarrer la surveillance des dossiers (Filesystem Watcher)");
+
             // Playback Engine Bridge (Étape 3b) : démarré une fois pour
             // toute la durée de vie de l'application, indépendamment de
             // toute fenêtre — voir `services::playback_engine`.
@@ -109,9 +128,11 @@ pub fn run() {
                         services::playback_engine::PlaybackEngineState::Unavailable(err)
                     }
                 };
+
             // Metadata Service (Étape 4, doc §3.4/§6.3).
             let metadata_service =
                 std::sync::Arc::new(services::metadata::MetadataService::new());
+
             app.manage(AppState {
                 db_pool: pool,
                 database_path: database_path.to_string_lossy().to_string(),
@@ -126,7 +147,28 @@ pub fn run() {
                 active_profile_id: std::sync::Mutex::new(None),
                 // INVARIANT SÉCURITÉ : Le coffre DOIT TOUJOURS démarrer verrouillé.
                 vault: std::sync::Mutex::new(security::vault::VaultState::Locked),
+                // Visualiseur audio (AetherFy, 0.6.0) : aucune capture au démarrage —
+                // le handle sera créé par `visualizer_start` lorsqu'une session audio
+                // débute, et déposé par `visualizer_stop` / au changement de média.
+                visualizer: std::sync::Mutex::new(None),
+                // 0.6.1 : synchronisation automatique VaultTube (toutes les 6h).
+                auto_sync_handle: std::sync::Mutex::new(None),
             });
+
+                        // 0.6.1 : lance la synchronisation automatique VaultTube (toutes les 6h)
+            {
+                let state = app.state::<AppState>();
+                let mut guard = state
+                    .auto_sync_handle
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                if let (Ok(repo), Ok(sync)) = (state.vaulttube_repository(), state.vaulttube_sync()) {
+                    let handle = crate::services::vaulttube::auto_sync::start(repo, sync);
+                    *guard = Some(handle);
+                    log::info!("[vaulttube] auto-sync démarré au lancement");
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -150,7 +192,7 @@ pub fn run() {
             commands::settings::get_backdrop_video_enabled,
             commands::settings::set_backdrop_video_enabled,
             commands::settings::get_title_trailer,
-			commands::settings::get_typography_settings,
+            commands::settings::get_typography_settings,
             commands::settings::save_typography_settings,
             commands::segments::get_episode_segments,
             commands::segments::set_episode_segment,
@@ -175,6 +217,10 @@ pub fn run() {
             commands::vaulttube::vaulttube_reorder_user_playlist,
             commands::vaulttube::vaulttube_set_user_playlist_mode,
             commands::vaulttube::vaulttube_set_subscription_mode,
+            // 0.6.1 : synchronisation automatique VaultTube
+            commands::vaulttube::vaulttube_sync_all_now,
+            commands::vaulttube::vaulttube_auto_sync_start,
+            commands::vaulttube::vaulttube_auto_sync_stop,
             // Authentification des profils (Étape 6c)
             commands::auth::get_login_state,
             commands::auth::login_profile,
@@ -203,18 +249,42 @@ pub fn run() {
             commands::private_video::private_video_thumbnail,
             commands::private_video::add_private_video_folder,
             commands::private_video::remove_private_video_folder,
+			commands::private_video::remove_private_video_folder,
             commands::private_video::list_private_video_files,
             commands::private_video::scan_private_video_library,
+			commands::private_video::regenerate_private_video_thumbnails,
             commands::private_video::get_private_playback_progress,
             commands::private_video::save_private_playback_progress,
             commands::private_image::list_private_image_folders,
             commands::private_image::add_private_image_folder,
             commands::private_image::remove_private_image_folder,
+			commands::private_image::rename_private_image_folder,
+			commands::private_image::rename_private_image_folder,
             commands::private_image::scan_private_image_library,
             commands::private_image::list_private_image_files,
             commands::private_image::get_private_image_thumbnail,
             commands::private_image::get_private_album_cover,
             commands::private_image::set_private_album_cover,
+			commands::private_tags::private_list_tags,
+            commands::private_tags::private_tags_for_media,
+            commands::private_tags::private_add_tag,
+            commands::private_tags::private_remove_tag,
+            commands::private_tags::private_delete_tag,
+			commands::reading::reading_list_libraries,
+            commands::reading::reading_create_library,
+            commands::reading::reading_rename_library,
+            commands::reading::reading_delete_library,
+            commands::reading::reading_add_folder,
+            commands::reading::reading_remove_folder,
+            commands::reading::reading_scan_library,
+            commands::reading::reading_list_books,
+            commands::reading::reading_get_book,
+            commands::reading::reading_get_page,
+            commands::reading::reading_get_progress,
+            commands::reading::reading_save_progress,
+            commands::reading::reading_list_continue,
+            commands::reading::reading_get_settings,
+            commands::reading::reading_save_settings,
             commands::library::list_libraries,
             commands::library::generate_episode_thumbnails,
             commands::library::create_library,
@@ -249,7 +319,7 @@ pub fn run() {
             commands::title::set_title_poster,
             commands::title::set_title_banner,
             commands::title::delete_title,
-			commands::title::get_title_cast,
+            commands::title::get_title_cast,
             commands::title::get_person,
             commands::title::list_person_titles,
             commands::title::search_tmdb_matches,
@@ -265,6 +335,7 @@ pub fn run() {
             commands::playback::reset_watch_stats,
             commands::playback::list_similar_titles,
             commands::playback::player_load,
+            commands::playback::player_load_mode,
             commands::playback::player_set_paused,
             commands::playback::player_seek,
             commands::playback::player_set_volume,
@@ -280,7 +351,9 @@ pub fn run() {
             commands::playback::player_set_audio_track,
             commands::playback::player_set_subtitle_track,
             commands::playback::player_redraw,
-			commands::playback::player_set_render_scale,
+            commands::playback::player_set_render_scale,
+            commands::playback::visualizer_start,
+            commands::playback::visualizer_stop,
             commands::player_settings::get_player_settings,
             commands::player_settings::save_player_settings,
             commands::player_settings::get_post_shader,

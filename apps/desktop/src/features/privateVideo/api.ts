@@ -25,4 +25,8 @@ export const privateVideoApi = {
     invoke<PrivateScanSummary>("scan_private_video_library", { privateLibraryId }),
   /** Étape 6d-privé : vignette JPEG en base64 (coffre déverrouillé requis). */
   thumbnail: (fileId: number) => invoke<string>("private_video_thumbnail", { fileId }),
+  renameFolder: (folderId: number, newName: string) =>
+  invoke<void>("rename_private_video_folder", { folderId, newName }),
+  regenerateThumbnails: (privateLibraryId: number) =>
+  invoke<[number, number]>("regenerate_private_video_thumbnails", { privateLibraryId }),
 };

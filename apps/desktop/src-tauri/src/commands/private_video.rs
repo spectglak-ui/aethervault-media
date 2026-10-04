@@ -155,3 +155,32 @@ pub fn save_private_playback_progress(
         )
     })
 }
+/// 0.6.5 : régénère les vignettes manquantes d'une bibliothèque vidéo
+/// privée (sans rescanner). Utile pour rattraper les échecs après un
+/// scan initial incomplet ou pour forcer la génération sur des fichiers
+/// qui avaient échoué (timeout, format problématique).
+#[tauri::command]
+pub fn regenerate_private_video_thumbnails(
+    state: tauri::State<AppState>,
+    app: tauri::AppHandle,
+    private_library_id: i64,
+) -> Result<(u32, u32), String> {
+    let active_profile_id = state.read_active_profile_id()?;
+    let vault_state = state
+        .vault
+        .lock()
+        .map_err(|_| "État du coffre inaccessible.".to_string())?;
+    let mpv_functions = state
+        .playback_engine
+        .handle()
+        .ok()
+        .map(|h| h.mpv_functions());
+    crate::domain::private_video::regenerate_missing_thumbnails(
+        &state.db_pool,
+        active_profile_id,
+        &vault_state,
+        private_library_id,
+        mpv_functions,
+        &app,
+    )
+}

@@ -26,7 +26,7 @@ use crate::db::DbPool;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use ureq::{Agent, AgentBuilder, Resolver};

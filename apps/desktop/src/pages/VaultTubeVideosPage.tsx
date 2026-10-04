@@ -56,12 +56,21 @@ export function VaultTubeVideosPage() {
   }, [refresh]);
 
   const sorted = useMemo(() => {
-    const arr = [...videos];
-    if (sort === "recent") arr.sort((a, b) => (b.published_at ?? 0) - (a.published_at ?? 0));
-    else if (sort === "old") arr.sort((a, b) => (a.published_at ?? 0) - (b.published_at ?? 0));
-    else arr.sort((a, b) => a.title.localeCompare(b.title, "fr"));
-    return arr;
-  }, [videos, sort]);
+  const arr = [...videos];
+  if (sort === "recent") {
+    // Ordre YouTube original : les vidéos les plus récentes dans la
+    // playlist/chaîne sont insérées en premier lors de la sync (id décroissant).
+    arr.sort((a, b) => b.id - a.id);
+  } else if (sort === "old") {
+    // Ordre YouTube inversé : les vidéos les plus anciennes dans la
+    // playlist/chaîne (id croissant).
+    arr.sort((a, b) => a.id - b.id);
+  } else {
+    // Alphabétique par titre
+    arr.sort((a, b) => a.title.localeCompare(b.title, "fr"));
+  }
+  return arr;
+}, [videos, sort]);
 
   const handleRefresh = async () => {
     if (!id) return;

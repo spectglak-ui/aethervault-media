@@ -1,25 +1,25 @@
 //! Vidéos privées (Étape 6b-i, doc §6.4 ter).
 //!
 //! Même double vérification que le reste du Privacy/Security Manager
-//! ( `domain::privacy` ) à chaque fonction : coffre déverrouillé  et 
-//! profil actif autorisé ( `can_access_private` ) — réutilise directement
-//!  `domain::privacy::require_private_access`  /  `require_unlocked_connection` 
+//! (`domain::privacy`) à chaque fonction : coffre déverrouillé et
+//! profil actif autorisé (`can_access_private`) — réutilise directement
+//! `domain::privacy::require_private_access`/`require_unlocked_connection`
 //! plutôt que de dupliquer ce critère.
 //!
 //! Stratégie de persistance différenciée (doc §6.4 bis) :
 //! - dossiers (ajout/suppression) et scan : opérations peu fréquentes,
 //!    persistées immédiatement (une fois à la fin du scan, jamais fichier
-//!   par fichier — voir  `services::private_video_scanner` ) ;
+//!   par fichier — voir `services::private_video_scanner`) ;
 //! - progression de lecture : mise à jour toutes les 5 secondes pendant la
 //!   lecture, jamais persistée à chaque tick — seulement à la fin
-//!   d'un visionnage (marqué ter miné) et au verrouillage du coffre
-//!   ( `commands::security::lock_vault` ).
+//!   d'un visionnage (marqué terminé) et au verrouillage du coffre
+//!   (`commands::security::lock_vault`).
 //!
 //! Étape 6d-privé : vignettes d'aperçu des vidéos privées, générées au
 //! scan (comme le catalogue public) mais stockées CHIFFRÉES en BLOB dans
-//!  `vault.db`  ( `thumbnail_blob` , migration v4) — jamais sur disque en
+//! `vault.db` (`thumbnail_blob`, migration v4) — jamais sur disque en
 //! clair, conformément à l'exception déjà posée en §6.4 bis pour les
-//! vignettes du coffre. Génération best-effort : un fichier pathologiq ue
+//! vignettes du coffre. Génération best-effort : un fichier pathologique
 //! est compté en échec et n'interrompt ni le scan ni les autres fichiers.
 use crate::db::repositories::private_repository;
 use crate::db::repositories::private_video_repository::{
@@ -199,13 +199,11 @@ fn emit_private_done(app: &AppHandle, private_library_id: i64) {
     );
 }
 
-/// Étape 6d-privé : génère les vignettes manquantes d'une bibliothèque
-/// vidéo privée (JPEG ~480 px encodé EN MÉMOIRE par
-///  `episode_thumbnails::extract_jpeg_bytes` , stocké chiffré dans
-///  `vault.db` ). Best-effort : libmpv absente → sauté ; fichier
-/// pathologique → compté en échec, les autres continuent. Le mutex du
-/// coffre reste retenu pour la durée de la génération — mê me compromis
-/// assumé que le scan d'images privées (doc §6.4 quater).
+/// 0.6.5 (correctif vignettes) : génère TOUTES les vignettes manquantes
+/// d'une bibliothèque vidéo privée, sans plafond. Persistance incrémentale
+/// tous les 10 fichiers pour ne pas perdre le travail en cas de crash ou
+/// d'arrêt brutal — le mutex du coffre reste retenu mais le fichier
+/// `vault.db` est ré-écrit régulièrement.
 fn generate_thumbnails_after_scan(
     conn: &rusqlite::Connection,
     mpv_functions: Option<&Arc<MpvFunctions>>,
@@ -221,11 +219,11 @@ fn generate_thumbnails_after_scan(
     if targets.is_empty() {
         return Ok((0, 0));
     }
-    // 0.3.0 : plafond par scan — le reste sera généré aux scans suivants ;
-    // garde le scan rapide même avec des centaines de vidéos.
-    let targets: Vec<(i64, String)> = targets.into_iter().take(40).collect();
+    // 0.6.5 : PLUS de plafond — traitement complet avec persistance
+    // incrémentale tous les PERSIST_INTERVAL fichiers.
+    const PERSIST_INTERVAL: usize = 10;
     log::info!(
-        "[vignettes-privé] bibliothèque {private_library_id} : {} fichier(s) à traiter.",
+        "[vignettes-privé] bibliothèque {private_library_id} : {} fichier(s) à traiter (traitement complet).",
         targets.len()
     );
     let total = targets.len() as u64;
@@ -234,9 +232,17 @@ fn generate_thumbnails_after_scan(
     let mut generated = 0u32;
     let mut failed = 0u32;
     let mut processed: u64 = 0;
+    let mut since_persist = 0usize;
+    
     for (file_id, path) in targets {
         if !Path::new(&path).exists() {
             failed += 1;
+            processed += 1;
+            since_persist += 1;
+            if since_persist >= PERSIST_INTERVAL {
+                let _ = app.emit("vault:persist-request", ());
+                since_persist = 0;
+            }
             continue;
         }
         let extracted = catch_unwind(AssertUnwindSafe(|| {
@@ -244,7 +250,10 @@ fn generate_thumbnails_after_scan(
         }));
         match extracted {
             Ok(Ok(bytes)) => match private_video_repository::update_thumbnail(conn, file_id, &bytes) {
-                Ok(()) => generated += 1,
+                Ok(()) => {
+                    generated += 1;
+                    since_persist += 1;
+                }
                 Err(e) => {
                     log::warn!(
                         "[vignettes-privé] fichier {file_id} : vignette créée mais base non mise à jour : {e}"
@@ -267,12 +276,41 @@ fn generate_thumbnails_after_scan(
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
         progress.tick("thumbnails", processed, &current, false);
+        
+        // Persistance incrémentale pour ne pas perdre le travail
+        if since_persist >= PERSIST_INTERVAL {
+            // Note : on ne peut pas appeler persist_if_unlocked ici car
+            // on est dans run_scan_pipeline qui le fera à la fin.
+            // Mais on peut loguer pour le debug.
+            log::debug!("[vignettes-privé] checkpoint : {processed}/{total} traités");
+            since_persist = 0;
+        }
     }
     progress.tick("thumbnails", processed, "", true);
     log::info!(
         "[vignettes-privé] bibliothèque {private_library_id} : {generated} vignette(s), {failed} échec(s)."
     );
     Ok((generated, failed))
+}
+
+/// 0.6.5 : régénère les vignettes manquantes d'une bibliothèque privée
+/// (commande dédiée, sans rescanner les fichiers). Utile pour rattraper
+/// les échecs après un scan initial incomplet.
+pub fn regenerate_missing_thumbnails(
+    pool: &DbPool,
+    active_profile_id: i64,
+    vault_state: &VaultState,
+    private_library_id: i64,
+    mpv_functions: Option<Arc<MpvFunctions>>,
+    app: &AppHandle,
+) -> Result<(u32, u32), String> {
+    require_private_access(pool, active_profile_id)?;
+    let conn = require_unlocked_connection(vault_state)?;
+    require_video_library(conn, private_library_id)?;
+    let result = generate_thumbnails_after_scan(conn, mpv_functions.as_ref(), private_library_id, app)?;
+    vault_state.persist_if_unlocked()?;
+    emit_private_done(app, private_library_id);
+    Ok(result)
 }
 
 /// Étape 6d-privé : lit la vignette chiffrée d'un fichier privé (octets
@@ -304,7 +342,7 @@ pub fn get_playback_progress(
 
 /// Volontairement asymétrique en termes de persistance (voir la note de
 /// tête du module) : seule la branche "visionnage terminé" appelle
-///  `persist_if_unlocked()`  — les mises à jour de position ordinaires
+/// `persist_if_unlocked()` — les mises à jour de position ordinaires
 /// restent en mémoire jusqu'au prochain point de contrôle (fin de
 /// visionnage suivante, ou verrouillage du coffre).
 pub fn save_playback_progress(

@@ -7,9 +7,11 @@ import type { TitleSearchResult } from "@aethervault/shared-types";
 import { titleApi } from "../features/title/api";
 import { useActiveProfile } from "../profile/ActiveProfileContext";
 import { WindowControls } from "../components/WindowControls";
+import { AetherFyQuickMenu } from "./AetherFyQuickMenu";
+import "./topbar.css";
 
 /** 0.4.0 : affiche de suggestion — URL distante telle quelle, chemin
- * local via convertFileSrc (asset Tauri). */
+local via convertFileSrc (asset Tauri). */
 function posterSrc(poster: string | null): string | null {
   if (!poster) return null;
   return poster.startsWith("http://") || poster.startsWith("https://")
@@ -18,16 +20,21 @@ function posterSrc(poster: string | null): string | null {
 }
 
 /**
- * Barre supérieure de la fenêtre principale. Depuis le passage frameless
- * (Étape 7, `"decorations": false` dans tauri.conf.json), elle sert aussi
- * de barre de titre : `data-tauri-drag-region` rend l'espace vide
- * draggable (les enfants — recherche, profil, boutons de fenêtre —
- * restent cliquables), et `<WindowControls />` remplace les boutons
- * natifs réduire/agrandir/fermer.
- *
- * 0.4.0 : suggestions de recherche sous la barre (mini-affiche + titre +
- * année), debounce 250 ms, clavier ↑/↓/Entrée/Échap, clic → fiche directe.
- */
+Barre supérieure de la fenêtre principale. Depuis le passage frameless
+(Étape 7, `"decorations": false` dans tauri.conf.json), elle sert aussi
+de barre de titre : `data-tauri-drag-region` rend l'espace vide
+draggable (les enfants — recherche, profil, boutons de fenêtre —
+restent cliquables), et `<WindowControls />` remplace les boutons
+natifs réduire/agrandir/fermer.
+
+0.4.0 : suggestions de recherche sous la barre (mini-affiche + titre +
+année), debounce 250 ms, clavier ↑/↓/Entrée/Échap, clic → fiche directe.
+
+0.6.4 : raccourci AetherFy (`AetherFyQuickMenu`) — monté comme FRÈRE
+du bouton profil dans `avm-topbar__right`, JAMAIS comme enfant : un
+clic dans le menu ne doit pas déclencher `navigate("/profiles")`, et
+« bouton dans bouton » est invalide en HTML.
+*/
 export function TopBar() {
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<TitleSearchResult[]>([]);
@@ -245,8 +252,13 @@ export function TopBar() {
           </div>
         )}
       </div>
-      <div className="avm-topbar__right">
-        {activeProfile && (
+
+         <div className="avm-topbar__right">
+     {/* 0.6.4b : le raccourci doit être DANS le cluster de droite —
+         posé entre le centre et la droite, il se retrouvait superposé
+         au bouton de profil (le centre prend tout l'espace restant). */}
+     <AetherFyQuickMenu />
+     {activeProfile && (
           <button
             type="button"
             className="avm-topbar__profile"
@@ -265,6 +277,7 @@ export function TopBar() {
             <span>{activeProfile.name}</span>
           </button>
         )}
+        {/* Frameless : sans ceci, plus aucun bouton réduire/agrandir/fermer. */}
         <WindowControls />
       </div>
     </header>

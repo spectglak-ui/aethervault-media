@@ -38,4 +38,9 @@ export const privateImageApi = {
    * photo de l'album). */
   setAlbumCover: (folderId: number, fileId: number | null) =>
     invoke<void>("set_private_album_cover", { folderId, fileId }),
+	
+  /** Renomme l'album : renomme le dossier sur disque et met à jour la base du coffre. Renvoie le nouveau chemin. */
+  // Remplace invoke<string> par invoke<void>
+  renameFolder: (folderId: number, newName: string) =>
+    invoke<void>("rename_private_image_folder", { folderId, newName }),
 };

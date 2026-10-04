@@ -28,7 +28,7 @@
 
 use crate::db::repositories::private_image_repository::{self, NewImageFileData};
 use image::codecs::jpeg::JpegEncoder;
-use image::{DynamicImage, ImageDecoder, ImageReader, ImageFormat};
+use image::{DynamicImage, ImageDecoder, ImageReader};
 use rayon::prelude::*;
 use rusqlite::Connection;
 use serde::Serialize;

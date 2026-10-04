@@ -395,12 +395,12 @@ pub fn run(
     let mut first_frame_logged = false;
     // 0.5.5 (B) : dernier PTS connu (ms) — repli si la lecture de
     // propriété échoue une fois (trame suivante due immédiatement).
-    let mut last_pts_ms: f64 = 0.0;
+    let last_pts_ms: f64 = 0.0;
     // 0.5.6 : diagnostic PTS — compte les échecs de lecture et logge le
     // premier succès, pour trancher visiblement « PTS jamais lus » vs
     // « PTS lus mais nuls ».
-    let mut pts_errors: u64 = 0;
-    let mut first_pts_logged = false;
+    let pts_errors: u64 = 0;
+    let _first_pts_logged = false;
     // 0.5.5 [AV-DIAG] : compteurs de santé du pipeline sur fenêtre de 2 s —
     // rendues (sortie mpv OK), envoyées (channel.send OK), sautées
     // (contre-pression). Permet de distinguer un pipeline saturé

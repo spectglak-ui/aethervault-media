@@ -49,6 +49,9 @@ interface PlayerContextValue {
   queueNext: (index: number) => void;
   play: (media: PlayableMedia) => void;
   playQueue: (items: PlayableMedia[], startIndex: number) => void;
+  /** 0.6.4c : lance la file SANS ouvrir l'overlay immersif (raccourci
+      AetherFy de la TopBar) — lecture « en place ». */
+  playQueueBackground: (items: PlayableMedia[], startIndex: number) => void;
   playNext: () => void;
   playPrevious: () => void;
   togglePlay: () => void;
@@ -77,39 +80,41 @@ const EMPTY_QUEUE: PlaybackQueueState = { items: [], currentIndex: null };
 export const FULLSCREEN_TARGET_ID = "avm-player-fullscreen-root";
 
 // CORRECTIF (lecture automatique — mauvais épisode, suite aux retours) :
-// `loadAndBroadcast` met à jour l'UI de façon SYNCHRONE (`emit` juste en
-// dessous) mais ne charge le fichier dans mpv qu'après un aller-retour
-// asynchrone (`getProgress`, une commande Tauri). Si cette fonction est
-// appelée une deuxième fois avant que le premier appel n'ait fini sa
-// chaîne (ex. l'utilisateur clique "Épisode suivant" ou un épisode de la
-// liste plusieurs fois de suite, un peu trop vite, en pensant que le
-// premier clic n'a pas été pris en compte), RIEN ne garantit que les deux
-// appels asynchrones à `playerApi.load(...)` arrivent à mpv dans l'ORDRE
-// de leurs appels : celui du PREMIER clic peut très bien se résoudre
-// APRÈS celui du second, et donc "gagner" et rester affiché en lecture —
-// alors que l'UI (mise à jour, elle, de façon synchrone) affiche déjà le
-// second choix. C'est exactement le symptôme rapporté : "l'écran affiche
-// l'épisode 2 mais rejoue l'épisode 1", corrigé en un ou deux essais
-// supplémentaires (l'appel le plus récent finit par gagner la course).
-// Le compteur `loadGeneration` ci-dessous annule les suites (`.then`) des
-// appels devenus obsolètes : seul le DERNIER `loadAndBroadcast` appelé a
-// le droit d'atteindre `playerApi.load()`/`seek()`.
+// voir commentaire historique — `loadGeneration` annule les suites
+// (.then) des appels obsolètes : seul le DERNIER loadAndBroadcast appelé
+// a le droit d'atteindre playerApi.load()/seek().
 let loadGeneration = 0;
 
-function loadAndBroadcast(items: PlayableMedia[], index: number): void {
+/** 0.6.1 : routage du chargement selon le mode du média. En mode
+"audio", `player_load_mode` transmet le mode au moteur Rust, qui
+désactive la « start gate » (sinon chaque piste suivante d'une playlist
+démarrait en pause le temps du timeout de 45 s). */
+function loadMedia(media: PlayableMedia): Promise<void> {
+  return media.mode
+    ? playerApi.loadMode(media.path, media.mode).then(() => {})
+    : playerApi.load(media.path);
+}
+
+/** 0.6.4c : paramètre `background` — émis dans le payload
+`player-queue-changed` ; le listener ne doit PAS ouvrir l'overlay
+immersif quand il est vrai (lancement depuis le raccourci TopBar). */
+function loadAndBroadcast(items: PlayableMedia[], index: number, background = false): void {
   const media = items[index];
   const generation = ++loadGeneration;
   void emit("player-queue-changed", {
     items,
     currentIndex: index,
-  } satisfies PlaybackQueueState);
+    background,
+  } as unknown as PlaybackQueueState);
+
   const getProgress = media.isPrivate
     ? playerApi.getPrivateProgress
     : playerApi.getProgress;
+
   getProgress(media.id)
     .then((progress) => {
       if (generation !== loadGeneration) return; // supplanté par une sélection plus récente
-      void playerApi.load(media.path).then(() => {
+      void loadMedia(media).then(() => {
         if (generation !== loadGeneration) return;
         if (progress && progress.position_seconds > MIN_RESUMABLE_SECONDS) {
           void playerApi.seek(progress.position_seconds);
@@ -118,7 +123,7 @@ function loadAndBroadcast(items: PlayableMedia[], index: number): void {
     })
     .catch(() => {
       if (generation !== loadGeneration) return;
-      void playerApi.load(media.path);
+      void loadMedia(media);
     });
 }
 
@@ -159,7 +164,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [isDetached, setIsDetached] = useState(() => getWindowLabel() === "player");
   const [lastError, setLastError] = useState<string | null>(null);
   const [immersiveOpen, setImmersiveOpen] = useState(false);
-
   const [loopEnabled, setLoopEnabled] = useState<boolean>(() => {
     try {
       return localStorage.getItem("avm-player-loop") === "1";
@@ -189,23 +193,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const shuffleRef = useRef(shuffleEnabled);
   shuffleRef.current = shuffleEnabled;
 
-  // CORRECTIF (lecture automatique — mauvais épisode/film) : la fenêtre
-  // "player" (PiP, aujourd'hui masquée côté frontend mais toujours
-  // PRÉ-CRÉÉE et active — voir commands::window::open_player_window)
-  // monte, elle aussi, un <PlayerProvider> complet et reçoit les MÊMES
-  // événements globaux ("player-state", "player-queue-changed") que la
-  // fenêtre "main", puisque `emit`/`app_handle.emit(...)` diffusent à
-  // toutes les fenêtres. Sans ce garde-fou, les DEUX fenêtres réagissent
-  // chacune de leur côté à un même événement de fin de lecture et
-  // décident, indépendamment, du média suivant (deux tirages aléatoires
-  // différents en mode Aléatoire, ou deux appels `player_load`
-  // concurrents en mode séquentiel) — c'est la cause du bug "épisode/
-  // film suivant aléatoire". Seule la fenêtre "main" reste autorisée à
-  // piloter l'avance automatique et la sauvegarde périodique de
-  // progression ; la fenêtre "player" continue de simplement refléter
-  // l'état reçu (elle garde ses boutons Suivant/Précédent manuels, qui
-  // restent des actions utilisateur ponctuelles et ne posent pas ce
-  // problème de duplication).
+  // CORRECTIF (fenêtre "player" PiP) : seule la fenêtre "main" pilote
+  // l'avance automatique et la sauvegarde périodique — voir historique.
   const isPipWindow = useRef(getWindowLabel() === "player").current;
 
   const currentMedia =
@@ -220,12 +209,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const durationRef = useRef(0);
   durationRef.current = duration;
   const endedHandledRef = useRef<number | null>(null);
-  // CORRECTIF (mineur, lié) : distingue une pause VOLONTAIRE (utilisateur)
-  // du repli heuristique de fin de lecture ci-dessous — sans cela, une
-  // pause manuelle dans la dernière seconde d'un média déclenchait un
-  // enchaînement automatique non désiré vers le média suivant.
-  const userPausedRef = useRef(false);
 
+  // CORRECTIF (mineur, lié) : distingue une pause VOLONTAIRE (utilisateur)
+  // du repli heuristique de fin de lecture ci-dessous.
+  const userPausedRef = useRef(false);
   const seekDebounceRef = useRef<number | null>(null);
   const volumeDebounceRef = useRef<number | null>(null);
 
@@ -245,21 +232,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const handleEnded = () => {
-    // Seule la fenêtre "main" décide de l'avance automatique — voir le
-    // commentaire sur `isPipWindow` plus haut.
+    // Seule la fenêtre "main" décide de l'avance automatique.
     if (isPipWindow) return;
     const media = currentMediaRef.current;
     if (!media || endedHandledRef.current === media.id) return;
     endedHandledRef.current = media.id;
+
     if (positionRef.current >= 30 && durationRef.current > 0) {
       void titleApi
         .recordWatch(media.id, positionRef.current, durationRef.current)
         .catch(() => {});
     }
+
     if (loopRef.current) {
       setPosition(0);
       endedHandledRef.current = null;
-      void playerApi.load(media.path);
+      void loadMedia(media);
     } else if (autoNextRef.current) {
       const { items, currentIndex } = queueRef.current;
       if (currentIndex !== null && items.length > 0) {
@@ -277,7 +265,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   };
 
   /** 0.4.0 : publie l'activité de visionnage (amis) — même rythme que la
-   * sauvegarde de progression (5 s), jamais de spam SQLite. */
+  sauvegarde de progression (5 s), jamais de spam SQLite. */
   const publishActivity = () => {
     const media = currentMediaRef.current;
     if (!media || durationRef.current <= 0) return;
@@ -314,6 +302,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const bufferedSeconds = (event.payload as { buffered_seconds?: number })
         .buffered_seconds;
       if (typeof bufferedSeconds === "number") setBuffered(bufferedSeconds);
+
       const { position_seconds, duration_seconds, playing, ended, error } =
         event.payload;
       if (position_seconds !== undefined && position_seconds !== null) {
@@ -337,17 +326,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         positionRef.current >= durationRef.current - 1
       ) {
         // Repli : certains flux ne renvoient jamais `ended: true` — mais
-        // on ignore ce repli si la pause vient d'un clic utilisateur
-        // (voir `userPausedRef`), pour ne pas enchaîner sur le média
-        // suivant quand l'utilisateur met simplement en pause dans la
-        // dernière seconde.
+        // on ignore ce repli si la pause vient d'un clic utilisateur.
         handleEnded();
       }
     });
 
     let lastMediaId: number | null = null;
     const unlistenQueue = listen<PlaybackQueueState>("player-queue-changed", (event) => {
-      const state = event.payload;
+      // 0.6.4c : le payload peut porter `background` (lancement depuis le
+      // raccourci TopBar) → ne pas ouvrir l'overlay immersif.
+      const state = event.payload as PlaybackQueueState & { background?: boolean };
       const media =
         state.currentIndex !== null ? state.items[state.currentIndex] ?? null : null;
       const mediaChanged = (media?.id ?? null) !== lastMediaId;
@@ -360,7 +348,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         setBuffered(0);
         endedHandledRef.current = null;
         userPausedRef.current = false;
-        if (media?.mode) setImmersiveOpen(true);
+        if (media?.mode && !state.background) setImmersiveOpen(true);
         if (media === null) {
           setImmersiveOpen(false);
           syncFullscreen(false);
@@ -422,7 +410,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const hasNext = queue.currentIndex !== null && queue.currentIndex < queue.items.length - 1;
   const hasPrevious = queue.currentIndex !== null && queue.currentIndex > 0;
-
   const immersiveMode: "audio" | "video" | null = currentMedia?.mode ?? null;
 
   const value = useMemo<PlayerContextValue>(
@@ -451,6 +438,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         if (items.length === 0) return;
         const clampedIndex = Math.min(Math.max(startIndex, 0), items.length - 1);
         loadAndBroadcast(items, clampedIndex);
+      },
+      // 0.6.4c : file lancée « en arrière-plan » : pas d'overlay immersif.
+      playQueueBackground: (items, startIndex) => {
+        if (items.length === 0) return;
+        const clampedIndex = Math.min(Math.max(startIndex, 0), items.length - 1);
+        loadAndBroadcast(items, clampedIndex, true);
       },
       playNext: () => {
         const { items, currentIndex } = queueRef.current;

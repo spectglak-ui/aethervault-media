@@ -203,8 +203,9 @@ impl VaultTubeSync {
         Ok((name, youtube_id, kind.to_string(), thumbnail, source))
     }
 
-    /// Synchronise les vidéos d'un abonnement (50 max). Le mode de lecture
-    /// est hérité automatiquement de l'abonnement (voir repository).
+        /// Synchronise les vidéos d'un abonnement (sans limite — attention
+    /// aux chaînes de plusieurs milliers de vidéos : la synchro peut
+    /// prendre plusieurs minutes).
     pub fn sync_subscription(&self, sub: &VaultTubeSubscription) -> Result<usize, String> {
         let ytdlp = self.ytdlp()?;
         log::info!("[aetherfy] sync [{}] : {} ({})", sub.source, sub.name, sub.url);
@@ -213,8 +214,6 @@ impl VaultTubeSync {
             "--flat-playlist",
             "--dump-json",
             "--no-warnings",
-            "--playlist-end",
-            "50",
             &sub.url,
         ]);
         #[cfg(windows)]
@@ -269,14 +268,12 @@ impl VaultTubeSync {
             "dailymotion" => format!("{}/playlists", sub.url.trim_end_matches('/')),
             _ => return Ok(0),
         };
-        log::info!("[aetherfy] sync playlists [{}] : {}", sub.source, url);
+                log::info!("[aetherfy] sync playlists [{}] : {}", sub.source, url);
         let mut cmd = Command::new(ytdlp);
         cmd.args([
             "--flat-playlist",
             "--dump-json",
             "--no-warnings",
-            "--playlist-end",
-            "100",
             &url,
         ]);
         #[cfg(windows)]
@@ -316,7 +313,7 @@ impl VaultTubeSync {
         Ok(count)
     }
 
-    /// Aperçu SANS sauvegarde des vidéos d'une URL (playlist non suivie).
+        /// Aperçu SANS sauvegarde des vidéos d'une URL (playlist non suivie).
     pub fn preview_videos(&self, url: &str) -> Result<Vec<VaultTubeVideo>, String> {
         let source = detect_source(url);
         let ytdlp = self.ytdlp()?;
@@ -325,8 +322,6 @@ impl VaultTubeSync {
             "--flat-playlist",
             "--dump-json",
             "--no-warnings",
-            "--playlist-end",
-            "100",
             url,
         ]);
         #[cfg(windows)]

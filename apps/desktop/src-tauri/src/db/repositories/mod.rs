@@ -21,3 +21,5 @@ pub mod window_state_repository;
 pub mod settings_repository;
 pub mod media_probe_repository;
 pub mod segment_repository;
+pub mod private_tag_repository;
+pub mod reading_repository;
