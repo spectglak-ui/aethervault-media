@@ -32,3 +32,5 @@ pub mod segments;
 pub mod vaulttube;
 pub mod nas;
 pub mod friends;
+pub mod private_tags;
+pub mod reading;

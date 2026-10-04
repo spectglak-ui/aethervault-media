@@ -5,6 +5,11 @@
 //! optionnel + récupération par code. Tant que le gate n'a pas rendu la
 //! main, AUCUN provider métier ni route n'est monté : le shell ne peut
 //! pas interroger de commandes métier sans profil actif.
+//!
+//! 0.6.3 : fond animé « champ d'étoiles » (mockup vidéo) derrière toutes
+//! les étapes du gate — `<StarfieldBackdrop />` (canvas fixed, zIndex 0)
+//! + contenu remonté en zIndex 1 via `.avm-auth__inner`, fond du
+//! conteneur forcé en noir pur (le gris d'origine masquait les étoiles).
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
@@ -13,6 +18,7 @@ import { ArrowLeft, Check, Copy, Lock, UserPlus } from "lucide-react";
 import logoUrl from "../assets/logo.png";
 import { applyNearMax } from "../window/nearMax";
 import { metadataApi } from "../features/settings/api";
+import { StarfieldBackdrop } from "../components/StarfieldBackdrop";
 import "./auth.css";
 
 interface LoginProfile {
@@ -521,9 +527,9 @@ function Onboarding({ onDone }: { onDone: () => void }) {
 }
 
 /** Tuto de bienvenue TMDB (Étape 8) : affiché à chaque connexion si
- * aucune clé API n'est configurée. Si l'utilisateur clique "Passer",
- * la modale réapparaîtra à la prochaine connexion (pas de flag localStorage).
- * Si l'utilisateur enregistre une clé, la modale ne s'affichera plus. */
+aucune clé API n'est configurée. Si l'utilisateur clique "Passer",
+la modale réapparaîtra à la prochaine connexion (pas de flag localStorage).
+Si l'utilisateur enregistre une clé, la modale ne s'affichera plus. */
 function TmdbWelcomeModal() {
   const [visible, setVisible] = useState(false);
   const [apiKey, setApiKey] = useState("");
@@ -598,7 +604,6 @@ function TmdbWelcomeModal() {
 
   if (!visible) return null;
   return (
-    // ... garde le JSX existant (le <div ref={modalRef} ...> jusqu'à la fin)
     <div
       ref={modalRef}
       role="dialog"
@@ -659,7 +664,7 @@ function TmdbWelcomeModal() {
         <p style={{ fontSize: 12, color: "var(--color-text-muted, #9a9aa3)", marginTop: 8 }}>
           Obtenez une clé gratuite sur{" "}
           <a
-            href="https://www.themoviedb.org/settings/api"
+            href={TMDB_API_URL}
             target="_blank"
             rel="noopener noreferrer"
             style={{ color: "var(--color-accent, #7c5cff)" }}
@@ -751,26 +756,47 @@ export function AuthGate({ children }: { children: ReactNode }) {
         <motion.div
           key="gate"
           className="avm-auth"
+          /* 0.6.3 : noir pur — le fond gris d'origine masquait le canvas
+             du champ d'étoiles placé juste derrière. */
+          style={{ background: "#000" }}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0, transition: { duration: 0.35 } }}
         >
-          {loadError ? (
-            <div className="avm-auth__card">
-              <p className="avm-auth__error">{loadError}</p>
-              <button className="avm-btn avm-btn--primary" onClick={() => window.location.reload()}>
-                Réessayer
-              </button>
-            </div>
-          ) : loginState === null ? (
-            <div className="avm-auth__card">
-              <p className="avm-auth__hint">Chargement…</p>
-            </div>
-          ) : loginState.is_first_run ? (
-            <Onboarding onDone={authenticated} />
-          ) : (
-            <Login profiles={loginState.profiles} onDone={authenticated} />
-          )}
+          {/* 0.6.3 : fond animé (canvas fixed, zIndex 0, pointer-events
+              none) derrière TOUTES les étapes du gate. */}
+          <StarfieldBackdrop />
+          {/* Wrapper de contenu : AU-DESSUS du canvas (zIndex 1). Sans
+              lui, le canvas positionné se peindrait par-dessus les
+              cartes et boutons statiques. */}
+          <div
+            style={{
+              position: "relative",
+              zIndex: 1,
+              width: "100%",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            {loadError ? (
+              <div className="avm-auth__card">
+                <p className="avm-auth__error">{loadError}</p>
+                <button className="avm-btn avm-btn--primary" onClick={() => window.location.reload()}>
+                  Réessayer
+                </button>
+              </div>
+            ) : loginState === null ? (
+              <div className="avm-auth__card">
+                <p className="avm-auth__hint">Chargement…</p>
+              </div>
+            ) : loginState.is_first_run ? (
+              <Onboarding onDone={authenticated} />
+            ) : (
+              <Login profiles={loginState.profiles} onDone={authenticated} />
+            )}
+          </div>
         </motion.div>
       )}
     </AnimatePresence>

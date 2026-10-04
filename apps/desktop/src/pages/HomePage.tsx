@@ -11,6 +11,7 @@ import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
 import { useAnimatedBackdropActive } from "../hooks/useAnimatedBackdropActive";
 import "./pages.css";
+import { categoryRoute } from "../lib/categoryRoute";
 
 /** 0.4.0 : détection tolérante de la catégorie Animés. */
 function isAnimeCategory(c: Category): boolean {
@@ -260,7 +261,7 @@ export function HomePage() {
                     <button
                       key={category.id}
                       className="avm-home-tile"
-                      onClick={() => navigate("/private")}
+                      onClick={() => navigate(categoryRoute(category))}
                     >
                       {assetUrl(category.banner) ? (
                         <img src={assetUrl(category.banner)} alt="" />
@@ -282,7 +283,7 @@ export function HomePage() {
                 <button
                   key={category.id}
                   className="avm-home-tile"
-                  onClick={() => navigate(`/category/${category.key}`)}
+                  onClick={() => navigate(categoryRoute(category))}
                 >
                   {assetUrl(category.banner) ? (
                     <img src={assetUrl(category.banner)} alt="" />

@@ -224,3 +224,56 @@ pub fn vaulttube_remove_subscription(
 ) -> Result<(), String> {
     VaultTubeRepository::new(state.db_pool.clone()).remove_subscription(subscription_id)
 }
+
+/// Synchronise tous les abonnements immédiatement (bouton "Sync maintenant").
+#[tauri::command]
+pub fn vaulttube_sync_all_now(
+    state: tauri::State<AppState>,
+) -> Result<usize, String> {
+    let repo = state.vaulttube_repository()?;
+    let sync = state.vaulttube_sync()?;
+    
+    let subs = repo.list_subscriptions()?;
+    let mut total = 0;
+    
+    for sub in &subs {
+        match sync.sync_subscription(sub) {
+            Ok(added) => total += added,
+            Err(e) => log::warn!("[vaulttube] sync manuel : échec pour {} : {e}", sub.name),
+        }
+    }
+    
+    Ok(total)
+}
+
+/// Lance la synchronisation automatique périodique (toutes les 6h).
+#[tauri::command]
+pub fn vaulttube_auto_sync_start(
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let mut guard = state.auto_sync_handle.lock().unwrap();
+    if guard.is_some() {
+        return Ok(()); // Déjà lancé
+    }
+    
+    let repo = state.vaulttube_repository()?;
+    let sync = state.vaulttube_sync()?;
+    let handle = crate::services::vaulttube::auto_sync::start(repo, sync);
+    *guard = Some(handle);
+    
+    log::info!("[vaulttube] auto-sync démarré");
+    Ok(())
+}
+
+/// Arrête la synchronisation automatique.
+#[tauri::command]
+pub fn vaulttube_auto_sync_stop(
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let mut guard = state.auto_sync_handle.lock().unwrap();
+    if let Some(mut handle) = guard.take() {
+        handle.stop();
+        log::info!("[vaulttube] auto-sync arrêté");
+    }
+    Ok(())
+}

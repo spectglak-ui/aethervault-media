@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState, type MouseEvent } from "react";
-import { useParams } from "react-router-dom";
-import { Image as ImagePlaceholder, RotateCcw, Star } from "lucide-react";
+import { useNavigate, useParams } from "react-router-dom"; // ← useNavigate ajouté
+import { Image as ImagePlaceholder, Pencil, RotateCcw, Star, Trash2 } from "lucide-react"; // ← Pencil + Trash2 ajoutés
 import { EmptyState, IconButton, PageHeader } from "@aethervault/ui-kit";
 import type { PrivateImageFile, PrivateImageFolder } from "@aethervault/shared-types";
+import { privacyApi } from "../features/privacy/api"; // ← privacyApi ajouté
 import { privateImageApi } from "../features/privateImage/api";
 import { PrivateThumbnailImage } from "../features/privateImage/PrivateThumbnailImage";
 import { ImageViewer } from "../features/privateImage/ImageViewer";
@@ -10,22 +11,17 @@ import { useImageViewer } from "../features/privateImage/useImageViewer";
 import "./pages.css";
 
 function folderDisplayName(path: string): string {
-  const normalized = path.replace(/[\\/]+$/, "");
-  const parts = normalized.split(/[\\/]/);
+  const normalized = path.replace(/[\/]+$/, "");
+  const parts = normalized.split(/[\/]/);
   return parts[parts.length - 1] || path;
 }
 
-/**
- * Grille des photos d'un album (Étape 6b-ii, doc §6.4 quater). La
- * visionneuse (`ImageViewer`) est montée ici, pilotée par `useImageViewer`
- * — cette page n'a besoin de connaître que `open()`.
- */
 export function PrivateAlbumPage() {
   const { libraryId, folderId } = useParams<{ libraryId: string; folderId: string }>();
   const privateLibraryId = Number(libraryId);
   const privateFolderId = Number(folderId);
+  const navigate = useNavigate(); // ← AJOUT
   const viewer = useImageViewer();
-
   const [folder, setFolder] = useState<PrivateImageFolder | null>(null);
   const [files, setFiles] = useState<PrivateImageFile[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -36,14 +32,12 @@ export function PrivateAlbumPage() {
         privateImageApi.listFolders(privateLibraryId),
         privateImageApi.listFiles(privateFolderId),
       ]);
-
       const found = folders.find((candidate) => candidate.id === privateFolderId) ?? null;
       if (!found) {
         setError("Album introuvable.");
         setFolder(null);
         return;
       }
-
       setFolder(found);
       setFiles(fileList);
       setError(null);
@@ -75,6 +69,37 @@ export function PrivateAlbumPage() {
     }
   };
 
+  // ← AJOUT : renommer l'album depuis la vue détaillée
+  const handleRename = async () => {
+    if (!folder) return;
+    const next = window.prompt("Nouveau nom de l'album", folderDisplayName(folder.path));
+    if (!next || next.trim() === folderDisplayName(folder.path)) return;
+    try {
+      await privateImageApi.renameFolder(folder.id, next.trim());
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Renommage impossible.");
+    }
+  };
+
+  // ← AJOUT : supprimer l'album depuis la vue détaillée
+  const handleDelete = async () => {
+    if (!folder) return;
+    if (
+      !window.confirm(
+        `Retirer l'album « ${folderDisplayName(folder.path)} » du coffre ? Les photos resteront sur le disque.`
+      )
+    ) {
+      return;
+    }
+    try {
+      await privateImageApi.removeFolder(folder.id);
+      navigate(`/private/images/${privateLibraryId}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Suppression impossible.");
+    }
+  };
+
   if (folder === null && !error) {
     return <p>Chargement…</p>;
   }
@@ -87,16 +112,26 @@ export function PrivateAlbumPage() {
         title={folder ? folderDisplayName(folder.path) : "Album introuvable"}
         description={folder ? `${files.length} photo(s) — ${folder.path}` : undefined}
         actions={
-          folder?.cover_file_id ? (
-            <IconButton label="Réinitialiser la couverture de l'album" onClick={handleResetCover}>
-              <RotateCcw size={16} />
-            </IconButton>
+          folder ? (
+            <div style={{ display: "flex", gap: 8 }}>
+              {folder.cover_file_id && (
+                <IconButton label="Réinitialiser la couverture de l'album" onClick={handleResetCover}>
+                  <RotateCcw size={16} />
+                </IconButton>
+              )}
+              {/* ← AJOUT : Renommer l'album */}
+              <IconButton label="Renommer l'album" onClick={handleRename}>
+                <Pencil size={16} />
+              </IconButton>
+              {/* ← AJOUT : Supprimer l'album */}
+              <IconButton label="Supprimer l'album" onClick={handleDelete}>
+                <Trash2 size={16} />
+              </IconButton>
+            </div>
           ) : undefined
         }
       />
-
       {error && <p className="avm-settings-error">{error}</p>}
-
       {files.length === 0 ? (
         <EmptyState
           icon={<ImagePlaceholder size={32} />}
@@ -139,7 +174,6 @@ export function PrivateAlbumPage() {
           })}
         </div>
       )}
-
       <ImageViewer controls={viewer} />
     </div>
   );

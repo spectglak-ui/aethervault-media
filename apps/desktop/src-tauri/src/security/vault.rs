@@ -1,12 +1,12 @@
 //! Cycle de vie du coffre privé chiffré (`vault.db`) — doc §6.4 bis.
 //!
-//! **Architecture A2** (AES-256-GCM applicatif), retenue après abandon de
+//! Architecture A2 (AES-256-GCM applicatif), retenue après abandon de
 //! SQLCipher en cours d'Étape 6a suite à un échec de compilation d'OpenSSL
 //! sur la machine de développement — voir l'erratum en doc §6.4 bis.
 //!
 //! `vault.db` n'est plus un fichier SQLite ouvrable directement : c'est un
 //! blob chiffré (AES-256-GCM, authentifié) contenant un instantané complet
-//! d'une base SQLite tenue **en mémoire** (`Connection::open_in_memory`)
+//! d'une base SQLite tenue en mémoire (`Connection::open_in_memory`)
 //! pendant toute la durée où le coffre est déverrouillé.
 //!
 //! `rusqlite` (feature `backup`) ne permet de transférer le contenu d'une
@@ -15,13 +15,12 @@
 //! dans le répertoire de données de l'application) sert uniquement de
 //! support de transfert, écrit puis relu (ou relu puis supprimé) en une
 //! fraction de seconde à chaque déverrouillage ou persistance, jamais
-//! laissé sur disque au repos. `vault.db` est ré-écrit après **chaque
-//! opération d'écriture**, pas seulement à la fermeture (voir
+//! laissé sur disque au repos. `vault.db` est ré-écrit après chaque
+//! opération d'écriture, pas seulement à la fermeture (voir
 //! `VaultHandle::persist` et son appel dans `domain::privacy`) : point
 //! affiné par rapport à la description initiale de l'option A2, pour ne
 //! jamais perdre une opération déjà confirmée au frontend en cas d'arrêt
 //! brutal de l'application.
-
 use crate::db::repositories::vault_security_repository::{self, VaultSecurityRecord};
 use crate::db::DbPool;
 use crate::security::kdf::{self, KdfParams, KEY_LEN};
@@ -36,6 +35,7 @@ use std::path::{Path, PathBuf};
 /// corrompu ou d'un format futur incompatible d'un simple échec de
 /// déchiffrement (mauvais PIN/mot de passe).
 const FORMAT_MAGIC: &[u8; 4] = b"AVV1";
+
 /// Taille standard d'un nonce AES-GCM (96 bits).
 const NONCE_LEN: usize = 12;
 
@@ -70,6 +70,12 @@ const VAULT_MIGRATIONS: &[VaultMigration] = &[
     VaultMigration {
         version: 5,
         sql: include_str!("vault_migrations/0005_private_image_hashes.sql"),
+    },
+    // 0.6.3 : tags utilisateur sur les médias privés (tables de jonction
+    // avec ON DELETE CASCADE — voir le fichier SQL).
+    VaultMigration {
+        version: 6,
+        sql: include_str!("vault_migrations/0006_private_tags.sql"),
     },
 ];
 
@@ -109,10 +115,8 @@ impl VaultHandle {
         self.conn
             .backup(DatabaseName::Main, &self.tmp_path, None::<fn(rusqlite::backup::Progress)>)
             .map_err(|e| e.to_string())?;
-
         let plaintext = std::fs::read(&self.tmp_path).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(&self.tmp_path);
-
         write_encrypted(&self.vault_path, &self.key, &plaintext)
     }
 }
@@ -191,20 +195,18 @@ pub fn initialize(
     secret: &str,
 ) -> Result<VaultHandle, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
-
     if vault_security_repository::get(&conn)
         .map_err(|e| e.to_string())?
         .is_some()
     {
         return Err("Un coffre privé existe déjà pour cette installation.".to_string());
     }
-
     let params = KdfParams::generate();
     let key = kdf::derive_key(secret, &params)?;
-
     let working_conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+    // Le bool renvoyé (migrations appliquées) est ignoré ici : le
+    // `persist()` juste dessous écrit de toute façon la base neuve.
     apply_vault_migrations(&working_conn)?;
-
     let handle = VaultHandle {
         conn: working_conn,
         key,
@@ -212,7 +214,6 @@ pub fn initialize(
         tmp_path: tmp_path(data_dir),
     };
     handle.persist()?;
-
     vault_security_repository::save(
         &conn,
         &VaultSecurityRecord {
@@ -224,7 +225,6 @@ pub fn initialize(
         },
     )
     .map_err(|e| e.to_string())?;
-
     Ok(handle)
 }
 
@@ -232,12 +232,22 @@ pub fn initialize(
 /// incorrecte est détectée par l'échec (attendu) de la vérification
 /// d'authenticité intégrée à AES-GCM lors du déchiffrement — jamais par
 /// comparaison d'un hash stocké (voir §6.4 bis).
+///
+/// 0.6.4 (perf) : mesure des phases (log `[vault] unlock`) et suppression
+/// du re-chiffrement SYSTÉMATIQUE en fin de déverrouillage. Sur un coffre
+/// volumineux (les vignettes vivent DANS `vault.db`), ce `persist()`
+/// inconditionnel était le coût dominant : backup complet + lecture +
+/// chiffrement + ré-écriture à chaque unlock, pour un bénéfice nul — le
+/// fichier disque est déjà à jour, et chaque écriture ultérieure persiste
+/// déjà (voir `VaultHandle::persist`) ; le nonce tourne de toute façon à
+/// chaque persist() ultérieur (hygiène conservée). On ne persiste plus
+/// ici que si une migration vient d'être appliquée, pour la rendre durable.
 pub fn unlock(pool: &DbPool, data_dir: &Path, secret: &str) -> Result<VaultHandle, String> {
+    let t0 = std::time::Instant::now();
     let conn = pool.get().map_err(|e| e.to_string())?;
     let record = vault_security_repository::get(&conn)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Aucun coffre privé n'a encore été créé.".to_string())?;
-
     let params = KdfParams {
         salt: record.kdf_salt,
         mem_cost_kib: record.kdf_mem_cost_kib as u32,
@@ -245,15 +255,14 @@ pub fn unlock(pool: &DbPool, data_dir: &Path, secret: &str) -> Result<VaultHandl
         parallelism: record.kdf_parallelism as u32,
     };
     let key = kdf::derive_key(secret, &params)?;
-
+    let t1 = std::time::Instant::now();
     let vault_file = vault_path(data_dir);
     let plaintext =
         read_encrypted(&vault_file, &key).map_err(|_| "PIN ou mot de passe incorrect.".to_string())?;
-
+    let t2 = std::time::Instant::now();
     let tmp = tmp_path(data_dir);
     let _ = std::fs::remove_file(&tmp);
     std::fs::write(&tmp, &plaintext).map_err(|e| e.to_string())?;
-
     let mut working_conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
     let restore_result = working_conn.restore(
         DatabaseName::Main,
@@ -262,22 +271,27 @@ pub fn unlock(pool: &DbPool, data_dir: &Path, secret: &str) -> Result<VaultHandl
     );
     let _ = std::fs::remove_file(&tmp);
     restore_result.map_err(|e| e.to_string())?;
-
-    apply_vault_migrations(&working_conn)?;
-
+    let migrated = apply_vault_migrations(&working_conn)?;
+    let t3 = std::time::Instant::now();
     let handle = VaultHandle {
         conn: working_conn,
         key,
         vault_path: vault_file,
         tmp_path: tmp,
     };
-    // Rechiffre systématiquement au déverrouillage : rend durable une
-    // éventuelle migration tout juste appliquée, et fait tourner le nonce
-    // à chaque déverrouillage (hygiène cryptographique supplémentaire,
-    // sans contrainte particulière puisque le coût est négligeable pour un
-    // catalogue de cette taille).
-    handle.persist()?;
-
+    let mut persisted = false;
+    if migrated {
+        handle.persist()?;
+        persisted = true;
+    }
+    log::info!(
+        "[vault] unlock : KDF {:?} | déchiffrement {:?} | restore SQLite {:?} | persist={} | total {:?}",
+        t1 - t0,
+        t2 - t1,
+        t3 - t2,
+        persisted,
+        t3 - t0
+    );
     Ok(handle)
 }
 
@@ -293,10 +307,8 @@ pub fn change_secret(
 ) -> Result<(), String> {
     let new_params = KdfParams::generate();
     let new_key = kdf::derive_key(new_secret, &new_params)?;
-
     handle.key = new_key;
     handle.persist()?;
-
     let conn = pool.get().map_err(|e| e.to_string())?;
     vault_security_repository::save(
         &conn,
@@ -309,7 +321,6 @@ pub fn change_secret(
         },
     )
     .map_err(|e| e.to_string())?;
-
     Ok(())
 }
 
@@ -317,20 +328,16 @@ pub fn change_secret(
 /// `[FORMAT_MAGIC][nonce][ciphertext]` à `path`.
 fn write_encrypted(path: &Path, key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<(), String> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-
     let mut nonce_bytes = [0u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
-
     let ciphertext = cipher
         .encrypt(nonce, plaintext)
         .map_err(|_| "Échec du chiffrement du coffre.".to_string())?;
-
     let mut out = Vec::with_capacity(FORMAT_MAGIC.len() + NONCE_LEN + ciphertext.len());
     out.extend_from_slice(FORMAT_MAGIC);
     out.extend_from_slice(&nonce_bytes);
     out.extend_from_slice(&ciphertext);
-
     std::fs::write(path, out).map_err(|e| e.to_string())
 }
 
@@ -341,7 +348,6 @@ fn write_encrypted(path: &Path, key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result
 /// donner d'indice à une tentative par force brute.
 fn read_encrypted(path: &Path, key: &[u8; KEY_LEN]) -> Result<Vec<u8>, String> {
     let raw = std::fs::read(path).map_err(|e| e.to_string())?;
-
     if raw.len() < FORMAT_MAGIC.len() + NONCE_LEN {
         return Err("Fichier de coffre corrompu ou tronqué.".to_string());
     }
@@ -350,26 +356,28 @@ fn read_encrypted(path: &Path, key: &[u8; KEY_LEN]) -> Result<Vec<u8>, String> {
         return Err("Format de fichier de coffre non reconnu.".to_string());
     }
     let (nonce_bytes, ciphertext) = rest.split_at(NONCE_LEN);
-
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce = Nonce::from_slice(nonce_bytes);
-
     cipher
         .decrypt(nonce, ciphertext)
         .map_err(|_| "Échec du déchiffrement.".to_string())
 }
 
-fn apply_vault_migrations(conn: &Connection) -> Result<(), String> {
+/// Applique les migrations de schéma manquantes. Renvoie `true` si au
+/// moins une migration a été appliquée — c'est le SEUL cas où un
+/// re-chiffrement immédiat est nécessaire au déverrouillage (rendre la
+/// migration durable sur disque), voir `unlock`.
+fn apply_vault_migrations(conn: &Connection) -> Result<bool, String> {
     let current_version: i32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|e| e.to_string())?;
-
+    let mut applied = false;
     for migration in VAULT_MIGRATIONS.iter().filter(|m| m.version > current_version) {
         conn.execute_batch(migration.sql)
             .map_err(|e| e.to_string())?;
         conn.pragma_update(None, "user_version", migration.version)
             .map_err(|e| e.to_string())?;
+        applied = true;
     }
-
-    Ok(())
+    Ok(applied)
 }

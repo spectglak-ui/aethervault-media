@@ -19,12 +19,17 @@
 //! — les deux lignes ci-dessous sont INDISPENSABLES, toutes les versions
 //! qui les ont perdues ont gelé ou échoué en test réel :
 //!   1. `pause=yes` : une seule image suffit, et le cœur mpv idle rend
-//!      `terminate_destroy` rapide au nettoyage ;
+//!       `terminate_destroy` rapide au nettoyage ;
 //!   2. `seek 0 relative` juste après l'installation du callback de
 //!      réveil : sans ce seek, mpv considère la frame comme déjà
 //!      « présentée » et ne réveille JAMAIS le nouveau contexte de rendu
 //!      (même mécanisme que le correctif « image figée du PiP » de
-//!      `sw_render.rs`).
+//!       `sw_render.rs`).
+//!
+//! 0.6.5 (correctif vignettes manquantes) : stratégie multi-positions
+//! de seek avec repli automatique — si la position par défaut (1s) échoue,
+//! essaie successivement 25%, 50%, 10% de la durée, puis la première frame.
+//! Timeout proportionnel à la taille du fichier (2s de base + 1s par 100 Mo).
 //!
 //! Anti-gel : chaque extraction tourne dans un thread dédié avec délai
 //! absolu (`grab_one_frame_guarded`) ; un traceur d'étape (`Stage`)
@@ -49,12 +54,20 @@ use tauri::{AppHandle, Emitter};
 /// léger sur disque (~30-60 Ko en JPEG qualité 80).
 const THUMB_WIDTH: usize = 480;
 const JPEG_QUALITY: u8 = 80;
-/// Position de départ : 1 seconde. Seek minuscule = chargement rapide
-/// même en HEVC ; évite le frame noir initial de nombreux fichiers.
-const START_POSITION: &str = "1";
-/// Délai maximal d'attente d'une image PAR TENTATIVE — un fichier
-/// pathologique ne doit pas geler la file de génération.
-const FRAME_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Positions de seek à essayer (en secondes ou ratio de la durée)
+const SEEK_POSITIONS: &[SeekPosition] = &[
+    SeekPosition::Absolute(1.0),  // 1 seconde (par défaut)
+    SeekPosition::Ratio(0.25),    // 25% de la durée
+    SeekPosition::Ratio(0.50),    // 50% de la durée
+    SeekPosition::Ratio(0.10),    // 10% de la durée
+    SeekPosition::Absolute(0.0),  // Première frame
+];
+
+/// Timeout de base pour un fichier (augmenté proportionnellement à la taille)
+const BASE_TIMEOUT: Duration = Duration::from_secs(8);
+const TIMEOUT_PER_100MB: Duration = Duration::from_secs(1);
+
 /// Intervalle minimal entre deux émissions de progression — même
 /// throttling que le scan (Étape 6d, `scanner.rs`).
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
@@ -63,6 +76,7 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
 /// garbage — même choix que `sw_render.rs`.
 const SW_FORMAT: &[u8] = b"rgb0\0";
 const BYTES_PER_PIXEL: usize = 4;
+
 /// Alignement exigé par mpv (pointeur ET stride) en rendu logiciel.
 const MPV_SW_ALIGNMENT: usize = 64;
 
@@ -71,6 +85,13 @@ pub struct ThumbnailSummary {
     pub library_id: i64,
     pub generated: u32,
     pub failed: u32,
+}
+
+/// Position de seek : soit absolue (secondes), soit relative (ratio de la durée)
+#[derive(Clone, Copy, Debug)]
+enum SeekPosition {
+    Absolute(f64),
+    Ratio(f64),
 }
 
 fn align_up(value: usize, align: usize) -> usize {
@@ -100,6 +121,7 @@ extern "C" fn no_op_wake_trampoline(_ctx: *mut c_void) {}
 
 /// Garde RAII : `mpv_terminate_destroy` sur tous les chemins de sortie.
 struct HandleGuard<'a>(&'a MpvFunctions, *mut c_void);
+
 impl Drop for HandleGuard<'_> {
     fn drop(&mut self) {
         unsafe { (self.0.terminate_destroy)(self.1) }
@@ -108,6 +130,7 @@ impl Drop for HandleGuard<'_> {
 
 /// Garde RAII : `mpv_render_context_free` sur tous les chemins de sortie.
 struct RenderCtxGuard<'a>(&'a MpvFunctions, *mut mpv_ffi::mpv_render_context);
+
 impl Drop for RenderCtxGuard<'_> {
     fn drop(&mut self) {
         unsafe { (self.0.render_context_free)(self.1) }
@@ -171,7 +194,19 @@ fn get_property_double(functions: &MpvFunctions, mpv: *mut c_void, name: &str) -
     }
 }
 
-/// Extrait UNE image du fichier (frame à ~1 s), rendue en logiciel à
+/// Calcule le timeout adapté à la taille du fichier
+fn compute_timeout(path: &str) -> Duration {
+    match std::fs::metadata(path) {
+        Ok(metadata) => {
+            let size_mb = metadata.len() / (1024 * 1024);
+            let extra = (size_mb / 100) as u32;
+            BASE_TIMEOUT + TIMEOUT_PER_100MB * extra
+        }
+        Err(_) => BASE_TIMEOUT,
+    }
+}
+
+/// Extrait UNE image du fichier à la position donnée, rendue en logiciel à
 /// `THUMB_WIDTH` de large. Renvoie `(largeur, hauteur, pixels RGB8
 /// compacts)`. Aucune ressource mpv ne survit à cet appel : handle et
 /// contexte de rendu sont détruits sur tous les chemins (gardes RAII +
@@ -179,7 +214,9 @@ fn get_property_double(functions: &MpvFunctions, mpv: *mut c_void, name: &str) -
 fn grab_one_frame(
     functions: &MpvFunctions,
     path: &str,
+    seek_pos: SeekPosition,
     stage: Stage,
+    timeout: Duration,
 ) -> Result<(usize, usize, Vec<u8>), String> {
     unsafe {
         set_stage(&stage, "mpv_create");
@@ -195,11 +232,10 @@ fn grab_one_frame(
         // Décodage logiciel : configuration des vignettes réussies en
         // test réel ; le décodage matériel a été suspecté de gels.
         set_option(functions, mpv, "hwdec", "no")?;
-        set_option(functions, mpv, "start", START_POSITION)?;
         // ⚠️ LIGNE PROUVÉE n°1 (ne JAMAIS la retirer) : voir tête de
         // fichier.
         set_option(functions, mpv, "pause", "yes")?;
-
+        
         set_stage(&stage, "mpv_initialize");
         let rc = (functions.initialize)(mpv);
         if rc < 0 {
@@ -208,6 +244,24 @@ fn grab_one_frame(
 
         set_stage(&stage, "loadfile");
         command(functions, mpv, &["loadfile", path, "replace"])?;
+
+        // Calcule la position de seek absolue
+        let seek_seconds = match seek_pos {
+            SeekPosition::Absolute(secs) => secs,
+            SeekPosition::Ratio(ratio) => {
+                let duration = get_property_double(functions, mpv, "duration").unwrap_or(0.0);
+                if duration > 0.0 {
+                    duration * ratio
+                } else {
+                    1.0 // Fallback si durée inconnue
+                }
+            }
+        };
+
+        // Seek à la position calculée
+        let seek_str = format!("{:.3}", seek_seconds);
+        set_stage(&stage, "seek");
+        command(functions, mpv, &["seek", &seek_str, "absolute"])?;
 
         set_stage(&stage, "render_context_create");
         let mut render_ctx: *mut mpv_ffi::mpv_render_context = std::ptr::null_mut();
@@ -233,6 +287,7 @@ fn grab_one_frame(
             dirty: AtomicBool::new(true),
         });
         let wake_ctx = Arc::into_raw(wake.clone()) as *mut c_void;
+
         set_stage(&stage, "update_callback");
         (functions.render_context_set_update_callback)(render_ctx, wake_trampoline, wake_ctx);
 
@@ -244,7 +299,7 @@ fn grab_one_frame(
 
         set_stage(&stage, "attente_frame");
         let outcome = (|| {
-            let deadline = Instant::now() + FRAME_TIMEOUT;
+            let deadline = Instant::now() + timeout;
             while Instant::now() < deadline {
                 {
                     let guard = wake.mutex.lock().unwrap_or_else(|p| p.into_inner());
@@ -258,7 +313,7 @@ fn grab_one_frame(
                             .wait_timeout(guard, remaining.min(Duration::from_millis(200)));
                     }
                 }
-                                wake.dirty.store(false, Ordering::Release);
+                wake.dirty.store(false, Ordering::Release);
 
                 // VOLONTAIREMENT AUCUN appel `wait_event` ici : régression
                 // constatée en test réel (gels « attente_frame » sur le
@@ -269,7 +324,6 @@ fn grab_one_frame(
                 // pompe jamais les événements. Pour une extraction bornée
                 // à ~10 s, une file d'événements qui se remplit est sans
                 // conséquence.
-                                wake.dirty.store(false, Ordering::Release);
 
                 let flags = (functions.render_context_update)(render_ctx);
                 if flags & mpv_ffi::RENDER_UPDATE_FRAME == 0 {
@@ -277,19 +331,15 @@ fn grab_one_frame(
                 }
 
                 set_stage(&stage, "render");
-
-                set_stage(&stage, "render");
                 let aspect = get_property_double(functions, mpv, "video-params/aspect")
                     .filter(|a| *a > 0.1 && *a < 10.0)
                     .unwrap_or(16.0 / 9.0);
                 let width = THUMB_WIDTH;
                 let height = ((width as f64 / aspect) as usize).clamp(2, width) & !1;
-
                 let stride = align_up(width * BYTES_PER_PIXEL, MPV_SW_ALIGNMENT);
                 let page_count = (stride * height + MPV_SW_ALIGNMENT - 1) / MPV_SW_ALIGNMENT;
                 let mut pages = vec![AlignedPage([0u8; MPV_SW_ALIGNMENT]); page_count.max(1)];
                 let base = pages.as_mut_ptr() as *mut u8;
-
                 let mut sw_size: [c_int; 2] = [width as c_int, height as c_int];
                 let mut stride_value = stride;
                 let mut render_params = [
@@ -334,7 +384,10 @@ fn grab_one_frame(
                 set_stage(&stage, "ok");
                 return Ok((width, height, rgb8));
             }
-            Err("aucune image décodée avant le délai imparti".to_string())
+            Err(format!(
+                "aucune image décodée avant le délai imparti ({:?}) à la position {:?}",
+                timeout, seek_pos
+            ))
         })();
 
         set_stage(&stage, "cleanup");
@@ -350,6 +403,54 @@ fn grab_one_frame(
     }
 }
 
+/// Essaie plusieurs positions de seek jusqu'à réussir ou épuiser les tentatives
+fn grab_one_frame_with_retries(
+    functions: &MpvFunctions,
+    path: &str,
+    stage: Stage,
+) -> Result<(usize, usize, Vec<u8>), String> {
+    let timeout = compute_timeout(path);
+    let mut last_error = String::new();
+
+    for (i, &seek_pos) in SEEK_POSITIONS.iter().enumerate() {
+        set_stage(&stage, "tentative");
+        match grab_one_frame(functions, path, seek_pos, stage.clone(), timeout) {
+            Ok(result) => {
+                if i > 0 {
+                    log::debug!(
+                        "[vignettes] {} : vignette obtenue à la tentative {} ({:?})",
+                        std::path::Path::new(path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or_default(),
+                        i + 1,
+                        seek_pos
+                    );
+                }
+                return Ok(result);
+            }
+            Err(e) => {
+                last_error = e;
+                log::debug!(
+                    "[vignettes] {} : échec à la position {:?} — {}",
+                    std::path::Path::new(path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy())
+                        .unwrap_or_default(),
+                    seek_pos,
+                    last_error
+                );
+                continue;
+            }
+        }
+    }
+
+    Err(format!(
+        "toutes les positions de seek ont échoué : {}",
+        last_error
+    ))
+}
+
 /// Filet de sécurité : thread dédié + délai absolu. En cas de gel, le
 /// message indique l'étape exacte (lue dans `stage`) — plus jamais de
 /// diagnostic à l'aveugle. Le thread gelé est abandonné (fuite tolérée,
@@ -359,12 +460,17 @@ fn grab_one_frame_guarded(
     path: String,
     stage: Stage,
 ) -> Result<(usize, usize, Vec<u8>), String> {
+    // 0.6.5 : calcul du timeout AVANT le spawn — `path` est déplacé dans
+    // la closure et ne serait plus disponible après.
+    let timeout = compute_timeout(&path) + Duration::from_secs(5);
+    
     let (tx, rx) = std::sync::mpsc::channel();
     let stage_for_thread = stage.clone();
     std::thread::spawn(move || {
-        let _ = tx.send(grab_one_frame(&functions, &path, stage_for_thread));
+        let _ = tx.send(grab_one_frame_with_retries(&functions, &path, stage_for_thread));
     });
-    match rx.recv_timeout(FRAME_TIMEOUT + Duration::from_secs(5)) {
+    
+    match rx.recv_timeout(timeout) {
         Ok(result) => result,
         Err(_) => {
             let frozen_at = *stage.lock().unwrap_or_else(|p| p.into_inner());
@@ -451,10 +557,10 @@ pub fn generate_missing(
         log::error!("[vignettes] impossible de créer {} : {e}", dir.display());
         return;
     }
-
     let total = targets.len() as u64;
     let mut processed: u64 = 0;
     let mut last_emit: Option<Instant> = None;
+
     // Signale IMMÉDIATEMENT le changement de phase au frontend : sans
     // cela, l'interface reste sur « Appariement » pendant toute la
     // première tentative, donnant l'impression d'un blocage.
@@ -546,9 +652,11 @@ pub fn generate_missing(
             "current": "",
         }),
     );
+
     log::info!(
         "[vignettes] bibliothèque {library_id} : {generated} vignette(s) générée(s), {failed} échec(s)."
     );
+
     let _ = app.emit(
         "library:episode-thumbnails",
         ThumbnailSummary {

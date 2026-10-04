@@ -1,0 +1,118 @@
+warning: in the working copy of 'apps/desktop/package.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/Cargo.lock', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/Cargo.toml', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/commands/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/commands/playback.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/commands/private_image.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/commands/private_video.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/commands/vaulttube.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/db/repositories/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/db/repositories/private_image_repository.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/domain/private_image.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/domain/private_video.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/lib.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/security/vault.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/services/episode_thumbnails.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/services/metadata/tmdb.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/services/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/services/playback_engine/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/services/private_image_scanner.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/services/vaulttube/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/services/vaulttube/sync.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src-tauri/src/state.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/auth/AuthGate.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/features/player/api.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/features/privateImage/api.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/features/privateVideo/api.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/layout/TopBar.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/lib/categoryIcon.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/lib/categoryRoute.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/pages/HomePage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/pages/PrivateAlbumPage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/pages/PrivateImageLibraryPage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/pages/PrivatePage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/pages/PrivateVideoLibraryPage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/pages/VaultTubeVideosPage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/player/AudioPlayerOverlay.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/player/PlayerContext.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/src/router.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'packages/ui-kit/package.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'pnpm-lock.yaml', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/apps/desktop/package.json b/apps/desktop/package.json[m
+[1mindex 15e1e17..d451827 100644[m
+[1m--- a/apps/desktop/package.json[m
+[1m+++ b/apps/desktop/package.json[m
+[36m@@ -1,7 +1,7 @@[m
+ {[m
+   "name": "@aethervault/desktop",[m
+   "private": true,[m
+[31m-  "version": "0.5.7",[m
+[32m+[m[32m  "version": "0.6.5",[m
+   "type": "module",[m
+   "scripts": {[m
+     "dev": "vite",[m
+[36m@@ -10,17 +10,18 @@[m
+     "tauri": "tauri"[m
+   },[m
+   "dependencies": {[m
+[32m+[m[32m    "@aethervault/shared-types": "workspace:*",[m
+[32m+[m[32m    "@aethervault/ui-kit": "workspace:*",[m
+     "@tauri-apps/api": "^2",[m
+     "@tauri-apps/plugin-dialog": "^2",[m
+[31m-    "@aethervault/ui-kit": "workspace:*",[m
+[31m-    "@aethervault/shared-types": "workspace:*",[m
+[32m+[m[32m    "date-fns": "^3.0.0",[m
+[32m+[m[32m    "framer-motion": "^11.0.0",[m
+[32m+[m[32m    "lucide-react": "^0.400.0",[m
+[32m+[m[32m    "page-flip": "^2.0.7",[m
+     "react": "^18",[m
+     "react-dom": "^18",[m
+     "react-router-dom": "^6.23.0",[m
+[31m-    "lucide-react": "^0.400.0",[m
+[31m-    "framer-motion": "^11.0.0",[m
+[31m-    "react-window": "^1.8.10",[m
+[31m-    "date-fns": "^3.0.0"[m
+[32m+[m[32m    "react-window": "^1.8.10"[m
+   },[m
+   "devDependencies": {[m
+     "@tauri-apps/cli": "^2",[m
+[1mdiff --git a/apps/desktop/src-tauri/Cargo.lock b/apps/desktop/src-tauri/Cargo.lock[m
+[1mindex 18d9c46..c517074 100644[m
+[1m--- a/apps/desktop/src-tauri/Cargo.lock[m
+[1m+++ b/apps/desktop/src-tauri/Cargo.lock[m
+[36m@@ -45,7 +45,7 @@[m [mdependencies = [[m
+ [m
+ [[package]][m
+ name = "aethervault-media"[m
+[31m-version = "0.5.7"[m
+[32m+[m[32mversion = "0.6.5"[m
+ dependencies = [[m
+  "aes-gcm",[m
+  "argon2",[m
+[36m@@ -78,6 +78,7 @@[m [mdependencies = [[m
+  "tauri-plugin-log",[m
+  "ureq",[m
+  "walkdir",[m
+[32m+[m[32m "zip",[m
+ ][m
+ [m
+ [[package]][m
+[36m@@ -186,6 +187,9 @@[m [mname = "arbitrary"[m
+ version = "1.4.2"[m
+ source = "registry+https://github.com/rust-lang/crates.io-index"[m
+ checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"[m
+[32m+[m[32mdependencies = [[m
+[32m+[m[32m "derive_arbitrary",[m
+[32m+[m[32m][m
+ [m
+ [[package]][m
+ name = "arg_enum_proc_macro"[m
+[36m@@ -976,6 +980,17 @@[m [mdependencies = [[m
+  "serde_core",[m
+ ][m
+ [m
+[32m+[m[32m[[package]][m
+[32m+[m[32mname = "derive_arbitrary"[m
+[32m+[m[32mversion = "1.4.2"[m
+[32m+[m[32msource = "registry+https://github.com/rust-lang/crates.io-index"[

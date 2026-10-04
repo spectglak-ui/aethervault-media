@@ -15,9 +15,10 @@ import {
 } from "lucide-react";
 import { usePlayer } from "./PlayerContext";
 import { formatDuration } from "../pages/VaultTubeVideoGrid";
+import { VisualizerCanvas } from "./visualizer/VisualizerCanvas";
 
 /** 0.4.0 — Déduit la miniature depuis les métadonnées OU l'URL de lecture
- * (YouTube / Dailymotion), même si la file ne fournit pas `thumbnail`. */
+(YouTube / Dailymotion), même si la file ne fournit pas `thumbnail`. */
 function artFromMedia(m: {
   thumbnail?: string;
   youtubeId?: string;
@@ -33,10 +34,16 @@ function artFromMedia(m: {
 }
 
 /**
- * 0.4.0 — Lecteur AUDIO façon Spotify (jalon 3) : grande pochette,
- * contrôles (aléatoire, boucle, précédent/suivant), progression, volume
- * et file d'attente cliquable avec « programmer en suivant » (📌).
- */
+0.4.0 — Lecteur AUDIO façon Spotify (jalon 3) : grande pochette,
+contrôles (aléatoire, boucle, précédent/suivant), progression, volume
+et file d'attente cliquable avec « programmer en suivant » (📌).
+0.6.0 — fond animé synchronisé sur l'audio (visualiseur minimaliste) :
+le canvas est monté dans un calque `zIndex: -1`. La racine de l'overlay
+(`position: fixed` + `zIndex: 900`) crée un contexte d'empilement : un
+calque négatif y est peint AU-DESSUS du dégradé de fond de la racine,
+mais SOUS tous les descendants en flux normal (colonnes, boutons) —
+exactement la place voulue pour un fond réactif.
+*/
 export function AudioPlayerOverlay() {
   const {
     currentMedia,
@@ -62,11 +69,9 @@ export function AudioPlayerOverlay() {
     toggleLoop,
     queueNext,
   } = usePlayer();
-
   const [showQueue, setShowQueue] = useState(true);
 
   if (!currentMedia) return null;
-
   const thumb = artFromMedia(currentMedia);
 
   return (
@@ -79,6 +84,14 @@ export function AudioPlayerOverlay() {
         background: "linear-gradient(180deg, #2b1e57 0%, #17131f 55%, #0d0b12 100%)",
       }}
     >
+      {/* ----- Fond animé réactif à l'audio (0.6.0) ----- */}
+      <div
+        aria-hidden
+        style={{ position: "absolute", inset: 0, zIndex: -1, pointerEvents: "none" }}
+      >
+        <VisualizerCanvas />
+      </div>
+
       {/* ----- Colonne principale ----- */}
       <div
         style={{
@@ -127,7 +140,6 @@ export function AudioPlayerOverlay() {
         >
           <ListMusic size={20} />
         </button>
-
         {/* Pochette */}
         <div
           style={{
@@ -153,7 +165,6 @@ export function AudioPlayerOverlay() {
             <Music size={72} style={{ opacity: 0.4 }} />
           )}
         </div>
-
         {/* Titre / artiste */}
         <div
           style={{
@@ -182,7 +193,6 @@ export function AudioPlayerOverlay() {
         >
           {currentMedia.channel ?? "AetherFy"}
         </div>
-
         {/* Progression */}
         <div style={{ width: "min(560px, 90%)", marginTop: 30 }}>
           <input
@@ -209,7 +219,6 @@ export function AudioPlayerOverlay() {
             <span>{formatDuration(duration)}</span>
           </div>
         </div>
-
         {/* Contrôles : aléatoire / précédent / lecture / suivant / boucle */}
         <div style={{ display: "flex", alignItems: "center", gap: 20, marginTop: 18 }}>
           <button
@@ -290,7 +299,6 @@ export function AudioPlayerOverlay() {
             <Repeat size={17} />
           </button>
         </div>
-
         {/* Volume */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 22 }}>
           <button
@@ -319,7 +327,6 @@ export function AudioPlayerOverlay() {
           />
         </div>
       </div>
-
       {/* ----- File d'attente ----- */}
       {showQueue && (
         <div

@@ -9,13 +9,13 @@
 //!
 //! Depuis la migration Étape 3c (abandon du rendu Win32/OpenGL natif au
 //! profit du rendu logiciel + `<canvas>`), `player_attach_surface` ne
-//! prend plus que `width`/`height` (plus de `window_label`/`x`/`y` : il
+//! prend plus que `width` / `height` (plus de `window_label` / `x` / `y` : il
 //! n'y a plus de fenêtre native à positionner) et
 //! `player_update_surface_rect` est devenue `player_resize_surface`.
 //! Toutes les autres commandes de ce fichier sont restées strictement
 //! inchangées par cette migration.
 //!
-//! `width`/`height` reçus par `player_attach_surface`/
+//! `width` / `height` reçus par `player_attach_surface` /
 //! `player_resize_surface` sont déjà en pixels PHYSIQUES : c'est le
 //! frontend qui applique `window.devicePixelRatio` avant l'appel (voir
 //! `PlayerSurface.tsx`), pour ne pas avoir à résoudre le facteur d'échelle
@@ -33,7 +33,7 @@ pub fn get_playback_progress(
     media_file_id: i64,
 ) -> Result<Option<PlaybackProgressRecord>, String> {
     let active_profile_id = state.read_active_profile_id()?;
-playback::get_progress(&state.db_pool, active_profile_id, media_file_id)
+    playback::get_progress(&state.db_pool, active_profile_id, media_file_id)
 }
 
 #[tauri::command]
@@ -44,13 +44,13 @@ pub fn save_playback_progress(
     duration_seconds: f64,
 ) -> Result<(), String> {
     let active_profile_id = state.read_active_profile_id()?;
-playback::save_progress(
-    &state.db_pool,
-    active_profile_id,
-    media_file_id,
-    position_seconds,
-    duration_seconds,
-)
+    playback::save_progress(
+        &state.db_pool,
+        active_profile_id,
+        media_file_id,
+        position_seconds,
+        duration_seconds,
+    )
 }
 
 /// Charge un fichier dans le moteur natif. `path` est un chemin de
@@ -158,7 +158,7 @@ pub fn player_stop(state: tauri::State<AppState>) -> Result<(), String> {
 
 /// Attache (ou réattache) le rendu logiciel au `<canvas>` qui vient de se
 /// monter, en lui envoyant ses images via `channel`. Remplace l'ancienne
-/// commande basée sur `window_label`/`x`/`y` (fenêtre Win32 native,
+/// commande basée sur `window_label` / `x` / `y` (fenêtre Win32 native,
 /// abandonnée — voir le rapport de transmission "écran noir" et la
 /// migration qui a suivi) : il n'y a plus de position à transmettre,
 /// seulement une taille cible, puisqu'il n'y a plus de fenêtre à
@@ -166,7 +166,7 @@ pub fn player_stop(state: tauri::State<AppState>) -> Result<(), String> {
 /// détaché : le `<canvas>` de la fenêtre qui appelle cette commande devient
 /// le destinataire des images, sans jamais interrompre la lecture.
 ///
-/// `width`/`height` sont déjà en pixels PHYSIQUES (le frontend applique
+/// `width` / `height` sont déjà en pixels PHYSIQUES (le frontend applique
 /// `window.devicePixelRatio` avant l'appel — voir `PlayerSurface.tsx`),
 /// exactement comme avant la migration.
 #[tauri::command]
@@ -282,15 +282,12 @@ pub fn list_continue_watching(
         .lock()
         .unwrap()
         .ok_or_else(|| "Aucun profil actif".to_string())?;
-    
     let rows = crate::db::repositories::playback_repository::list_continue_watching(&conn, active_profile_id)
         .map_err(|e| e.to_string())?;
-    
     // 0.4.1 : batch récupération des posters personnalisés
     let title_ids: Vec<i64> = rows.iter().map(|r| r.title_id).collect();
     let custom_posters = crate::db::repositories::custom_image_repository::get_batch_posters(&conn, &title_ids)
         .map_err(|e| e.to_string())?;
-    
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
         let custom_poster = custom_posters.get(&row.title_id).cloned();
@@ -368,27 +365,24 @@ pub fn get_top_titles(state: tauri::State<AppState>, limit: usize) -> Result<Vec
     let active_profile_id = state.read_active_profile_id()?;
     let rows = crate::db::repositories::playback_repository::top_titles(&conn, active_profile_id, limit as i64)
         .map_err(|e| e.to_string())?;
-    
     // 0.4.1 : batch posters
     let title_ids: Vec<i64> = rows.iter().map(|r| r.0).collect();
     let custom_posters = crate::db::repositories::custom_image_repository::get_batch_posters(&conn, &title_ids)
         .map_err(|e| e.to_string())?;
-    
     let mut summaries = Vec::with_capacity(rows.len());
     for (id, category_key, kind, name, poster_path, year, _count) in rows {
         let custom_poster = custom_posters.get(&id).cloned();
         let category = crate::db::repositories::category_repository::get_by_key(&conn, &category_key)
-        // ... reste du code inchangé
-    .map_err(|e| e.to_string())?
-    .ok_or_else(|| format!("Catégorie {} introuvable", category_key))?;
-summaries.push(TitleSummary {
-    id,
-    category_id: category.id,
-    kind,
-    name,
-    year,
-    poster: custom_poster.or(poster_path),
-});
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Catégorie {} introuvable", category_key))?;
+        summaries.push(TitleSummary {
+            id,
+            category_id: category.id,
+            kind,
+            name,
+            year,
+            poster: custom_poster.or(poster_path),
+        });
     }
     Ok(summaries)
 }
@@ -405,6 +399,7 @@ pub fn get_watch_sessions(
     crate::db::repositories::playback_repository::watch_sessions_in(&conn, active_profile_id, &from, &to)
         .map_err(|e| e.to_string())
 }
+
 /// Bouton reset Time Capsule (0.3.0) : efface tout l'historique de
 /// visionnage du profil actif — les compteurs repartent de zéro.
 #[tauri::command]
@@ -418,6 +413,7 @@ pub fn reset_watch_stats(state: tauri::State<AppState>) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     Ok(())
 }
+
 /// Titres similaires (page Titre).
 #[tauri::command]
 pub fn list_similar_titles(
@@ -428,17 +424,13 @@ pub fn list_similar_titles(
     let conn = state.get_conn()?;
     let rows = crate::db::repositories::playback_repository::similar_titles(&conn, title_id, limit as i64)
         .map_err(|e| e.to_string())?;
-    
     // 0.4.1 : batch posters
     let title_ids: Vec<i64> = rows.iter().map(|r| r.0).collect();
     let custom_posters = crate::db::repositories::custom_image_repository::get_batch_posters(&conn, &title_ids)
         .map_err(|e| e.to_string())?;
-    
     let mut summaries = Vec::with_capacity(rows.len());
     for (id, category_id, kind, name, poster_path, year, _score) in rows {
         let custom_poster = custom_posters.get(&id).cloned();
-            crate::db::repositories::custom_image_repository::get(&conn, "title", id, "poster")
-                .map_err(|e| e.to_string())?;
         summaries.push(TitleSummary {
             id,
             category_id,
@@ -450,9 +442,66 @@ pub fn list_similar_titles(
     }
     Ok(summaries)
 }
+
 /// 0.5.5 (R4) : échelle de rendu adaptative pilotée par le frontend.
 #[tauri::command]
 pub fn player_set_render_scale(percent: u32) -> Result<(), String> {
     crate::services::playback_engine::set_render_scale(percent);
+    Ok(())
+}
+
+// ---- Visualiseur audio AetherFy (0.6.0) --------------------------------
+
+/// 0.6.0 (visualiseur AetherFy) : démarre la capture spectrale de la
+/// source réellement chargée dans mpv. `expected_path` = média affiché
+/// côté frontend ; tant que l'extraction yt-dlp n'a pas rempli
+/// `last_source` / `audio_origin` côté moteur, la commande répond en
+/// erreur et le frontend réessaie (retry 500 ms dans useVisualizer.ts).
+#[tauri::command]
+pub fn visualizer_start(
+    state: tauri::State<AppState>,
+    app_handle: AppHandle,
+    expected_path: String,
+) -> Result<(), String> {
+    log::info!("[visualizer] start demandé : {expected_path}");
+    if let Some(prev) = state.visualizer.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        crate::services::visualizer::stop_capture(&prev);
+    }
+    let engine = state.playback_engine.handle()?.clone();
+    let handle = crate::services::visualizer::start_capture(app_handle, engine, &expected_path)?;
+    *state.visualizer.lock().unwrap_or_else(|p| p.into_inner()) = Some(handle);
+    Ok(())
+}
+
+/// 0.6.0 (visualiseur AetherFy) : stoppe la capture spectrale en cours.
+#[tauri::command]
+pub fn visualizer_stop(state: tauri::State<AppState>) -> Result<(), String> {
+    if let Some(handle) = state.visualizer.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        crate::services::visualizer::stop_capture(&handle);
+    }
+    Ok(())
+}
+
+/// 0.6.1 : chargement avec mode explicite — le mode "audio" désactive
+/// la start gate (voir PlaybackEngineHandle::load_with_mode).
+#[tauri::command]
+pub fn player_load_mode(
+    state: tauri::State<AppState>,
+    path: String,
+    mode: String,
+) -> Result<(), String> {
+    let handle = state.playback_engine.handle()?;
+    handle.load_with_mode(&path, Some(&mode))?;
+    if let Ok(conn) = state.get_conn() {
+        let enabled = crate::db::repositories::settings_repository::get(
+            &conn,
+            "audio_spatialization_enabled",
+        )
+        .ok()
+        .flatten()
+        .as_deref()
+            == Some("1");
+        let _ = handle.set_audio_spatialization(enabled);
+    }
     Ok(())
 }

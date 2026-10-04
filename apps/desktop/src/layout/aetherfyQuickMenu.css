@@ -1,0 +1,223 @@
+/* 0.6.4 — AetherFy Quick Menu (TopBar). */
+
+.afq {
+  position: relative;
+  display: inline-flex;
+}
+
+.afq__trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-soft, #cbd5e1);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.afq__trigger:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-text, #f8fafc);
+}
+.afq__trigger--open {
+  background: rgba(124, 92, 255, 0.16);
+  border-color: rgba(124, 92, 255, 0.4);
+  color: var(--color-accent, #7c5cff);
+}
+
+.afq__spin {
+  animation: afq-rot 5s linear infinite;
+}
+@keyframes afq-rot {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.afq__panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: 300px;
+  background: var(--color-surface, #16161c);
+  border: 1px solid var(--color-border, #2c2c33);
+  border-radius: 14px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  padding: 12px;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ----- Mini-lecteur ----- */
+.afq__player {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.afq__thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  overflow: hidden;
+  background: #000;
+  border: 1px solid var(--color-border, #2c2c33);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted, #9a9aa3);
+  flex-shrink: 0;
+}
+.afq__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.afq__meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.afq__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text, #f2f2f5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.afq__progress {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  cursor: pointer;
+  overflow: hidden;
+}
+.afq__progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #8b5cf6, #6366f1, #22d3ee);
+  transition: width 0.2s linear;
+}
+.afq__controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.afq__ctl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-soft, #cbd5e1);
+  cursor: pointer;
+}
+.afq__ctl:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-text, #f8fafc);
+}
+.afq__ctl:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.afq__ctl--main {
+  background: rgba(124, 92, 255, 0.18);
+  color: var(--color-accent, #7c5cff);
+}
+.afq__ctl--main:hover:not(:disabled) {
+  background: rgba(124, 92, 255, 0.3);
+}
+
+.afq__sep {
+  height: 1px;
+  background: var(--color-border, #2c2c33);
+}
+
+/* ----- Playlists ----- */
+.afq__label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: var(--color-text-muted, #64748b);
+}
+.afq__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.afq__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 9px;
+  border-radius: 9px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-soft, #cbd5e1);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.afq__item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-text, #f8fafc);
+}
+.afq__item:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.afq__item-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.afq__item-mode {
+  font-size: 10px;
+  color: var(--color-text-muted, #64748b);
+  border: 1px solid var(--color-border, #2c2c33);
+  border-radius: 8px;
+  padding: 1px 7px;
+  flex-shrink: 0;
+}
+.afq__empty {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-text-muted, #9a9aa3);
+  padding: 6px 2px;
+}
+.afq__error {
+  font-size: 12px;
+  color: #fb7185;
+  padding: 2px 2px 0;
+}
+/* ----- 0.6.4b : deux sections scrollables dans le panneau ----- */
+.afq__panel {
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+}
+.afq__list {
+  max-height: 168px;
+}
+.afq__section + .afq__section {
+  margin-top: 4px;
+}

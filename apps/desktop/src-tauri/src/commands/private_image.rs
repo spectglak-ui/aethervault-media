@@ -7,7 +7,6 @@
 //! `Vec<u8>` bruts.
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-
 use crate::db::repositories::private_image_repository::{PrivateImageFileRecord, PrivateImageFolderRecord};
 use crate::domain::private_image;
 use crate::security::vault::VaultState;
@@ -49,7 +48,10 @@ pub fn add_private_image_folder(
 }
 
 #[tauri::command]
-pub fn remove_private_image_folder(state: tauri::State<AppState>, folder_id: i64) -> Result<(), String> {
+pub fn remove_private_image_folder(
+    state: tauri::State<AppState>,
+    folder_id: i64,
+) -> Result<(), String> {
     let active_profile_id = state.read_active_profile_id()?;
     with_vault_state(&state, |vault_state| {
         private_image::remove_folder(&state.db_pool, active_profile_id, vault_state, folder_id)
@@ -86,7 +88,10 @@ pub fn list_private_image_files(
 /// échoué au scan, ou fichier pas encore scanné). Le frontend construit
 /// directement une URI `data:image/jpeg;base64,...` (doc §6.4 quater).
 #[tauri::command]
-pub fn get_private_image_thumbnail(state: tauri::State<AppState>, file_id: i64) -> Result<Option<String>, String> {
+pub fn get_private_image_thumbnail(
+    state: tauri::State<AppState>,
+    file_id: i64,
+) -> Result<Option<String>, String> {
     let active_profile_id = state.read_active_profile_id()?;
     let bytes = with_vault_state(&state, |vault_state| {
         private_image::get_thumbnail(&state.db_pool, active_profile_id, vault_state, file_id)
@@ -95,7 +100,10 @@ pub fn get_private_image_thumbnail(state: tauri::State<AppState>, file_id: i64) 
 }
 
 #[tauri::command]
-pub fn get_private_album_cover(state: tauri::State<AppState>, folder_id: i64) -> Result<Option<String>, String> {
+pub fn get_private_album_cover(
+    state: tauri::State<AppState>,
+    folder_id: i64,
+) -> Result<Option<String>, String> {
     let active_profile_id = state.read_active_profile_id()?;
     let bytes = with_vault_state(&state, |vault_state| {
         private_image::get_album_cover(&state.db_pool, active_profile_id, vault_state, folder_id)
@@ -114,4 +122,25 @@ pub fn set_private_album_cover(
     with_vault_state(&state, |vault_state| {
         private_image::set_album_cover(&state.db_pool, active_profile_id, vault_state, folder_id, file_id)
     })
+}
+
+#[tauri::command]
+pub fn rename_private_image_folder(
+    state: tauri::State<AppState>,
+    folder_id: i64,
+    new_name: String,
+) -> Result<(), String> {
+    let active_profile_id = state.read_active_profile_id()?;
+    let vault_state = state
+        .vault
+        .lock()
+        .map_err(|_| "État du coffre inaccessible.".to_string())?;
+    
+    crate::domain::private_image::rename_folder(
+        &state.db_pool,
+        active_profile_id,
+        &vault_state,
+        folder_id,
+        &new_name,
+    )
 }

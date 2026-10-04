@@ -1,6 +1,6 @@
 [package]
 name = "aethervault-media"
-version = "0.5.7"
+version = "0.6.5"
 description = "AetherVault Media — centre multimédia personnel local-first"
 edition = "2021"
 rust-version = "1.77"
@@ -41,9 +41,10 @@ rayon = "1"
 igd = "0.12"
 sha2 = "0.10"
 img_hash = "3.2"
-ffmpeg-sidecar = "1.0" # Support vidéo pour thumbnails
-avif-decode = "1.0" # Support format AVIF
+ffmpeg-sidecar = "1.0"   # Support vidéo pour thumbnails
+avif-decode = "1.0"      # Support format AVIF
 # Note: HEIC support via image crate features
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 panic = "unwind"

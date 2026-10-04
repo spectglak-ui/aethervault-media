@@ -8,3 +8,4 @@ pub mod sync;
 pub use models::{VaultTubePlaylist, VaultTubeSubscription, VaultTubeVideo,};
 pub use repository::VaultTubeRepository;
 pub use sync::VaultTubeSync;
+pub mod auto_sync;
