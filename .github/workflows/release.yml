@@ -63,10 +63,24 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Dépendances système macOS
+      - name: Install NASM 2.16.03 macOS
         if: matrix.platform == 'macos-latest'
         run: |
-          brew install nasm
+          curl -L --fail --silent --show-error \
+            https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/nasm-2.16.03.tar.xz \
+            -o /tmp/nasm-2.16.03.tar.xz
+
+          tar -xf /tmp/nasm-2.16.03.tar.xz -C /tmp
+
+          cd /tmp/nasm-2.16.03
+          ./configure --prefix="$HOME/nasm-2.16.03"
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+          echo "$HOME/nasm-2.16.03/bin" >> "$GITHUB_PATH"
+
+          export PATH="$HOME/nasm-2.16.03/bin:$PATH"
+          nasm -v
 
       - name: Vérification libmpv Windows
         if: matrix.platform == 'windows-latest'
