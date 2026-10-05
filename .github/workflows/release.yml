@@ -17,21 +17,20 @@ jobs:
             args: ""
           - platform: macos-latest
             args: "--target universal-apple-darwin"
+
     runs-on: ${{ matrix.platform }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
-          lfs: true   # télécharge libmpv-2.dll (123 Mo) stockée en Git LFS
+          lfs: true
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
 
-      # ⚠️ PAS de clé "version" ici : la version de pnpm vient du champ
-      # "packageManager" du package.json racine (pnpm@9.0.0).
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
 
@@ -49,7 +48,35 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential file curl wget libxdo-dev libssl-dev libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y \
+            build-essential \
+            file \
+            curl \
+            wget \
+            nasm \
+            libxdo-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Dépendances système macOS
+        if: matrix.platform == 'macos-latest'
+        run: |
+          brew install nasm
+
+      - name: Vérification libmpv Windows
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $dll = "apps/desktop/src-tauri/libmpv-2.dll"
+          if (-not (Test-Path $dll)) {
+            Write-Error "libmpv-2.dll est introuvable dans le checkout."
+            exit 1
+          }
+          Write-Host "libmpv-2.dll trouvé."
 
       - name: Dépendances frontend
         run: pnpm install --frozen-lockfile
@@ -61,7 +88,9 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          find apps/desktop/src-tauri/target -path "*release/bundle*" \( -name "*.exe" -o -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) -exec cp {} dist/ \;
+          find apps/desktop/src-tauri/target -path "*release/bundle*" \
+            \( -name "*.exe" -o -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) \
+            -exec cp {} dist/ \;
           ls -la dist
 
       - name: Upload artefacts
@@ -75,6 +104,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
       - name: Télécharge les artefacts
         uses: actions/download-artifact@v4
