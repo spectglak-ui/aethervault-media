@@ -19,12 +19,13 @@
 
 ## À propos
 
-**AetherVault Media** est une application de bureau moderne combinant la puissance d'un lecteur vidéo professionnel avec l'expérience d'une médiathèque contemporaine. Gérez votre bibliothèque personnelle de films, séries, anime et documentaires avec une section privée chiffrée — tout en restant **100 % local** et sous votre contrôle total.
+**AetherVault Media** est une application de bureau moderne combinant la puissance d'un lecteur vidéo professionnel avec l'expérience d'une médiathèque contemporaine. Gérez votre bibliothèque locale, profitez d'une lecture immersive, et gardez le contrôle total de vos contenus, sans dépendre d'un cloud externe ni d'un compte tiers.
 
 - **Local-First** : Aucun compte, aucun cloud, aucune dépendance réseau
 - **Chiffrement intégral** : Section privée protégée en AES-256-GCM
 - **Haute performance** : Lecteur basé sur libmpv avec rendu OpenGL optimisé
 - **Multiplateforme** : Windows, Linux, macOS (Tauri)
+- **Bibliothèque universelle** : films, séries, anime, documentaires, manga, webtoons, bandes dessinées et romans
 - **Open Source** : MIT License
 
 **Version actuelle** : 0.6.5 (backend) / 0.5.7 (frontend)
@@ -34,12 +35,21 @@
 ## ✨ Caractéristiques
 
 ### 📚 Gestion de bibliothèque avancée
-- Catalogue public multi-catégories : films, séries, anime, documentaires
-- **Détection automatique** des saisons et épisodes
-- **Coffre privé chiffré** : vidéos et galeries d'images en AES-256-GCM
-- Métadonnées enrichies via TMDB : affiches, synopsis, casting, genres
+- Catalogue public multi-catégories : films, séries, anime, documentaires, manga, webtoons, BD et romans
+- **Détection automatique** des saisons, épisodes et tomes
+- **Coffre privé chiffré** : vidéos, galeries d'images et bibliothèques de lecture en AES-256-GCM
+- Métadonnées enrichies via TMDB, OpenLibrary et sources locales : affiches, synopsis, genres, auteurs, éditeurs, dates de publication
 - **Profils multi-utilisateurs** avec authentification et intro animée
 - **Watcher automatique** : détecte les nouveaux fichiers en temps réel
+
+### 📖 Lecture numérique et bandes dessinées
+- Support des catégories de lecture : **Manga**, **Webtoon**, **BD**, **Roman**, **Comics** et **Livres numériques**
+- Gestion des **séries, tomes, chapitres, volumes et épisodes** avec indexation automatique
+- **Progression de lecture** par page, chapitre ou volume, mémorisée localement
+- Suivi visuel des titres lus, en cours et à terminer
+- Navigation facilitée par **auteur, éditeur, genre, série, année, statut de lecture**
+- Interface optimisée pour les formats à lecture verticale, horizontale et paginée
+- Présentation élégante des couvertures, résumés et métadonnées de collection
 
 ### 🎬 Lecteur multimédia haute performance
 - Moteur **libmpv** intégré avec support FFmpeg complet
@@ -307,7 +317,7 @@ Ce projet est en développement actif sous Tauri 2. Les contributions sont bienv
 
 AetherVault Media est publié sous la **[Licence MIT](LICENSE.txt)**.
 
-**Note spéciale sur libmpv** : libmpv (inclus dans l'installateur) est distribué sous licence LGPL. Voir la [documentation technique](docs/AetherVault-Media-Documentation-Technique.md) pour les détails de conformité.
+**Note spéciale sur libmpv** : libmpv (inclus dans l'installateur) est distribué sous licence LGPL. Voir la [documentation technique](docs/AetherVault-Media-Documentation-Technique.md) pour les détails.
 
 ---
 
