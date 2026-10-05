@@ -151,24 +151,3 @@ pub fn delete_profile(pool: &DbPool, active_profile_id: i64, target_id: i64) -> 
     // `ON DELETE CASCADE` (migration 0007) — pas de nettoyage manuel ici.
     profile_repository::delete(&conn, target_id).map_err(|e| e.to_string())
 }
-
-/// Profil réactivé automatiquement à chaque lancement de l'application —
-/// le premier disposant de `can_manage_profiles` (doc §6.5). Appelé une
-/// seule fois, au démarrage (`lib.rs`) ; la bascule en cours de session
-/// passe par `switch_active_profile` ci-dessous.
-pub fn default_startup_profile_id(pool: &DbPool) -> Result<i64, String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    profile_repository::first_profile_with_manage_profiles(&conn)
-        .map_err(|e| e.to_string())?
-        .map(|p| p.id)
-        .ok_or_else(|| "Aucun profil administrateur trouvé.".to_string())
-}
-
-/// Valide qu'un profil existe avant bascule — ne demande aucune
-/// authentification propre : seul le coffre privé (§6.4) est protégé par
-/// PIN/mot de passe, pas les profils entre eux. C'est la commande
-/// appelante (`commands::profile::switch_active_profile`) qui écrit
-/// ensuite le résultat dans `AppState::active_profile_id`.
-pub fn switch_active_profile(pool: &DbPool, target_id: i64) -> Result<ProfileRecord, String> {
-    get_profile(pool, target_id)
-}

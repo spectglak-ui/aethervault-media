@@ -109,7 +109,18 @@ fn align_up(value: usize, align: usize) -> usize {
 /// commentaire de `RenderTarget`).
 #[derive(Clone, Copy)]
 #[repr(align(64))]
-struct AlignedPage([u8; 64]);
+struct AlignedPage {
+    // Jamais lu : seul le bloc (adresse alignée + taille) compte pour mpv.
+    _bytes: [u8; 64],
+}
+
+// Garde-fou compile-time : le cast `Vec<AlignedPage>` -> `*mut u8` et le calcul
+// `page_count = octets / MPV_SW_ALIGNMENT` ne sont valides que si un bloc fait
+// exactement MPV_SW_ALIGNMENT octets ET est aligné sur MPV_SW_ALIGNMENT.
+const _: () = assert!(
+    std::mem::size_of::<AlignedPage>() == MPV_SW_ALIGNMENT
+        && std::mem::align_of::<AlignedPage>() == MPV_SW_ALIGNMENT
+);
 
 /// Buffer dédié exclusivement au rendu mpv — distinct du buffer envoyé au
 /// frontend (voir `run()`). Réutilisé d'une image à l'autre, recréé
@@ -159,7 +170,7 @@ impl RenderTarget {
         let stride = align_up(width * BYTES_PER_PIXEL, MPV_SW_ALIGNMENT);
         let total_bytes = stride * height;
         let page_count = (total_bytes + MPV_SW_ALIGNMENT - 1) / MPV_SW_ALIGNMENT;
-        self.pages = vec![AlignedPage([0u8; MPV_SW_ALIGNMENT]); page_count.max(1)];
+        self.pages = vec![AlignedPage { _bytes: [0u8; MPV_SW_ALIGNMENT] }; page_count.max(1)];
         self.width = width;
         self.height = height;
         self.stride = stride;

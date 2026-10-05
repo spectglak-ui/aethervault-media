@@ -109,40 +109,6 @@ pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<LibraryRecord>
     .optional()
 }
 
-/// Bibliothèques rattachées à une Catégorie donnée — c'est ce qui permet à
-/// plusieurs bibliothèques d'alimenter la même Catégorie (doc §6.1) :
-/// utilisé par le Metadata Service pour savoir quels fichiers regarder
-/// quand on demande "toutes les catégories" plutôt qu'une bibliothèque
-/// précise, et par `domain::category` pour le comptage de Titres.
-pub fn list_by_category(conn: &Connection, category_id: i64) -> rusqlite::Result<Vec<LibraryRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT
-            l.id, l.name, l.category_id, l.icon, l.accent_color, l.sort_order,
-            (SELECT COUNT(*) FROM library_folders f WHERE f.library_id = l.id),
-            (SELECT COUNT(*) FROM media_files m WHERE m.library_id = l.id),
-            l.created_at, l.updated_at
-         FROM libraries l WHERE l.category_id = ?1
-         ORDER BY l.sort_order ASC, l.id ASC",
-    )?;
-
-    let rows = stmt.query_map(rusqlite::params![category_id], |row| {
-        Ok(LibraryRecord {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            category_id: row.get(2)?,
-            icon: row.get(3)?,
-            accent_color: row.get(4)?,
-            sort_order: row.get(5)?,
-            folder_count: row.get(6)?,
-            media_count: row.get(7)?,
-            created_at: row.get(8)?,
-            updated_at: row.get(9)?,
-        })
-    })?;
-
-    rows.collect()
-}
-
 /// Bibliothèques dont `category_id` est encore `NULL` — file de travail de
 /// `db::seed::backfill_library_categories` (Étape 4, migration de
 /// `media_type` texte libre vers `category_id`), avec l'ancien

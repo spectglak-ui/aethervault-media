@@ -1112,14 +1112,6 @@ impl PlaybackEngineHandle {
         }
     }
 
-    pub fn pull_frame(&self) -> Vec<u8> {
-        let guard = self.surface.lock().unwrap_or_else(|p| p.into_inner());
-        guard
-            .as_ref()
-            .map(|state| state.latest_frame.lock().unwrap_or_else(|p| p.into_inner()).clone())
-            .unwrap_or_default()
-    }
-
     pub fn resize_surface(&self, width: i32, height: i32) {
         let guard = self.surface.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(state) = guard.as_ref() {
