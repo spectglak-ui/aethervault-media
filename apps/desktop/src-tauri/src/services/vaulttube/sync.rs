@@ -19,11 +19,6 @@ pub struct VaultTubeSync {
     ytdlp_path: Option<PathBuf>,
 }
 
-/// Miniature YouTube garantie (motif d'URL officiel).
-pub fn fallback_thumbnail(youtube_id: &str) -> String {
-    format!("https://i.ytimg.com/vi/{youtube_id}/hqdefault.jpg")
-}
-
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

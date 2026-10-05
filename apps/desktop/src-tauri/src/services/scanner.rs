@@ -140,15 +140,11 @@ pub fn scan_library(
     }
     
     let total_files = all_entries.len() as u64;
-    
-    // Émettre progression initiale
-    let _ = app_handle.emit("library:scan-progress", serde_json::json!({
-        "library_id": library_id,
-        "phase": "scan",
-        "processed": 0,
-        "total": total_files,
-        "current": "détection terminée, traitement…"
-    }));
+
+    // Progression : tick forcé au début/à la fin de phase, throttlé à
+    // `PROGRESS_INTERVAL` entre les deux (voir `ProgressEmitter`).
+    let mut progress = ProgressEmitter::new(app_handle, library_id, total_files);
+    progress.tick("scan", 0, "détection terminée, traitement…", true);
     
     // Deuxième passage : traitement avec barre déterminée
     let mut added = 0u64;
@@ -159,7 +155,7 @@ pub fn scan_library(
     // Collecter les chemins vus pour détecter les suppressions
     let mut seen_paths: HashSet<String> = HashSet::new();
     
-    for (idx, (path, size, modified_str)) in all_entries.into_iter().enumerate() {
+    for (path, size, modified_str) in all_entries {
         let file_name = Path::new(&path)
             .file_name()
             .unwrap_or_default()
@@ -192,16 +188,7 @@ pub fn scan_library(
         
         processed += 1;
         
-        // Throttle : émettre tous les 50 fichiers
-        if idx % 50 == 0 {
-            let _ = app_handle.emit("library:scan-progress", serde_json::json!({
-                "library_id": library_id,
-                "phase": "scan",
-                "processed": processed,
-                "total": total_files,
-                "current": &file_name,
-            }));
-        }
+        progress.tick("scan", processed, &file_name, false);
     }
     
     // Détection des fichiers supprimés (Fix P0)
@@ -214,14 +201,8 @@ pub fn scan_library(
         removed += count;
     }
     
-    // Émettre fin de phase scan
-    let _ = app_handle.emit("library:scan-progress", serde_json::json!({
-        "library_id": library_id,
-        "phase": "scan",
-        "processed": processed,
-        "total": total_files,
-        "current": "scan terminé",
-    }));
+    // Fin de phase scan
+    progress.tick("scan", processed, "scan terminé", true);
     
     Ok(ScanSummary {
         library_id,

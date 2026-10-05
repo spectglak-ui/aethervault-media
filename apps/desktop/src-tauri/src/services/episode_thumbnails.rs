@@ -100,7 +100,18 @@ fn align_up(value: usize, align: usize) -> usize {
 
 #[derive(Clone, Copy)]
 #[repr(align(64))]
-struct AlignedPage([u8; 64]);
+struct AlignedPage {
+    // Jamais lu : seul le bloc (adresse alignée + taille) compte pour mpv.
+    _bytes: [u8; 64],
+}
+
+// Garde-fou compile-time : le cast `Vec<AlignedPage>` -> `*mut u8` et le calcul
+// `page_count = octets / MPV_SW_ALIGNMENT` ne sont valides que si un bloc fait
+// exactement MPV_SW_ALIGNMENT octets ET est aligné sur MPV_SW_ALIGNMENT.
+const _: () = assert!(
+    std::mem::size_of::<AlignedPage>() == MPV_SW_ALIGNMENT
+        && std::mem::align_of::<AlignedPage>() == MPV_SW_ALIGNMENT
+);
 
 /// Réveil du thread par mpv — même contrat strict que dans
 /// `sw_render.rs` : le callback C ne rappelle JAMAIS dans l'API mpv.
@@ -338,7 +349,7 @@ fn grab_one_frame(
                 let height = ((width as f64 / aspect) as usize).clamp(2, width) & !1;
                 let stride = align_up(width * BYTES_PER_PIXEL, MPV_SW_ALIGNMENT);
                 let page_count = (stride * height + MPV_SW_ALIGNMENT - 1) / MPV_SW_ALIGNMENT;
-                let mut pages = vec![AlignedPage([0u8; MPV_SW_ALIGNMENT]); page_count.max(1)];
+                let mut pages = vec![AlignedPage { _bytes: [0u8; MPV_SW_ALIGNMENT] }; page_count.max(1)];
                 let base = pages.as_mut_ptr() as *mut u8;
                 let mut sw_size: [c_int; 2] = [width as c_int, height as c_int];
                 let mut stride_value = stride;

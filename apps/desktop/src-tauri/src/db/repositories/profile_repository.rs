@@ -59,22 +59,6 @@ pub fn get_by_id(conn: &Connection, id: i64) -> rusqlite::Result<Option<ProfileR
     .optional()
 }
 
-/// Premier profil disposant de `can_manage_profiles`, par ordre de
-/// création — c'est celui réactivé automatiquement à chaque lancement de
-/// l'application (doc §6.5). `None` seulement si aucun profil administrateur
-/// n'existe, situation que l'application ne devrait jamais atteindre
-/// (`delete` l'empêche explicitement, voir `domain::profile`).
-pub fn first_profile_with_manage_profiles(conn: &Connection) -> rusqlite::Result<Option<ProfileRecord>> {
-    conn.query_row(
-        &format!(
-            "SELECT {SELECT_COLUMNS} FROM profiles WHERE can_manage_profiles = 1 ORDER BY id ASC LIMIT 1"
-        ),
-        [],
-        map_row,
-    )
-    .optional()
-}
-
 /// Nombre de profils disposant de `can_manage_profiles` — utilisé pour
 /// interdire la suppression du dernier d'entre eux.
 pub fn count_with_manage_profiles(conn: &Connection) -> rusqlite::Result<i64> {
