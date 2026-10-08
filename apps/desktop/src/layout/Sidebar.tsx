@@ -12,6 +12,7 @@ import {
   PanelLeft,
   Youtube,
   Music,
+  Tv,
 } from "lucide-react";
 import { NavItem, IconButton } from "@aethervault/ui-kit";
 import type { Category } from "@aethervault/shared-types";
@@ -31,30 +32,30 @@ const SECONDARY_NAV_ITEMS = [
 interface SidebarProps {
   collapsed: boolean;
   /** Faux quand la réduction est forcée par l'étroitesse de la fenêtre :
-   * inutile de proposer un bouton qui ne pourrait rien déplier. */
+      inutile de proposer un bouton qui ne pourrait rien déplier. */
   canToggle: boolean;
   onToggleCollapsed: () => void;
 }
 
 /**
- * Depuis l'Étape 4, les catégories (doc §6.1) remplacent l'ancien lien
- * générique "Bibliothèque" — cohérent avec l'Accueil (`HomePage`), qui
- * suit la même logique de tuiles. Chargées dynamiquement plutôt que codées
- * en dur : la structure reste ouverte à de futures catégories
- * additionnelles (doc §6.1) sans modifier ce fichier.
- */
+  Depuis l'Étape 4, les catégories (doc §6.1) remplacent l'ancien lien
+  générique "Bibliothèque" — cohérent avec l'Accueil (`HomePage`), qui
+  suit la même logique de tuiles. Chargées dynamiquement plutôt que codées
+  en dur : la structure reste ouverte à de futures catégories
+  additionnelles (doc §6.1) sans modifier ce fichier.
+  0.9.0 — entrée TV : chaînes de télévision via flux HLS/IPTV publics
+  (pages TvPage / TvWatchPage, routes /tv et /tv/watch/:id).
+*/
 export function Sidebar({ collapsed, canToggle, onToggleCollapsed }: SidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const [categories, setCategories] = useState<Category[]>([]);
-
   const refresh = useCallback(() => {
     categoryApi
       .list()
       .then(setCategories)
       .catch(() => setCategories([]));
   }, []);
-
   useEffect(() => {
     refresh();
   }, [refresh]);
@@ -88,7 +89,6 @@ export function Sidebar({ collapsed, canToggle, onToggleCollapsed }: SidebarProp
             onClick={() => navigate("/")}
           />
         </li>
-
         {categories.map((category) => (
           <li key={category.id}>
             <NavItem
@@ -107,15 +107,11 @@ export function Sidebar({ collapsed, canToggle, onToggleCollapsed }: SidebarProp
         <li>
           <NavItem
             icon={<Youtube size={18} />}
-            label={
-              <>
-                <span className="avm-brand-aetherfy">AetherFy</span> Vidéo
-              </>
-            }
-            titleText="AetherFy Vidéo"
+            label={<span className="avm-brand-aetherfy">AetherFy</span>}
+            titleText="AetherFy"
             collapsed={collapsed}
-            active={isActive("/vaulttube/video")}
-            onClick={() => navigate("/vaulttube/video")}
+            active={isActive("/aetherfy")}
+            onClick={() => navigate("/aetherfy")}
           />
         </li>
         <li>
@@ -130,6 +126,18 @@ export function Sidebar({ collapsed, canToggle, onToggleCollapsed }: SidebarProp
             collapsed={collapsed}
             active={isActive("/vaulttube/music")}
             onClick={() => navigate("/vaulttube/music")}
+          />
+        </li>
+        {/* 0.9.0 — Catégorie TV : chaînes de télévision (flux HLS/IPTV
+            publics, import M3U, lecture live via libmpv). */}
+        <li>
+          <NavItem
+            icon={<Tv size={18} />}
+            label="TV"
+            titleText="TV"
+            collapsed={collapsed}
+            active={isActive("/tv")}
+            onClick={() => navigate("/tv")}
           />
         </li>
         {SECONDARY_NAV_ITEMS.map(({ path, label, icon: Icon }) => (

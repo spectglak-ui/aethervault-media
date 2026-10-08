@@ -1,18 +1,27 @@
-* {
+/* Feuille globale : resets, jetons de secours, transitions de thème,
+   keyframes partagées et couches de fond applicatives (AppBackdrop). */
+
+/* 0.6.4 (vérification) : le reset universel box-sizing avait perdu son
+   sélecteur (bloc orphelin `{ … }` en tête de fichier) → reset mort,
+   dimensions incohérentes sur tout ce qui compte sur border-box.
+   Restauré. */
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
 /*
- * `overflow: hidden` ici est la pièce maîtresse du correctif du "bandeau
- * blanc en bas de fenêtre" observé en réduisant la hauteur : sans lui, un
- * débordement interne (voir `.avm-shell__content` dans layout.css) peut
- * repousser `body` au-delà de la fenêtre réelle plutôt que de défiler en
- * interne — `body` n'ayant pas de couleur de fond définie, cette zone
- * excédentaire s'affichait en blanc (fond par défaut du navigateur/WebView).
- * Avec `overflow: hidden` ici, tout défilement doit obligatoirement se
- * produire à l'intérieur de `.avm-shell__content` (seul élément avec
- * `overflow-y: auto`) — jamais au niveau de la fenêtre elle-même.
- */
+`overflow: hidden` ici est la pièce maîtresse du correctif du "bandeau
+blanc en bas de fenêtre" observé en réduisant la hauteur : sans lui, un
+débordement interne (voir `.avm-shell__content` dans layout.css) peut
+repousser `body` au-delà de la fenêtre réelle plutôt que de défiler en
+interne — `body` n'ayant pas de couleur de fond définie, cette zone
+excédentaire s'affichait en blanc (fond par défaut du navigateur/WebView).
+Avec `overflow: hidden` ici, tout défilement doit obligatoirement se
+produire à l'intérieur de `.avm-shell__content` (seul élément avec
+`overflow-y: auto`) — jamais au niveau de la fenêtre elle-même.
+*/
 html,
 body,
 #root {
@@ -22,10 +31,31 @@ body,
   overflow: hidden;
 }
 
+/* 0.6.4 (correctif coins droits en build installé) : jetons de rayon et
+   de mouvement définis côté APP, garantis dans TOUS les environnements.
+   Avant, ils n'existaient que dans ui-kit/theme/tokens.css et dans les
+   thèmes JS de SettingsPage (localStorage) : or l'app installée démarre
+   sur une origine vierge (tauri://localhost) sans thème persisté, et si
+   tokens.css n'arrive pas au bundle, chaque border-radius en var()
+   SANS repli devenait une déclaration invalide → angles droits partout
+   en prod alors que le dev restait arrondi. Valeurs identiques à
+   tokens.css ; si tokens.css est chargé APRÈS cette feuille, ses valeurs
+   gagnent (même spécificité, ordre postérieur) ; les thèmes SettingsPage
+   (style inline sur documentElement) gardent de toute façon la priorité. */
+:root {
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  /* Jetons de mouvement de secours (même logique : évite des
+     transitions invalides si tokens.css est absent). */
+  --motion-duration-base: 180ms;
+  --motion-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
 /* Transition douce lors d'un changement de thème (y compris un thème
-   importé). Limitée aux propriétés de couleur : jamais `transform` ou une
-   propriété qui déclenche un recalcul de mise en page — seulement du
-   repaint, donc peu coûteux même appliqué largement. */
+importé). Limitée aux propriétés de couleur : jamais `transform` ou une
+propriété qui déclenche un recalcul de mise en page — seulement du
+repaint, donc peu coûteux même appliqué largement. */
 *,
 *::before,
 *::after {
@@ -43,8 +73,11 @@ body,
     animation: none !important;
   }
 }
+
 @keyframes avm-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes slideDown {
@@ -59,15 +92,20 @@ body,
 }
 
 /* CORRECTIF (découvert en ajoutant le fond animé) : `AppBackdrop`
-   (components/AppBackdrop.tsx) référence cette classe depuis la version
-   0.5.4 ("couche FIXE plein-fenêtre, derrière toute l'appli",
-   "indispensable au thème Transparent"), mais aucune règle CSS ne
-   l'implémentait nulle part dans le projet — le fond restait donc
-   invisible (une div/vidéo sans position ni taille ne s'affiche pas),
-   y compris pour le thème Transparent lui-même, qui n'avait donc rien
-   de particulier à laisser transparaître derrière les surfaces en
-   rgba(). Nécessaire aussi pour que le nouveau fond animé (vidéo)
-   s'affiche tout court. */
+(components/AppBackdrop.tsx) référence cette classe depuis la version
+0.5.4 ("couche FIXE plein-fenêtre, derrière toute l'appli",
+"indispensable au thème Transparent"), mais aucune règle CSS ne
+l'implémentait nulle part dans le projet — le fond restait donc
+invisible (une div/vidéo sans position ni taille ne s'affiche pas),
+y compris pour le thème Transparent lui-même, qui n'avait donc rien
+de particulier à laisser transparaître derrière les surfaces en
+rgba(). Nécessaire aussi pour que le nouveau fond animé (vidéo)
+s'affiche tout court.
+0.6.4 (vérification) : un commentaire mal fermé (fermeture en un seul
+slash au lieu de la paire slash-étoile) transformait TOUT ce bloc —
+règles `.avm-app-backdrop` comprises — en commentaire mort, et laissait
+un `z-index: 1; }` orphelin en fin de fichier. Commentaire refermé
+correctement, règles restaurées, orphelins supprimés. */
 .avm-app-backdrop {
   position: fixed;
   inset: 0;
@@ -77,6 +115,7 @@ body,
   background-repeat: no-repeat;
   pointer-events: none;
 }
+
 .avm-app-backdrop--video {
   width: 100%;
   height: 100%;

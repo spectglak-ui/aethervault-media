@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { readingApi, type ContinueReading, type ReadingLibrary, type ReadingLibraryKind } from "../features/reading/api";
+import { Trash2 } from "lucide-react";
 
 const KIND_LABEL: Record<ReadingLibraryKind, string> = {
   manga: "Manga",

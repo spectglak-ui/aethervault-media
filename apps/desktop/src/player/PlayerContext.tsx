@@ -49,8 +49,7 @@ interface PlayerContextValue {
   queueNext: (index: number) => void;
   play: (media: PlayableMedia) => void;
   playQueue: (items: PlayableMedia[], startIndex: number) => void;
-  /** 0.6.4c : lance la file SANS ouvrir l'overlay immersif (raccourci
-      AetherFy de la TopBar) — lecture « en place ». */
+  /** 0.6.4c : lance la file SANS ouvrir l'overlay immersif. */
   playQueueBackground: (items: PlayableMedia[], startIndex: number) => void;
   playNext: () => void;
   playPrevious: () => void;
@@ -75,31 +74,35 @@ const PlayerContext = createContext<PlayerContextValue | null>(null);
 const PROGRESS_SAVE_INTERVAL_MS = 5000;
 const MIN_RESUMABLE_SECONDS = 5;
 const PREVIOUS_RESTART_THRESHOLD_SECONDS = 3;
+const TV_POLL_INTERVAL_MS = 500;
 const EMPTY_QUEUE: PlaybackQueueState = { items: [], currentIndex: null };
 
 export const FULLSCREEN_TARGET_ID = "avm-player-fullscreen-root";
 
-// CORRECTIF (lecture automatique — mauvais épisode, suite aux retours) :
-// voir commentaire historique — `loadGeneration` annule les suites
-// (.then) des appels obsolètes : seul le DERNIER loadAndBroadcast appelé
-// a le droit d'atteindre playerApi.load()/seek().
+// `loadGeneration` annule les suites (.then) des appels obsolètes : seul
+// le DERNIER loadAndBroadcast appelé atteint playerApi.load()/seek().
 let loadGeneration = 0;
 
-/** 0.6.1 : routage du chargement selon le mode du média. En mode
-"audio", `player_load_mode` transmet le mode au moteur Rust, qui
-désactive la « start gate » (sinon chaque piste suivante d'une playlist
-démarrait en pause le temps du timeout de 45 s). */
+/** 0.9.4 — VERROU ULTIME : point de passage UNIQUE de TOUS les
+    chargements (loadAndBroadcast, branche loop/auto-next de
+    handleEnded, replis). Un média TV (id négatif) hors de sa route
+    watch est refusé ICI, quel que soit l'appelant. */
 function loadMedia(media: PlayableMedia): Promise<void> {
+  if (media.id < 0 && !window.location.hash.includes("/tv/watch")) {
+    console.warn("[AFY-DBG] loadMedia TV bloqué hors /tv/watch, hash =", window.location.hash);
+    return Promise.resolve();
+  }
   return media.mode
     ? playerApi.loadMode(media.path, media.mode).then(() => {})
     : playerApi.load(media.path);
 }
 
-/** 0.6.4c : paramètre `background` — émis dans le payload
-`player-queue-changed` ; le listener ne doit PAS ouvrir l'overlay
-immersif quand il est vrai (lancement depuis le raccourci TopBar). */
 function loadAndBroadcast(items: PlayableMedia[], index: number, background = false): void {
   const media = items[index];
+  // 0.9.3 — anti-fuite TV (double sécurité ; le verrou réel est dans loadMedia)
+  if (media.id < 0 && !window.location.hash.includes("/tv/watch")) {
+    return;
+  }
   const generation = ++loadGeneration;
   void emit("player-queue-changed", {
     items,
@@ -107,13 +110,20 @@ function loadAndBroadcast(items: PlayableMedia[], index: number, background = fa
     background,
   } as unknown as PlaybackQueueState);
 
+  // 0.9.1 : médias TV (ids négatifs) absents de la base → pas de
+  // recherche de progression, chargement direct.
+  if (media.id < 0) {
+    void loadMedia(media);
+    return;
+  }
+
   const getProgress = media.isPrivate
     ? playerApi.getPrivateProgress
     : playerApi.getProgress;
 
   getProgress(media.id)
     .then((progress) => {
-      if (generation !== loadGeneration) return; // supplanté par une sélection plus récente
+      if (generation !== loadGeneration) return;
       void loadMedia(media).then(() => {
         if (generation !== loadGeneration) return;
         if (progress && progress.position_seconds > MIN_RESUMABLE_SECONDS) {
@@ -186,6 +196,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
   });
 
+  // 0.7.9 — masque de route AetherFy : l'overlay immersif ne se rend
+  // jamais sur /aetherfy/watch (la page EST le lecteur).
+  const [onAfyWatch, setOnAfyWatch] = useState(() =>
+    window.location.hash.includes("/aetherfy/watch")
+  );
+  useEffect(() => {
+    const onChange = () =>
+      setOnAfyWatch(window.location.hash.includes("/aetherfy/watch"));
+    window.addEventListener("hashchange", onChange);
+    return () => window.removeEventListener("hashchange", onChange);
+  }, []);
+
   const loopRef = useRef(loopEnabled);
   loopRef.current = loopEnabled;
   const autoNextRef = useRef(autoNextEnabled);
@@ -194,7 +216,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   shuffleRef.current = shuffleEnabled;
 
   // CORRECTIF (fenêtre "player" PiP) : seule la fenêtre "main" pilote
-  // l'avance automatique et la sauvegarde périodique — voir historique.
+  // l'avance automatique et la sauvegarde périodique.
   const isPipWindow = useRef(getWindowLabel() === "player").current;
 
   const currentMedia =
@@ -210,8 +232,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   durationRef.current = duration;
   const endedHandledRef = useRef<number | null>(null);
 
-  // CORRECTIF (mineur, lié) : distingue une pause VOLONTAIRE (utilisateur)
-  // du repli heuristique de fin de lecture ci-dessous.
   const userPausedRef = useRef(false);
   const seekDebounceRef = useRef<number | null>(null);
   const volumeDebounceRef = useRef<number | null>(null);
@@ -232,13 +252,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const handleEnded = () => {
-    // Seule la fenêtre "main" décide de l'avance automatique.
     if (isPipWindow) return;
     const media = currentMediaRef.current;
     if (!media || endedHandledRef.current === media.id) return;
+    // 0.9.4 — un média TV hors de sa route watch est MORT : ni boucle,
+    // ni auto-next (ce chemin rechargeait le flux après le stop).
+    if (media.id < 0 && !window.location.hash.includes("/tv/watch")) {
+      return;
+    }
     endedHandledRef.current = media.id;
 
-    if (positionRef.current >= 30 && durationRef.current > 0) {
+    // 0.9.1 : médias TV absents de la base → pas d'historique.
+    if (media.id >= 0 && positionRef.current >= 30 && durationRef.current > 0) {
       void titleApi
         .recordWatch(media.id, positionRef.current, durationRef.current)
         .catch(() => {});
@@ -264,7 +289,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  /** 0.4.0 : publie l'activité de visionnage (amis) — même rythme que la
+  /** 0.4.0 : activité de visionnage (amis) — même rythme que la
   sauvegarde de progression (5 s), jamais de spam SQLite. */
   const publishActivity = () => {
     const media = currentMediaRef.current;
@@ -288,7 +313,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const saveProgressNow = () => {
     const media = currentMediaRef.current;
-    if (media && durationRef.current > 0) {
+    // 0.9.1 : médias TV absents de la base → pas de progression.
+    if (media && durationRef.current > 0 && media.id >= 0) {
       const saveProgress = media.isPrivate
         ? playerApi.savePrivateProgress
         : playerApi.saveProgress;
@@ -325,22 +351,31 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         durationRef.current > 0 &&
         positionRef.current >= durationRef.current - 1
       ) {
-        // Repli : certains flux ne renvoient jamais `ended: true` — mais
-        // on ignore ce repli si la pause vient d'un clic utilisateur.
+        // Repli : certains flux ne renvoient jamais `ended: true` —
+        // ignoré si la pause vient d'un clic utilisateur.
         handleEnded();
       }
     });
 
-    let lastMediaId: number | null = null;
+        let lastMediaId: number | null = null;
     const unlistenQueue = listen<PlaybackQueueState>("player-queue-changed", (event) => {
-      // 0.6.4c : le payload peut porter `background` (lancement depuis le
-      // raccourci TopBar) → ne pas ouvrir l'overlay immersif.
       const state = event.payload as PlaybackQueueState & { background?: boolean };
-      const media =
+      const rawMedia =
         state.currentIndex !== null ? state.items[state.currentIndex] ?? null : null;
+      // 0.9.8 — la fenêtre PiP (label "player") IGNORE les médias TV :
+      // (1) son <canvas> caché volerait le canal de surface de la page
+      // watch (attach_surface remplace le destinataire des trames !) ;
+      // (2) son hash ne contient JAMAIS /tv/watch → ses filets
+      // hashchange/TV-POLL tueraient la lecture légitime toutes les 500 ms.
+      const state2 =
+        isPipWindow && rawMedia !== null && rawMedia.id < 0
+          ? ({ ...EMPTY_QUEUE } as PlaybackQueueState & { background?: boolean })
+          : state;
+      const media =
+        state2.currentIndex !== null ? state2.items[state2.currentIndex] ?? null : null;
       const mediaChanged = (media?.id ?? null) !== lastMediaId;
       lastMediaId = media?.id ?? null;
-      setQueue(state);
+      setQueue(state2);
       if (mediaChanged) {
         setIsPlaying(media !== null);
         setPosition(0);
@@ -348,11 +383,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         setBuffered(0);
         endedHandledRef.current = null;
         userPausedRef.current = false;
-        if (media?.mode && !state.background) setImmersiveOpen(true);
+        const onAetherFyWatch = window.location.hash.includes("/aetherfy/watch");
+        if (media?.mode && !state2.background && !onAetherFyWatch) {
+          setImmersiveOpen(true);
+        }
         if (media === null) {
           setImmersiveOpen(false);
           syncFullscreen(false);
-          // 0.4.0 : plus rien ne joue → activité amis effacée.
           friendsApi.clearActivity().catch(() => {});
         }
       }
@@ -399,9 +436,40 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
+  // 0.9.3 — filet route (sécurité supplémentaire ; le vrai tueur est le
+// verrou loadMedia 0.9.4 + le TV-POLL 0.9.7 ci-dessous).
+useEffect(() => {
+  if (isPipWindow) return; // 0.9.8 : seule la fenêtre "main" pilote les kills TV
+  const onChange = () => {
+    if (window.location.hash.includes("/tv/watch")) return;
+    const m = currentMediaRef.current;
+    if (m && m.id < 0) {
+      void playerApi.stop();
+      void emit("player-queue-changed", EMPTY_QUEUE satisfies PlaybackQueueState);
+    }
+  };
+  window.addEventListener("hashchange", onChange);
+  return () => window.removeEventListener("hashchange", onChange);
+}, []);
+
+  // 0.9.7 — TV-POLL : filet BASÉ SUR L'ÉTAT, pas sur les événements
+// (hashchange ne se déclenche JAMAIS avec pushState/HashRouter).
+// Toutes les 500 ms : si un média TV survit hors de sa route watch,
+// stop Rust + file vidée, en boucle jusqu'à extinction.
+useEffect(() => {
+  if (isPipWindow) return; // 0.9.8 : seule la fenêtre "main" pilote les kills TV
+  const t = window.setInterval(() => {
+    const m = currentMediaRef.current;
+    if (m && m.id < 0 && !window.location.hash.includes("/tv/watch")) {
+      console.warn("[AFY-DBG] TV-POLL : média TV hors route → stop");
+      void playerApi.stop();
+      void emit("player-queue-changed", EMPTY_QUEUE satisfies PlaybackQueueState);
+    }
+  }, TV_POLL_INTERVAL_MS);
+  return () => window.clearInterval(t);
+}, []);
+
   useEffect(() => {
-    // Idem : évite d'écrire la progression / l'activité amis en double
-    // (une fois par fenêtre) à chaque tick de 5 s.
     if (isPipWindow) return;
     if (!currentMedia || !isPlaying) return;
     const interval = window.setInterval(saveProgressNow, PROGRESS_SAVE_INTERVAL_MS);
@@ -439,7 +507,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         const clampedIndex = Math.min(Math.max(startIndex, 0), items.length - 1);
         loadAndBroadcast(items, clampedIndex);
       },
-      // 0.6.4c : file lancée « en arrière-plan » : pas d'overlay immersif.
       playQueueBackground: (items, startIndex) => {
         if (items.length === 0) return;
         const clampedIndex = Math.min(Math.max(startIndex, 0), items.length - 1);
@@ -572,8 +639,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       },
       stop: () => {
         const media = currentMediaRef.current;
+        // 0.9.1 : médias TV absents de la base → pas d'historique.
         if (
           media &&
+          media.id >= 0 &&
           endedHandledRef.current !== media.id &&
           durationRef.current > 0 &&
           positionRef.current >= 30
@@ -584,7 +653,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         }
         endedHandledRef.current = null;
         void playerApi.stop();
-        // 0.4.0 : arrêt → activité amis effacée.
         friendsApi.clearActivity().catch(() => {});
         windowApi
           .closePlayerWindow()
@@ -596,7 +664,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       captureScreenshot: () => playerApi.captureScreenshot().catch(() => null),
       queue,
       immersiveMode,
-      immersiveOpen,
+      // 0.7.9 — masque de route AetherFy.
+      immersiveOpen: immersiveOpen && !onAfyWatch,
       openImmersive: () => setImmersiveOpen(true),
       closeAudioView: () => setImmersiveOpen(false),
     }),
@@ -621,6 +690,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       queue,
       immersiveMode,
       immersiveOpen,
+      onAfyWatch,
     ]
   );
 

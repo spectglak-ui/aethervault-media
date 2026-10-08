@@ -40,7 +40,9 @@ impl VaultTubeRepository {
                 youtube_id TEXT NOT NULL,
                 thumbnail_url TEXT,
                 added_at INTEGER NOT NULL,
-                last_synced_at INTEGER
+                last_synced_at INTEGER,
+                source TEXT NOT NULL DEFAULT 'youtube',
+                mode TEXT NOT NULL DEFAULT 'video'
             );
             CREATE TABLE IF NOT EXISTS vaulttube_videos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,6 +54,9 @@ impl VaultTubeRepository {
                 duration_seconds INTEGER,
                 published_at INTEGER,
                 added_at INTEGER NOT NULL,
+                source TEXT NOT NULL DEFAULT 'youtube',
+                mode TEXT NOT NULL DEFAULT 'video',
+                is_short INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(subscription_id, youtube_id)
             );
             CREATE INDEX IF NOT EXISTS idx_vaulttube_videos_subscription_id ON vaulttube_videos(subscription_id);
@@ -63,12 +68,14 @@ impl VaultTubeRepository {
                 thumbnail_url TEXT,
                 video_count INTEGER,
                 added_at INTEGER NOT NULL,
+                source TEXT NOT NULL DEFAULT 'youtube',
                 UNIQUE(subscription_id, youtube_id)
             );
             CREATE TABLE IF NOT EXISTS vaulttube_user_playlists (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'video'
             );
             CREATE TABLE IF NOT EXISTS vaulttube_user_playlist_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,6 +87,8 @@ impl VaultTubeRepository {
                 channel TEXT,
                 position INTEGER NOT NULL,
                 added_at INTEGER NOT NULL,
+                source TEXT NOT NULL DEFAULT 'youtube',
+                mode TEXT NOT NULL DEFAULT 'video',
                 UNIQUE(playlist_id, youtube_id)
             );
             ",
@@ -172,7 +181,7 @@ impl VaultTubeRepository {
 
     /// Ajoute une vidéo (ignore si déjà présente). Le mode est hérité
     /// automatiquement de l'abonnement parent.
-    pub fn add_video(
+        pub fn add_video(
         &self,
         subscription_id: i64,
         youtube_id: &str,
@@ -182,6 +191,7 @@ impl VaultTubeRepository {
         duration_seconds: Option<i64>,
         published_at: Option<i64>,
         source: &str,
+        is_short: bool,
     ) -> Result<(), String> {
         let conn = self.pool.get().map_err(|e| e.to_string())?;
         let mode: String = conn
@@ -195,14 +205,29 @@ impl VaultTubeRepository {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        conn.execute(
+                conn.execute(
             "INSERT OR IGNORE INTO vaulttube_videos
-             (subscription_id, youtube_id, title, description, thumbnail_url, duration_seconds, published_at, added_at, source, mode)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             (subscription_id, youtube_id, title, description, thumbnail_url, duration_seconds, published_at, added_at, source, mode, is_short)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 subscription_id, youtube_id, title, description, thumbnail_url,
-                duration_seconds, published_at, now, source, mode
+                duration_seconds, published_at, now, source, mode, is_short as i64
             ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 0.7.5 — force is_short = 1 sur une vidéo DÉJÀ en base.
+    /// Indispensable : INSERT OR IGNORE ne met jamais à jour les
+    /// lignes existantes, sans ça les 2000+ vidéos déjà synchronisées
+    /// resteraient à is_short = 0 pour toujours.
+    pub fn mark_short(&self, subscription_id: i64, youtube_id: &str) -> Result<(), String> {
+        let conn = self.pool.get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE vaulttube_videos SET is_short = 1
+             WHERE subscription_id = ?1 AND youtube_id = ?2",
+            rusqlite::params![subscription_id, youtube_id],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -214,7 +239,7 @@ impl VaultTubeRepository {
         let mut stmt = conn
             .prepare(
                 "SELECT id, subscription_id, youtube_id, title, description, thumbnail_url,
-                        duration_seconds, published_at, added_at, source, mode
+                        duration_seconds, published_at, added_at, source, mode, is_short
                  FROM vaulttube_videos
                  WHERE subscription_id = ?1
                  ORDER BY published_at DESC NULLS LAST, added_at DESC",
@@ -234,6 +259,7 @@ impl VaultTubeRepository {
                     added_at: row.get(8)?,
                     source: row.get(9)?,
                     mode: row.get(10)?,
+                    is_short: row.get::<_, i64>(11).unwrap_or(0) != 0,
                 })
             })
             .map_err(|e| e.to_string())?

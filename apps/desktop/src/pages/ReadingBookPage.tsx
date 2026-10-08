@@ -1,110 +1,30 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, Maximize, Minimize, RotateCcw, Settings, X } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import {
-  ArrowLeft,
-  BookOpen,
-  Columns2,
-  Contrast,
-  Eye,
-  Maximize,
-  Minimize,
-  Minus,
-  Palette,
-  Plus,
-  ScrollText,
-  Settings2,
-  Square,
-  X,
-} from "lucide-react";
-import {
-  readingApi,
-  type ReadingBook,
-  type ReadingLibraryKind,
-  type ReadingProgress,
-} from "../features/reading/api";
+import { readingApi, type ReadingBook } from "../features/reading/api";
+import { usePageFlip } from "../features/reader/usePageFlip";
+import "../features/reader/book-reader.css";
 import "./readingBookPage.css";
 
-/** Mode d'affichage des pages. */
-type DisplayMode = "single" | "spread" | "vertical";
-/** Filtre d'amélioration d'image appliqué au rendu. */
-type ImageFilter = "none" | "bw" | "color";
-/** Type d'animation de transition entre deux pages. */
-type AnimationKind = "flip" | "slide" | "fade" | "none";
+type DisplayMode = "spread" | "simple" | "scroll";
+type AnimationMode = "flip" | "slide" | "fade";
+type FilterMode = "none" | "grayscale" | "vivid" | "sepia" | "high-contrast";
 
-/** Sens de lecture par défaut selon le type de bibliothèque :
-    manga = RTL, webtoon = vertical (ignore la notion de sens),
-    bd/roman = LTR. */
-function defaultDirection(kind: ReadingLibraryKind): "rtl" | "ltr" | "vertical" {
-  if (kind === "manga") return "rtl";
-  if (kind === "webtoon") return "vertical";
-  return "ltr";
-}
-
-/**
- * `ReadingBook` ne déclare pas encore `kind` dans son contrat TypeScript,
- * mais l'API peut le fournir à l'exécution. On le lit donc de façon
- * compatible avec le type actuel et on retombe sur `roman` si absent.
- */
-type ReadingBookWithRuntimeKind = ReadingBook & { kind?: ReadingLibraryKind };
-
-function getReadingBookKind(book: ReadingBook): ReadingLibraryKind {
-  const runtimeBook = book as ReadingBookWithRuntimeKind;
-  return runtimeBook.kind ?? "roman";
-}
-
-function defaultMode(kind: ReadingLibraryKind): DisplayMode {
-  if (kind === "webtoon") return "vertical";
-  if (kind === "roman") return "single";
+function defaultMode(kind: string): DisplayMode {
+  if (kind === "webtoon") return "scroll";
+  if (kind === "roman") return "simple";
   return "spread";
 }
 
-/** Persistance des préférences utilisateur dans localStorage, par
-    profil implicite : les réglages restent entre les sessions. */
-const PREF_KEY = "avm-reader-prefs-v1";
-interface ReaderPrefs {
-  mode: DisplayMode;
-  animation: AnimationKind;
-  filter: ImageFilter;
-  zoom: number; // facteur multiplicateur (1 = auto-fit)
-}
-const DEFAULT_PREFS: ReaderPrefs = {
-  mode: "spread",
-  animation: "flip",
-  filter: "none",
-  zoom: 1,
-};
-function loadPrefs(): ReaderPrefs {
-  try {
-    const raw = localStorage.getItem(PREF_KEY);
-    if (!raw) return DEFAULT_PREFS;
-    const parsed = JSON.parse(raw) as Partial<ReaderPrefs>;
-    return { ...DEFAULT_PREFS, ...parsed };
-  } catch {
-    return DEFAULT_PREFS;
-  }
-}
-function savePrefs(prefs: ReaderPrefs): void {
-  try {
-    localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
-  } catch {
-    // best-effort
-  }
-}
-
-/** Filtre CSS appliqué aux images selon `ImageFilter`. */
-function cssFilter(filter: ImageFilter): string {
-  switch (filter) {
-    case "bw":
-      // N&B contrasté : désaturation + contraste élevé + légère luminosité.
-      return "grayscale(1) contrast(1.35) brightness(1.05)";
-    case "color":
-      // Couleurs boostées : saturation + micro-contraste.
-      return "saturate(1.35) contrast(1.08) brightness(1.02)";
-    case "none":
-    default:
-      return "none";
-  }
+/** 0.7.4 : détecte le ratio naturel d'une image (width/height). */
+function probeImageRatio(url: string): Promise<number> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img.naturalWidth / img.naturalHeight);
+    img.onerror = () => resolve(1);
+    img.src = url;
+  });
 }
 
 export function ReadingBookPage() {
@@ -113,661 +33,483 @@ export function ReadingBookPage() {
   const navigate = useNavigate();
 
   const [book, setBook] = useState<ReadingBook | null>(null);
-  const [progress, setProgress] = useState<ReadingProgress | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [pageUrls, setPageUrls] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
-
-  const [prefs, setPrefs] = useState<ReaderPrefs>(() => loadPrefs());
+  const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<DisplayMode>("spread");
   const [currentPage, setCurrentPage] = useState(0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [uiVisible, setUiVisible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [fullscreen, setFullscreen] = useState(false);
+  const [hideNonce, setHideNonce] = useState(0);
 
-  // Cache des URLs de pages déjà chargées (résolution native).
-  const [pageCache, setPageCache] = useState<Map<number, string>>(new Map());
-  // Animation en cours (pour le curl 3D) : "next" ou "prev".
-  const [animDir, setAnimDir] = useState<"next" | "prev" | null>(null);
+  const [animationMode, setAnimationMode] = useState<AnimationMode>("flip");
+  const [filterMode, setFilterMode] = useState<FilterMode>("none");
+  const [zoom, setZoom] = useState(1);
+  const [isRtl, setIsRtl] = useState(true);
 
-  const stageRef = useRef<HTMLDivElement>(null);
-  const hideTimerRef = useRef<number | null>(null);
-  const saveTimerRef = useRef<number | null>(null);
+  const [pageRatios, setPageRatios] = useState<Record<number, number>>({});
+  const [animClass, setAnimClass] = useState("");
+  const prevPageRef = useRef(0);
 
-  const direction = useMemo<"rtl" | "ltr" | "vertical">(
-    () =>
-      book
-        ? prefs.mode === "vertical"
-          ? "vertical"
-          : defaultDirection(getReadingBookKind(book))
-        : "ltr",
-    [book, prefs.mode]
-  );
-  
-  /* ----- Chargement initial : livre + progression ----- */
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      setLoading(true);
       try {
-        const [b, p] = await Promise.all([
+        const [b, p, libraries] = await Promise.all([
           readingApi.getBook(bookId),
           readingApi.getProgress(bookId),
+          readingApi.listLibraries(),
         ]);
         if (cancelled) return;
+
+        const library = libraries.find((lib) => lib.id === b.library_id);
+        if (!library) {
+          throw new Error("Bibliothèque du livre introuvable.");
+        }
+
         setBook(b);
-        setProgress(p);
-        // Applique les défauts liés au type de bibliothèque si l'utilisateur
-        // n'a jamais réglé ses préférences (première ouverture).
-        const kind = getReadingBookKind(b);
-        setPrefs((prev) => ({
-          ...prev,
-          mode: prev.mode ?? defaultMode(kind),
-        }));
-        setCurrentPage(p?.current_page ?? 0);
-      } catch (err) {
+        setMode(defaultMode(library.kind));
+        setIsRtl(library.kind === "manga");
+        if (p && p.current_page > 0) setCurrentPage(p.current_page);
+        if (b.page_count <= 0) {
+          setError("Aucune page extraite pour ce livre — relancez un scan de la bibliothèque.");
+          return;
+        }
+        const paths = await Promise.all(
+          Array.from({ length: b.page_count }, (_, i) => readingApi.getPage(bookId, i))
+        );
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Livre introuvable.");
+        const urls = paths.map((path) => convertFileSrc(path));
+        setPageUrls(urls);
+
+        const ratios: Record<number, number> = {};
+        await Promise.all(
+          urls.slice(0, 10).map(async (url, i) => {
+            ratios[i] = await probeImageRatio(url);
+          })
+        );
+        setPageRatios(ratios);
+      } catch (err) {
+        if (!cancelled) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setError(msg);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [bookId]);
 
-  /* ----- Chargement paresseux d'une page ----- */
-  const loadPage = useCallback(
-    async (index: number): Promise<string | null> => {
-      if (!book) return null;
-      if (index < 0 || index >= book.page_count) return null;
-      setPageCache((cache) => {
-        if (cache.has(index)) return cache;
-        return cache;
-      });
-      const existing = pageCache.get(index);
-      if (existing) return existing;
-      try {
-        const path = await readingApi.getPage(bookId, index);
-        const url = convertFileSrc(path);
-        setPageCache((cache) => {
-          const next = new Map(cache);
-          next.set(index, url);
-          return next;
-        });
-        return url;
-      } catch {
-        return null;
+  const handleFlip = useCallback(
+    (pageIndex: number) => {
+      setUiVisible(true);
+
+      if (animationMode !== "flip" && mode !== "scroll") {
+        const direction = pageIndex > prevPageRef.current ? "next" : "prev";
+        const cls = animationMode === "slide"
+          ? `rbk-viewport--anim-${direction}`
+          : "rbk-viewport--fade";
+        setAnimClass(cls);
+        window.setTimeout(() => setAnimClass(""), 450);
       }
-    },
-    [book, bookId, pageCache]
-  );
+      prevPageRef.current = pageIndex;
 
-  /* ----- Préchargement des pages voisines ----- */
-  useEffect(() => {
-    if (!book) return;
-    // Charge la page courante + 2 avant + 2 après pour fluidité.
-    const indices: number[] = [];
-    for (let i = Math.max(0, currentPage - 2); i <= Math.min(book.page_count - 1, currentPage + 2); i++) {
-      indices.push(i);
-    }
-    void Promise.all(indices.map((i) => loadPage(i)));
-  }, [currentPage, book, loadPage]);
-
-  /* ----- Sauvegarde périodique de la progression (toutes les 5 s) ----- */
-  useEffect(() => {
-    if (!book) return;
-    if (saveTimerRef.current !== null) window.clearInterval(saveTimerRef.current);
-    saveTimerRef.current = window.setInterval(() => {
-      void readingApi.saveProgress(
-        bookId,
-        currentPage,
-        book.page_count,
-        currentPage >= book.page_count - 1
-      );
-    }, 5000);
-    return () => {
-      if (saveTimerRef.current !== null) {
-        window.clearInterval(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
-    };
-  }, [book, bookId, currentPage]);
-
-  /* ----- Sauvegarde finale à la fermeture ----- */
-  useEffect(() => {
-    if (!book) return;
-    const onUnload = () => {
-      void readingApi.saveProgress(
-        bookId,
-        currentPage,
-        book.page_count,
-        currentPage >= book.page_count - 1
-      );
-    };
-    window.addEventListener("beforeunload", onUnload);
-    return () => {
-      onUnload(); // sauvegarde immédiate au démontage du composant
-      window.removeEventListener("beforeunload", onUnload);
-    };
-  }, [book, bookId, currentPage]);
-
-  /* ----- Masquage automatique de l'UI après 3 s d'inactivité ----- */
-  const scheduleHide = useCallback(() => {
-    if (hideTimerRef.current !== null) window.clearTimeout(hideTimerRef.current);
-    hideTimerRef.current = window.setTimeout(() => {
-      setUiVisible(false);
-      setSettingsOpen(false);
-    }, 3000);
-  }, []);
-  const showUi = useCallback(() => {
-    setUiVisible(true);
-    scheduleHide();
-  }, [scheduleHide]);
-  useEffect(() => {
-    scheduleHide();
-    return () => {
-      if (hideTimerRef.current !== null) window.clearTimeout(hideTimerRef.current);
-    };
-  }, [scheduleHide]);
-
-  /* ----- Navigation ----- */
-  const goTo = useCallback(
-    (index: number, dir: "next" | "prev") => {
+      setCurrentPage(pageIndex);
       if (!book) return;
-      const clamped = Math.max(0, Math.min(book.page_count - 1, index));
-      if (clamped === currentPage) return;
-      // Déclenche l'animation (sauf mode "none").
-      if (prefs.animation !== "none" && prefs.mode !== "vertical") {
-        setAnimDir(dir);
-        window.setTimeout(() => setAnimDir(null), 550); // durée animation CSS
+      void readingApi.saveProgress(
+        bookId,
+        pageIndex,
+        book.page_count,
+        pageIndex >= book.page_count - 1
+      );
+
+      if (!(pageIndex in pageRatios) && pageUrls[pageIndex]) {
+        probeImageRatio(pageUrls[pageIndex]).then((r) => {
+          setPageRatios((prev) => ({ ...prev, [pageIndex]: r }));
+        });
       }
-      setCurrentPage(clamped);
     },
-    [book, currentPage, prefs.animation, prefs.mode]
+    [book, bookId, animationMode, mode, pageUrls, pageRatios]
   );
 
-  const goNext = useCallback(() => {
+  const handleResetProgress = useCallback(async () => {
     if (!book) return;
-    const step = prefs.mode === "spread" && direction !== "vertical" ? 2 : 1;
-    goTo(currentPage + step, "next");
-  }, [book, currentPage, prefs.mode, direction, goTo]);
+    if (!window.confirm(`Réinitialiser la progression de « ${book.title} » ? Il repartira page 1.`)) return;
+    try {
+      await readingApi.resetProgress(bookId);
+      setCurrentPage(0);
+      navigate(-1);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(`Réinitialisation impossible : ${msg}`);
+    }
+  }, [book, bookId, navigate]);
 
-  const goPrev = useCallback(() => {
-    if (!book) return;
-    const step = prefs.mode === "spread" && direction !== "vertical" ? 2 : 1;
-    goTo(currentPage - step, "prev");
-  }, [book, currentPage, prefs.mode, direction, goTo]);
+  const { containerRef, flipNext, flipPrev } = usePageFlip({
+    images: pageUrls,
+    isRtl,
+    active: mode === "spread" && !loading && pageUrls.length > 0,
+    startPage: currentPage,
+    onFlip: handleFlip,
+  });
 
-  /* ----- Raccourcis clavier ----- */
+  useEffect(() => {
+    const strip = () => {
+      const root =
+        document.querySelector(".rbk-stage") ??
+        document.querySelector(".avm-reading-book");
+      if (!root) return;
+      root.querySelectorAll<HTMLElement>("div, img").forEach((el) => {
+        const cls = typeof el.className === "string" ? el.className : "";
+        if (cls.includes("shadow")) return;
+        el.style.background = "transparent";
+        el.style.backgroundColor = "transparent";
+      });
+    };
+    strip();
+    const t = window.setTimeout(strip, 300);
+    return () => window.clearTimeout(t);
+  }, [mode, pageUrls.length, currentPage]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (settingsOpen) return;
       if (e.key === "Escape") {
-        navigate(-1);
-      } else if (e.key === "ArrowRight") {
-        e.preventDefault();
-        direction === "rtl" ? goPrev() : goNext();
-      } else if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        direction === "rtl" ? goNext() : goPrev();
-      } else if (e.key === "ArrowDown" || e.key === " ") {
-        e.preventDefault();
-        goNext();
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        goPrev();
-      } else if (e.key === "f" || e.key === "F") {
-        toggleFullscreen();
-      } else if (e.key === "h" || e.key === "H") {
+        if (settingsOpen) setSettingsOpen(false);
+        else if (isFullscreen) setIsFullscreen(false);
+        else navigate(-1);
+        return;
+      }
+      if (e.key === "f" || e.key === "F") {
+        setIsFullscreen((f) => !f);
+        return;
+      }
+      if (e.key === "h" || e.key === "H") {
         setUiVisible((v) => !v);
+        return;
+      }
+      if (mode === "spread") {
+        if (e.key === "ArrowRight" || e.key === " " || e.key === "PageDown") {
+          e.preventDefault();
+          flipNext();
+        } else if (e.key === "ArrowLeft" || e.key === "PageUp") {
+          e.preventDefault();
+          flipPrev();
+        }
+      } else if (mode === "simple") {
+        const forward = isRtl ? e.key === "ArrowLeft" : e.key === "ArrowRight" || e.key === " ";
+        const backward = isRtl ? e.key === "ArrowRight" : e.key === "ArrowLeft";
+        if (forward) {
+          e.preventDefault();
+          handleFlip(Math.min(pageUrls.length - 1, currentPage + 1));
+        } else if (backward) {
+          e.preventDefault();
+          handleFlip(Math.max(0, currentPage - 1));
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [goNext, goPrev, direction, settingsOpen]);
-
-  /* ----- Plein écran ----- */
-  const toggleFullscreen = useCallback(async () => {
-    try {
-      if (!document.fullscreenElement) {
-        await stageRef.current?.requestFullscreen();
-        setFullscreen(true);
-      } else {
-        await document.exitFullscreen();
-        setFullscreen(false);
-      }
-    } catch {
-      // best-effort
-    }
-  }, []);
+  }, [mode, isRtl, flipNext, flipPrev, currentPage, pageUrls.length, handleFlip, navigate, settingsOpen, isFullscreen]);
 
   useEffect(() => {
-    const onChange = () => setFullscreen(!!document.fullscreenElement);
-    document.addEventListener("fullscreenchange", onChange);
-    return () => document.removeEventListener("fullscreenchange", onChange);
-  }, []);
+    if (!uiVisible || settingsOpen) return;
+    const timer = window.setTimeout(() => setUiVisible(false), 8000);
+    return () => window.clearTimeout(timer);
+  }, [uiVisible, settingsOpen, currentPage, hideNonce]);
 
-  /* ----- Rendu ----- */
-  if (loading) {
-    return (
-      <div className="rbk-stage rbk-stage--loading">
-        <div className="rbk-loader">
-          <BookOpen size={32} />
-          <span>Chargement du livre…</span>
-        </div>
-      </div>
-    );
-  }
-  if (error || !book) {
-    return (
-      <div className="rbk-stage rbk-stage--error">
-        <p className="rbk-error">{error ?? "Livre introuvable."}</p>
-        <button type="button" className="rbk-back-btn" onClick={() => navigate(-1)}>
-          <ArrowLeft size={14} /> Retour
-        </button>
-      </div>
-    );
-  }
+  const simpleUrl = pageUrls[currentPage] ?? null;
+  const currentRatio = pageRatios[currentPage] ?? 1;
+  const isLandscape = currentRatio > 1.2;
+  const filterClass = filterMode !== "none" ? `filter-${filterMode}` : "";
 
-  const totalPages = book.page_count;
-  const currentUrl = pageCache.get(currentPage) ?? null;
-  // En mode spread, la "page droite" est la suivante (ou précédente en RTL).
-  const spreadSecondIndex =
-    prefs.mode === "spread" && direction !== "vertical"
-      ? direction === "rtl"
-        ? currentPage - 1
-        : currentPage + 1
-      : null;
-  const secondUrl =
-    spreadSecondIndex !== null && spreadSecondIndex >= 0 && spreadSecondIndex < totalPages
-      ? pageCache.get(spreadSecondIndex) ?? null
-      : null;
-
-  const pct = totalPages > 0 ? ((currentPage + 1) / totalPages) * 100 : 0;
-
-  // Classe du stage selon le mode et l'animation.
   const stageClasses = [
     "rbk-stage",
-    `rbk-stage--${prefs.mode}`,
-    `rbk-stage--${direction}`,
-    animDir ? `rbk-stage--anim-${animDir}` : "",
-    prefs.animation ? `rbk-stage--${prefs.animation}` : "",
-    uiVisible ? "" : "rbk-stage--ui-hidden",
-  ]
-    .filter(Boolean)
-    .join(" ");
+    loading && "rbk-stage--loading",
+    error && "rbk-stage--error",
+    animationMode === "flip" && "rbk-stage--flip",
+    animationMode === "slide" && "rbk-stage--slide",
+    animationMode === "fade" && "rbk-stage--fade",
+    isRtl && "rbk-stage--rtl",
+    !isRtl && "rbk-stage--ltr",
+    !uiVisible && "rbk-stage--ui-hidden",
+  ].filter(Boolean).join(" ");
 
   return (
     <div
-      ref={stageRef}
       className={stageClasses}
-      onMouseMove={showUi}
       onClick={(e) => {
-        // Clic sur la page : zones gauche/droite pour tourner, centre pour toggle UI.
         if ((e.target as HTMLElement).closest(".rbk-ui, .rbk-settings")) {
+          setHideNonce((n) => n + 1);
           return;
         }
-        const rect = stageRef.current?.getBoundingClientRect();
-        if (!rect) return;
-        const x = e.clientX - rect.left;
-        const third = rect.width / 3;
-        if (x < third) {
-          direction === "rtl" ? goNext() : goPrev();
-        } else if (x > 2 * third) {
-          direction === "rtl" ? goPrev() : goNext();
-        } else {
-          setUiVisible((v) => !v);
-        }
+        setUiVisible((v) => !v);
       }}
     >
-      {/* ----- Pages ----- */}
-      <div className="rbk-viewport">
-        {prefs.mode === "vertical" ? (
-          <VerticalReader
-            book={book}
-            pageCache={pageCache}
-            loadPage={loadPage}
-            filter={cssFilter(prefs.filter)}
-            zoom={prefs.zoom}
-            onPageChange={setCurrentPage}
-          />
-        ) : prefs.mode === "spread" ? (
-          <div className="rbk-spread">
-            <div
-              className="rbk-page rbk-page--left"
-              style={{ filter: cssFilter(prefs.filter), transform: `scale(${prefs.zoom})` }}
-            >
-              {direction === "rtl" ? (
-                <PageImage url={secondUrl} index={spreadSecondIndex ?? -1} />
-              ) : (
-                <PageImage url={currentUrl} index={currentPage} />
-              )}
-            </div>
-            <div
-              className="rbk-page rbk-page--right"
-              style={{ filter: cssFilter(prefs.filter), transform: `scale(${prefs.zoom})` }}
-            >
-              {direction === "rtl" ? (
-                <PageImage url={currentUrl} index={currentPage} />
-              ) : (
-                <PageImage url={secondUrl} index={spreadSecondIndex ?? -1} />
-              )}
-            </div>
-          </div>
-        ) : (
-          <div
-            className="rbk-single-wrap"
-            style={{ filter: cssFilter(prefs.filter), transform: `scale(${prefs.zoom})` }}
-          >
-            <PageImage url={currentUrl} index={currentPage} />
-          </div>
-        )}
-      </div>
-
-      {/* ----- UI flottante (barres + panneau de réglages) ----- */}
-      <div className={`rbk-ui ${uiVisible ? "rbk-ui--visible" : ""}`}>
-        {/* Top bar */}
-        <div className="rbk-topbar">
-          <button
-            type="button"
-            className="rbk-icon-btn"
-            onClick={() => navigate(-1)}
-            title="Quitter le lecteur (Échap)"
-          >
-            <ArrowLeft size={18} />
-          </button>
-          <div className="rbk-title">
-            <span className="rbk-title__name">{book.title}</span>
-            <span className="rbk-title__meta">
-              Page {currentPage + 1} / {totalPages}
-            </span>
-          </div>
-          <div className="rbk-topbar__actions">
-            <button
-              type="button"
-              className="rbk-icon-btn"
-              onClick={() => setSettingsOpen((o) => !o)}
-              title="Réglages"
-            >
-              <Settings2 size={18} />
-            </button>
-            <button
-              type="button"
-              className="rbk-icon-btn"
-              onClick={toggleFullscreen}
-              title={fullscreen ? "Quitter le plein écran" : "Plein écran (F)"}
-            >
-              {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
-            </button>
-          </div>
-        </div>
-
-        {/* Bottom bar */}
-        <div className="rbk-bottombar">
-          <button
-            type="button"
-            className="rbk-nav-btn"
-            onClick={direction === "rtl" ? goNext : goPrev}
-            disabled={direction === "rtl" ? currentPage >= totalPages - 1 : currentPage <= 0}
-          >
-            ◂ Préc.
-          </button>
-          <div className="rbk-progress-wrap">
-            <input
-              type="range"
-              className="rbk-progress"
-              min={0}
-              max={Math.max(0, totalPages - 1)}
-              value={currentPage}
-              onChange={(e) => {
-                const n = Number(e.target.value);
-                setCurrentPage(n);
-              }}
-            />
-            <span className="rbk-progress__label">
-              {currentPage + 1} / {totalPages}
-            </span>
-          </div>
-          <button
-            type="button"
-            className="rbk-nav-btn"
-            onClick={direction === "rtl" ? goPrev : goNext}
-            disabled={direction === "rtl" ? currentPage <= 0 : currentPage >= totalPages - 1}
-          >
-            Suiv. ▸
-          </button>
-        </div>
-      </div>
-
-      {/* Panneau de réglages */}
-      {settingsOpen && (
-        <div className="rbk-settings" onClick={(e) => e.stopPropagation()}>
-          <div className="rbk-settings__head">
-            <span>Réglages de lecture</span>
-            <button
-              type="button"
-              className="rbk-icon-btn"
-              onClick={() => setSettingsOpen(false)}
-              title="Fermer"
-            >
-              <X size={16} />
-            </button>
-          </div>
-
-          <SettingsRow label="Mode d'affichage">
-            <Segmented
-              options={[
-                { value: "single", label: "Page", icon: <Square size={14} /> },
-                { value: "spread", label: "Double", icon: <Columns2 size={14} /> },
-                { value: "vertical", label: "Scroll", icon: <ScrollText size={14} /> },
-              ]}
-              value={prefs.mode}
-              onChange={(v) => updatePrefs({ mode: v as DisplayMode })}
-            />
-          </SettingsRow>
-
-          {prefs.mode !== "vertical" && (
-            <SettingsRow label="Animation">
-              <Segmented
-                options={[
-                  { value: "flip", label: "Réaliste" },
-                  { value: "slide", label: "Glissement" },
-                  { value: "fade", label: "Fondu" },
-                  { value: "none", label: "Aucune" },
-                ]}
-                value={prefs.animation}
-                onChange={(v) => updatePrefs({ animation: v as AnimationKind })}
-              />
-            </SettingsRow>
-          )}
-
-          <SettingsRow label="Amélioration image">
-            <Segmented
-              options={[
-                { value: "none", label: "Naturel", icon: <Eye size={14} /> },
-                { value: "bw", label: "N&B contrasté", icon: <Contrast size={14} /> },
-                { value: "color", label: "Couleurs vives", icon: <Palette size={14} /> },
-              ]}
-              value={prefs.filter}
-              onChange={(v) => updatePrefs({ filter: v as ImageFilter })}
-            />
-          </SettingsRow>
-
-          <SettingsRow label={`Zoom (${Math.round(prefs.zoom * 100)}%)`}>
-            <div className="rbk-zoom-row">
-              <button
-                type="button"
-                className="rbk-icon-btn"
-                onClick={() => updatePrefs({ zoom: Math.max(0.5, prefs.zoom - 0.1) })}
-                title="Réduire"
-              >
-                <Minus size={14} />
-              </button>
-              <input
-                type="range"
-                min={50}
-                max={200}
-                value={Math.round(prefs.zoom * 100)}
-                onChange={(e) => updatePrefs({ zoom: Number(e.target.value) / 100 })}
-                style={{ flex: 1 }}
-              />
-              <button
-                type="button"
-                className="rbk-icon-btn"
-                onClick={() => updatePrefs({ zoom: Math.min(2, prefs.zoom + 0.1) })}
-                title="Agrandir"
-              >
-                <Plus size={14} />
-              </button>
-            </div>
-          </SettingsRow>
+      {loading && (
+        <div className="rbk-loader">
+          <div>Extraction des pages…</div>
         </div>
       )}
-    </div>
-  );
 
-  function updatePrefs(patch: Partial<ReaderPrefs>) {
-    setPrefs((prev) => {
-      const next = { ...prev, ...patch };
-      savePrefs(next);
-      return next;
-    });
-  }
-}
-
-/* ---------- Sous-composants ---------- */
-
-function PageImage({ url, index }: { url: string | null; index: number }) {
-  if (!url) {
-    return (
-      <div className="rbk-placeholder">
-        <BookOpen size={28} />
-        <span>{index < 0 ? "" : `Page ${index + 1}`}</span>
-      </div>
-    );
-  }
-  return <img src={url} alt="" className="rbk-img" draggable={false} />;
-}
-
-/** Mode scroll vertical (webtoon) : toutes les pages empilées, la
-    navigation se fait au scroll. Un IntersectionObserver remonte la
-    page la plus visible pour maintenir la progression à jour. */
-function VerticalReader({
-  book,
-  pageCache,
-  loadPage,
-  filter,
-  zoom,
-  onPageChange,
-}: {
-  book: ReadingBook;
-  pageCache: Map<number, string>;
-  loadPage: (i: number) => Promise<string | null>;
-  filter: string;
-  zoom: number;
-  onPageChange: (i: number) => void;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
-
-  // Charge toutes les pages progressivement (lazy).
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      for (let i = 0; i < book.page_count; i++) {
-        if (cancelled) return;
-        if (!pageCache.has(i)) await loadPage(i);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [book.page_count, loadPage, pageCache]);
-
-  // Observe la page la plus visible.
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        let best: { ratio: number; index: number } | null = null;
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            const idx = Number((entry.target as HTMLElement).dataset.index);
-            if (!best || entry.intersectionRatio > best.ratio) {
-              best = { ratio: entry.intersectionRatio, index: idx };
-            }
-          }
-        }
-        if (best) onPageChange(best.index);
-      },
-      { root: containerRef.current, threshold: [0.25, 0.5, 0.75] }
-    );
-    for (const el of itemRefs.current) {
-      if (el) observer.observe(el);
-    }
-    return () => observer.disconnect();
-  }, [book.page_count, pageCache, onPageChange]);
-
-  return (
-    <div
-      ref={containerRef}
-      className="rbk-vertical"
-      style={{ filter, transform: `scale(${zoom})`, transformOrigin: "top center" }}
-    >
-      {Array.from({ length: book.page_count }).map((_, i) => (
-        <div
-          key={i}
-          ref={(el) => {
-            itemRefs.current[i] = el;
-          }}
-          className="rbk-vertical__item"
-          data-index={i}
-        >
-          <PageImage url={pageCache.get(i) ?? null} index={i} />
+      {error && (
+        <div className="rbk-error">
+          <button className="rbk-back-btn" onClick={() => navigate(-1)}>
+            <ArrowLeft size={16} /> Retour
+          </button>
+          <div>{error}</div>
         </div>
-      ))}
-    </div>
-  );
-}
+      )}
 
-function SettingsRow({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="rbk-settings__row">
-      <span className="rbk-settings__label">{label}</span>
-      <div className="rbk-settings__control">{children}</div>
-    </div>
-  );
-}
+      {!loading && !error && (
+        <>
+          <div
+            className={`rbk-viewport ${filterClass} ${animClass}`}
+            style={{ transform: `scale(${zoom})` }}
+          >
+            {mode === "spread" && (
+              <div ref={containerRef} className="rbk-spread" />
+            )}
 
-function Segmented<T extends string>({
-  options,
-  value,
-  onChange,
-}: {
-  options: { value: T; label: string; icon?: ReactNode }[];
-  value: T;
-  onChange: (v: T) => void;
-}) {
-  return (
-    <div className="rbk-segmented">
-      {options.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          className={`rbk-segmented__opt ${value === o.value ? "rbk-segmented__opt--active" : ""}`}
-          onClick={() => onChange(o.value)}
-        >
-          {o.icon}
-          <span>{o.label}</span>
-        </button>
-      ))}
+            {mode === "simple" && (
+              <div className={`rbk-single-wrap ${isLandscape ? "rbk-single-wrap--landscape" : "rbk-single-wrap--portrait"}`}>
+                {simpleUrl ? (
+                  <img
+                    src={simpleUrl}
+                    alt={`Page ${currentPage + 1}`}
+                    className="rbk-img"
+                    draggable={false}
+                    onLoad={(e) => {
+                      if (!(currentPage in pageRatios)) {
+                        const img = e.target as HTMLImageElement;
+                        if (img.naturalWidth && img.naturalHeight) {
+                          setPageRatios((prev) => ({
+                            ...prev,
+                            [currentPage]: img.naturalWidth / img.naturalHeight,
+                          }));
+                        }
+                      }
+                    }}
+                  />
+                ) : (
+                  <div className="rbk-placeholder">Page indisponible</div>
+                )}
+              </div>
+            )}
+
+            {mode === "scroll" && (
+              <div className="rbk-vertical">
+                {pageUrls.map((url, i) => (
+                  <div key={i} className="rbk-vertical__item">
+                    <img
+                      src={url}
+                      alt={`Page ${i + 1}`}
+                      className="rbk-img"
+                      loading="lazy"
+                      draggable={false}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className={`rbk-ui ${uiVisible ? "rbk-ui--visible" : ""}`}>
+            <div className="rbk-topbar">
+              <button className="rbk-back-btn" onClick={() => navigate(-1)}>
+                <ArrowLeft size={16} /> Retour
+              </button>
+              <div className="rbk-title">
+                <div className="rbk-title__name">{book?.title ?? "—"}</div>
+                <div className="rbk-title__meta">
+                  Page {currentPage + 1} / {pageUrls.length}
+                </div>
+              </div>
+              <div className="rbk-topbar__actions">
+                <button
+                  className="rbk-icon-btn"
+                  onClick={handleResetProgress}
+                  title="Réinitialiser la progression"
+                >
+                  <RotateCcw size={18} />
+                </button>
+                <button
+                  className="rbk-icon-btn"
+                  onClick={() => setSettingsOpen((o) => !o)}
+                  title="Réglages"
+                >
+                  <Settings size={18} />
+                </button>
+                <button
+                  className="rbk-icon-btn"
+                  onClick={() => setIsFullscreen((f) => !f)}
+                  title="Plein écran"
+                >
+                  {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
+                </button>
+              </div>
+            </div>
+
+            <div className="rbk-bottombar">
+              <button
+                className="rbk-nav-btn"
+                onClick={() => handleFlip(Math.max(0, currentPage - 1))}
+                disabled={currentPage <= 0}
+              >
+                {isRtl ? "➡" : "⬅"} Précédent
+              </button>
+              <div className="rbk-progress-wrap">
+                <input
+                  type="range"
+                  className="rbk-progress"
+                  min={0}
+                  max={pageUrls.length - 1}
+                  value={currentPage}
+                  onChange={(e) => handleFlip(Number(e.target.value))}
+                />
+                <span className="rbk-progress__label">
+                  {currentPage + 1} / {pageUrls.length}
+                </span>
+              </div>
+              <button
+                className="rbk-nav-btn"
+                onClick={() => handleFlip(Math.min(pageUrls.length - 1, currentPage + 1))}
+                disabled={currentPage >= pageUrls.length - 1}
+              >
+                Suivant {isRtl ? "⬅" : "➡"}
+              </button>
+            </div>
+
+            {settingsOpen && (
+              <div className="rbk-settings" onClick={(e) => e.stopPropagation()}>
+                <div className="rbk-settings__head">
+                  <span>Réglages de lecture</span>
+                  <button className="rbk-icon-btn" onClick={() => setSettingsOpen(false)}>
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="rbk-settings__row">
+                  <span className="rbk-settings__label">Mode d'affichage</span>
+                  <div className="rbk-segmented">
+                    <button
+                      className={`rbk-segmented__opt ${mode === "spread" ? "rbk-segmented__opt--active" : ""}`}
+                      onClick={() => setMode("spread")}
+                    >
+                      Double
+                    </button>
+                    <button
+                      className={`rbk-segmented__opt ${mode === "simple" ? "rbk-segmented__opt--active" : ""}`}
+                      onClick={() => setMode("simple")}
+                    >
+                      Simple
+                    </button>
+                    <button
+                      className={`rbk-segmented__opt ${mode === "scroll" ? "rbk-segmented__opt--active" : ""}`}
+                      onClick={() => setMode("scroll")}
+                    >
+                      Scroll
+                    </button>
+                  </div>
+                </div>
+
+                {mode !== "scroll" && (
+                  <div className="rbk-settings__row">
+                    <span className="rbk-settings__label">Animation</span>
+                    {mode === "spread" ? (
+                      <div className="rbk-segmented">
+                        <button className="rbk-segmented__opt rbk-segmented__opt--active" disabled>
+                          3D (page curl)
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="rbk-segmented">
+                        <button
+                          className={`rbk-segmented__opt ${animationMode === "flip" ? "rbk-segmented__opt--active" : ""}`}
+                          onClick={() => setAnimationMode("flip")}
+                        >
+                          3D
+                        </button>
+                        <button
+                          className={`rbk-segmented__opt ${animationMode === "slide" ? "rbk-segmented__opt--active" : ""}`}
+                          onClick={() => setAnimationMode("slide")}
+                        >
+                          Slide
+                        </button>
+                        <button
+                          className={`rbk-segmented__opt ${animationMode === "fade" ? "rbk-segmented__opt--active" : ""}`}
+                          onClick={() => setAnimationMode("fade")}
+                        >
+                          Fondu
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {mode !== "scroll" && (
+                  <div className="rbk-settings__row">
+                    <span className="rbk-settings__label">Sens de lecture</span>
+                    <div className="rbk-segmented">
+                      <button
+                        className={`rbk-segmented__opt ${!isRtl ? "rbk-segmented__opt--active" : ""}`}
+                        onClick={() => setIsRtl(false)}
+                      >
+                        Gauche → Droite
+                      </button>
+                      <button
+                        className={`rbk-segmented__opt ${isRtl ? "rbk-segmented__opt--active" : ""}`}
+                        onClick={() => setIsRtl(true)}
+                      >
+                        Droite → Gauche
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="rbk-settings__row">
+                  <span className="rbk-settings__label">Amélioration image</span>
+                  <div className="rbk-segmented">
+                    <button
+                      className={`rbk-segmented__opt ${filterMode === "none" ? "rbk-segmented__opt--active" : ""}`}
+                      onClick={() => setFilterMode("none")}
+                    >
+                      Normal
+                    </button>
+                    <button
+                      className={`rbk-segmented__opt ${filterMode === "grayscale" ? "rbk-segmented__opt--active" : ""}`}
+                      onClick={() => setFilterMode("grayscale")}
+                    >
+                      N&B
+                    </button>
+                    <button
+                      className={`rbk-segmented__opt ${filterMode === "vivid" ? "rbk-segmented__opt--active" : ""}`}
+                      onClick={() => setFilterMode("vivid")}
+                    >
+                      Vif
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rbk-settings__row">
+                  <span className="rbk-settings__label">Zoom ({Math.round(zoom * 100)}%)</span>
+                  <div className="rbk-zoom-row">
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={2}
+                      step={0.1}
+                      value={zoom}
+                      onChange={(e) => setZoom(Number(e.target.value))}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

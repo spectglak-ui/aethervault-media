@@ -32,6 +32,10 @@ pub struct VaultTubeVideo {
     pub added_at: i64,
     pub source: String,
     pub mode: String,
+    /// 0.7.3 — true si cette vidéo est un Short (format vertical, ≤ 60 s,
+    /// ou détectée via l'onglet /shorts de la chaîne à la sync).
+    #[serde(default)]
+    pub is_short: bool,
 }
 
 /// Playlist publique d'une chaîne suivie.
@@ -86,4 +90,15 @@ pub struct UserPlaylistItem {
     pub added_at: i64,
     pub source: String,
     pub mode: String,
+}
+
+/// 0.7.3 — commentaire récupéré via yt-dlp (texte + auteur + date).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Comment {
+    pub author: String,
+    pub text: String,
+    pub likes: Option<i64>,
+    pub published_at: Option<i64>,
+    /// Id pour le tri stable (timestamp ou index).
+    pub id: String,
 }

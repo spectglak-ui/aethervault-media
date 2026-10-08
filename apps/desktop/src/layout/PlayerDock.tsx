@@ -3,6 +3,7 @@ import { usePlayer, FULLSCREEN_TARGET_ID } from "../player/PlayerContext";
 import { PlayerSurface } from "../player/PlayerSurface";
 import { PlayerControls } from "../player/PlayerControls";
 import { useControlsAutoHide } from "../player/useControlsAutoHide";
+import { useLocation } from "react-router-dom";
 
 /** 0.4.0 — Déduit la miniature depuis les métadonnées OU l'URL de lecture. */
 function artFromMedia(m: {
@@ -175,6 +176,7 @@ function AudioMiniBar() {
  * Vue immersive vidéo ouverte → elle contient son propre affichage.
  */
 export function PlayerDock() {
+  const location = useLocation();
   const { currentMedia, isDetached, isPlaying, immersiveOpen } = usePlayer();
   const active = Boolean(currentMedia) && !isDetached;
   const { visible: controlsVisible, onActivity, controlsHoverHandlers } =
@@ -187,6 +189,20 @@ export function PlayerDock() {
   }
 
   if (immersiveOpen) return null;
+  
+    // 0.7.10 — la page watch AetherFy héberge sa propre PlayerSurface
+  // inline : le pane .avm-player du Dock monterait une DEUXIÈME surface
+  // (canal de rendu unique → canvas inline affamé) et recouvrirait la
+  // page. Sur cette route, le Dock vidéo ne se rend donc jamais.
+  // (La mini-barre audio, elle, reste disponible partout.)
+  // 0.9.1 : les pages watch INLINE (AetherFy ET TV) hébergent leur propre
+  // PlayerSurface — le pane plein écran du Dock ne doit jamais s'y rendre.
+  if (
+    location.pathname.startsWith("/aetherfy/watch") ||
+    location.pathname.startsWith("/tv/watch")
+  ) {
+    return null;
+  }
 
   return (
     <div id={FULLSCREEN_TARGET_ID} className="avm-player" onMouseMove={onActivity}>

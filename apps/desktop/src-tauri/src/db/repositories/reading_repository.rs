@@ -406,3 +406,26 @@ pub fn save_settings(conn: &Connection, profile_id: i64, json: &str) -> rusqlite
     )?;
     Ok(())
 }
+// --- Réinitialisation de progression (0.7.2) ---------------------------
+
+/// Supprime la progression d'un livre pour le profil actif — le livre
+/// quitte la rangée « Continuer à lire » (la requête fait un JOIN sur
+/// `reading_progress`) et repartira page 1 la prochaine fois qu'il sera
+/// ouvert (car `get_progress` renverra `None`).
+pub fn delete_progress(conn: &Connection, profile_id: i64, book_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM reading_progress WHERE profile_id = ?1 AND book_id = ?2",
+        params![profile_id, book_id],
+    )?;
+    Ok(())
+}
+
+/// Supprime TOUTES les progressions du profil actif — purge la rangée
+/// « Continuer à lire » d'un seul coup.
+pub fn delete_all_progress(conn: &Connection, profile_id: i64) -> rusqlite::Result<u64> {
+    let removed = conn.execute(
+        "DELETE FROM reading_progress WHERE profile_id = ?1",
+        params![profile_id],
+    )?;
+    Ok(removed as u64)
+}
