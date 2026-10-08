@@ -2,10 +2,8 @@
 //! (abandon du rendu Win32/OpenGL natif au profit du rendu logiciel +
 //! `<canvas>`, voir le rapport de transmission "écran noir" et la
 //! discussion qui a suivi).
-
 pub(crate) mod mpv_ffi;
 mod sw_render;
-
 pub use sw_render::set_render_scale;
 
 #[cfg(windows)]
@@ -66,7 +64,6 @@ pub struct QualityOption {
 
 #[derive(Clone, Copy)]
 struct MpvHandlePtr(*mut c_void);
-
 unsafe impl Send for MpvHandlePtr {}
 unsafe impl Sync for MpvHandlePtr {}
 
@@ -99,13 +96,11 @@ impl StartGate {
             latest: Mutex::new((0.0, 0.0)),
         }
     }
-
     fn arm(&self) {
         *self.latest.lock().unwrap_or_else(|p| p.into_inner()) = (0.0, 0.0);
         *self.armed_at.lock().unwrap_or_else(|p| p.into_inner()) = Instant::now();
         self.armed.store(true, Ordering::Relaxed);
     }
-
     fn disarm(&self) {
         self.armed.store(false, Ordering::Relaxed);
     }
@@ -123,7 +118,6 @@ fn maybe_release_gate(
     if !gate.armed.load(Ordering::Relaxed) {
         return;
     }
-
     {
         let mut latest = gate.latest.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(d) = duration {
@@ -133,7 +127,6 @@ fn maybe_release_gate(
             latest.1 = c;
         }
     }
-
     let (dur, cache) = *gate.latest.lock().unwrap_or_else(|p| p.into_inner());
     let target = if dur > 1.0 {
         (dur * 0.30).clamp(5.0, 240.0)
@@ -142,7 +135,6 @@ fn maybe_release_gate(
     };
     let timed_out = gate.armed_at.lock().unwrap_or_else(|p| p.into_inner()).elapsed()
         > Duration::from_secs(45);
-
     if cache >= target || timed_out {
         gate.disarm();
         let c_args = vec![
@@ -176,16 +168,11 @@ pub struct PlaybackEngineHandle {
     /// affiché, malgré le délai d'extraction yt-dlp.
     audio_origin: Mutex<Option<String>>,
     /// 0.6.1 : session audio explicite (mode transmis par le frontend via
-    /// `player_load_mode`) — désactive la « start gate ». Sur un titre de
-    /// 3 min, la cible « 30 % de la durée bufferisée » (~60 s) n'était
-    /// atteinte qu'au timeout de 45 s : chaque piste suivante semblait
-    /// « démarrer en pause ». mpv gère déjà lui-même les micro-coupures
-    /// réseau via `cache-pause` (actif par défaut).
+    /// `player_load_mode`) — désactive la « start gate ».
     audio_session: AtomicBool,
     /// 0.5.0 : qualité préférée (bouton AetherFy). `None` = auto.
     preferred_quality: Mutex<Option<i64>>,
     /// 0.5.2 : cache du PO Token YouTube — (visitor_data, po_token, instant).
-    /// Valide 30 min (marge de sécurité sur les ~60 min annoncés par YouTube).
     pot_cache: Mutex<Option<(String, String, Instant)>>,
     /// 0.5.3 : start gate (buffer 30 % → lecture).
     gate: Arc<StartGate>,
@@ -194,6 +181,26 @@ pub struct PlaybackEngineHandle {
 pub enum PlaybackEngineState {
     Ready(Arc<PlaybackEngineHandle>),
     Unavailable(String),
+}
+
+/// 0.9.2 — détecte une URL de flux direct (HLS/HTTP) que mpv peut lire
+/// immédiatement sans extraction (pas de Cobalt, pas de yt-dlp).
+/// Extensions reconnues : .m3u8, .m3u, .ts, .mp4, .mkv, .webm
+/// Protocoles : http://, https://
+fn is_direct_stream(url: &str) -> bool {
+    let u = url.to_lowercase();
+    if !u.starts_with("http://") && !u.starts_with("https://") {
+        return false;
+    }
+    // Extrait le chemin (sans query string)
+    let path = u.split('?').next().unwrap_or(&u);
+    // Vérifie les extensions de flux directs
+    path.ends_with(".m3u8")
+        || path.ends_with(".m3u")
+        || path.ends_with(".ts")
+        || path.ends_with(".mp4")
+        || path.ends_with(".mkv")
+        || path.ends_with(".webm")
 }
 
 impl PlaybackEngineState {
@@ -238,7 +245,6 @@ impl PlaybackEngineHandle {
                 "[playback] PO Token sidecar introuvable — repli sur clients tv/android/web"
             );
         }
-
         let functions =
             Arc::new(MpvFunctions::load(&library_path).map_err(|err| err.to_string())?);
         let mpv_ptr = unsafe { (functions.create)() };
@@ -246,7 +252,6 @@ impl PlaybackEngineHandle {
             return Err("mpv_create a échoué".to_string());
         }
         let mpv = MpvHandlePtr(mpv_ptr);
-
         set_option(&functions, mpv, "vo", "libmpv")?;
         set_option(&functions, mpv, "hwdec", "auto-safe")?;
         // 0.5.3 : SUPPRIMÉ `video-timing-offset=0.150` (décalait la vidéo
@@ -260,8 +265,7 @@ impl PlaybackEngineHandle {
             "bv*[height=1080]+ba/bv*[height=720]+ba/bv*[height<=1080]+ba/b[height<=1080]",
         );
         // 0.5.4 : anti-grésillement — buffer de sortie audio plus généreux
-        // (500 ms au lieu des 250 ms par défaut) : absorbe les micro-pics
-        // CPU/GC sans underrun audible.
+        // (500 ms au lieu des 250 ms par défaut).
         let _ = set_option(&functions, mpv, "audio-buffer", "0.5");
         // 0.5.3 : le cache DEVANCE la lecture mais on NE L'ATTEND PAS via
         // mpv (plus de `demuxer-cache-wait`) : c'est la « start gate » Rust
@@ -288,19 +292,15 @@ impl PlaybackEngineHandle {
         let _ = set_option(&functions, mpv, "sws-allow-zimg", "yes");
         let _ = set_option(&functions, mpv, "osd-level", "0");
         let _ = set_option(&functions, mpv, "video-osd", "no");
-
         let rc = unsafe { (functions.initialize)(mpv.0) };
         if rc < 0 {
             return Err(error_string(&functions, rc));
         }
-
         observe(&functions, mpv, "time-pos", MpvFormat::Double);
         observe(&functions, mpv, "duration", MpvFormat::Double);
         observe(&functions, mpv, "pause", MpvFormat::Flag);
         observe(&functions, mpv, "demuxer-cache-time", MpvFormat::Double);
-
         let gate = Arc::new(StartGate::new());
-
         let handle = Arc::new(Self {
             functions: functions.clone(),
             mpv,
@@ -312,9 +312,7 @@ impl PlaybackEngineHandle {
             pot_cache: Mutex::new(None),
             gate: gate.clone(),
         });
-
         std::thread::spawn(move || run_event_thread(functions, mpv, app_handle, gate));
-
         log::info!(
             "Playback Engine Bridge démarré (libmpv chargée depuis {})",
             library_path.display()
@@ -383,16 +381,21 @@ impl PlaybackEngineHandle {
     /// 2. yt-dlp web + POT (si sidecar dispo) — 1080p/4K VP9 non-throtté
     /// 3. yt-dlp cascade tv/android/ios (fallback) — 720p H.264
     pub fn load_url_quality(&self, url: &str, height: Option<i64>) -> Result<(), String> {
+        // 0.9.2 — flux direct (HLS/HTTP) : mpv lit l'URL telle quelle,
+        // sans Cobalt ni yt-dlp (démarrage immédiat, aucun échec d'extraction).
+        if is_direct_stream(url) {
+            log::info!("[playback] flux direct détecté : {url} (lecture immédiate, pas d'extraction)");
+            *self.audio_origin.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some(url.to_string());
+            return self.load_split(url, None);
+        }
         log::info!(
             "[playback] extraction des flux : {url} (qualité : {:?})",
             height
         );
         // 0.6.0 (visualiseur) : mémorise l'URL d'origine AVANT toute
         // extraction — `load_split` ne reçoit que les flux extraits, pas
-        // l'URL demandée par le frontend. Sans ceci, le appairage
-        // `expected_path == origin` échouait sur TOUTES les sessions
-        // AetherFy (qui passent par load_url → load_url_quality →
-        // load_split, et jamais par load_url_audio).
+        // l'URL demandée par le frontend.
         *self.audio_origin.lock().unwrap_or_else(|p| p.into_inner()) =
             Some(url.to_string());
         // 1. Cobalt d'abord (si dispo, le plus rapide).
@@ -401,14 +404,11 @@ impl PlaybackEngineHandle {
             return self.load_split(&cobalt_url, None);
         }
         log::info!("[playback] Cobalt indisponible — bascule yt-dlp");
-
         let ytdlp = locate_ytdlp().ok_or_else(|| "yt-dlp introuvable".to_string())?;
-
         // 2. Sélection exacte (bouton Qualité) — POT en tête.
         if let Some(h) = height {
             let resume = self.get_property_double("time-pos").unwrap_or(0.0);
             let sel = format!("bv*[height={h}]+ba/b[height={h}][acodec!=none]");
-
             // 2a. web + POT (1080p/4K VP9 non-throtté)
             let pot_args = self.pot_extractor_args();
             if !pot_args.is_empty() {
@@ -424,7 +424,6 @@ impl PlaybackEngineHandle {
                     }
                 }
             }
-
             // 2b. Repli cascade sans POT (tv/android/web/ios)
             let exact_configs: &[&[&str]] = &[
                 &["--extractor-args", "youtube:player_client=tv"],
@@ -447,10 +446,8 @@ impl PlaybackEngineHandle {
             }
             log::warn!("[playback] {h}p indisponible partout — fallback auto");
         }
-
         // 3. Auto : web+POT d'abord (4K possible), puis cascade.
         let format_sel = "bv*[height=1080]+ba/bv*[height=720]+ba/bv*[height<=1080]+ba/b[height<=1080][acodec!=none]";
-
         // 3a. web + POT
         let pot_args = self.pot_extractor_args();
         if !pot_args.is_empty() {
@@ -459,7 +456,6 @@ impl PlaybackEngineHandle {
                 return self.load_split(&video, audio.as_deref());
             }
         }
-
         // 3b. Cascade classique
         let auto_configs: &[&[&str]] = &[
             &["--extractor-args", "youtube:player_client=android"],
@@ -469,7 +465,6 @@ impl PlaybackEngineHandle {
         ];
         let mut last_err = String::from("aucun flux extrait");
         let mut fallback: Option<(String, Option<String>)> = None;
-
         for extra in auto_configs {
             match ytdlp_json(&ytdlp, url, format_sel, extra) {
                 Some(json) => {
@@ -489,12 +484,10 @@ impl PlaybackEngineHandle {
                 None => last_err = format!("client {:?} : extraction échouée", extra),
             }
         }
-
         if let Some((video, audio)) = fallback {
             log::info!("[playback] auto : repli basse résolution");
             return self.load_split(&video, audio.as_deref());
         }
-
         Err(format!("yt-dlp en échec : {last_err}"))
     }
 
@@ -505,11 +498,6 @@ impl PlaybackEngineHandle {
         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
             Some((video.to_string(), audio.map(|s| s.to_string())));
         // 0.6.0 (visualiseur) : on NE touche PLUS à `audio_origin` ici.
-        // `load_split` est aussi le terminus des sessions audio AetherFy
-        // (load_url → load_url_quality → load_split) : l'ancienne ligne
-        // `= None` effaçait l'origine posée par `load_url_quality` et
-        // rendait le appairage impossible. L'origine est posée par
-        // `load_url_quality` / `load_direct` / `load_url_audio`.
         if self.audio_session.load(Ordering::Relaxed) {
             // 0.6.1 : flux audio → pas de gate, démarrage immédiat.
             self.gate.disarm();
@@ -517,7 +505,6 @@ impl PlaybackEngineHandle {
             self.gate.arm();
             self.command(&["set", "pause", "yes"])?;
         }
-
         match audio {
             Some(a) => {
                 let opts = format!("audio-file={a}");
@@ -531,7 +518,6 @@ impl PlaybackEngineHandle {
             }
             None => self.command(&["loadfile", video, "replace"])?,
         }
-
         if self.audio_session.load(Ordering::Relaxed) {
             self.set_paused(false)?;
         }
@@ -540,9 +526,7 @@ impl PlaybackEngineHandle {
 
     /// 0.5.4 : lecture AUDIO SEUL (mode musique d'AetherFy). Extrait
     /// uniquement la meilleure piste audio (opus de préférence), sans
-    /// flux vidéo : zéro décodage vidéo, zéro rendu logiciel → plus
-    /// aucun grésillement dû à la charge CPU, et qualité audio maximale
-    /// disponible sur la source (opus ~160-250 kbps = plafond YouTube).
+    /// flux vidéo : zéro décodage vidéo, zéro rendu logiciel.
     pub fn load_url_audio(&self, url: &str) -> Result<(), String> {
         // 0.6.1 : idem load_split — pas de start gate en audio.
         self.audio_session.store(true, Ordering::Relaxed);
@@ -566,14 +550,12 @@ impl PlaybackEngineHandle {
             .find(|l| !l.is_empty())
             .map(str::to_string)
             .ok_or_else(|| "aucun flux audio extrait".to_string())?;
-
         // 0.6.0 (visualiseur) : mémorise le flux audio extrait ET l'URL
         // d'origine — le visualiseur Symphonia ré-ouvrira ce flux précis.
         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
             Some((audio_url.clone(), None));
         *self.audio_origin.lock().unwrap_or_else(|p| p.into_inner()) =
             Some(url.to_string());
-
         // Flux audio = petit débit → démarrage immédiat, pas de gate.
         self.gate.disarm();
         self.command(&["loadfile", &audio_url, "replace"])?;
@@ -592,7 +574,6 @@ impl PlaybackEngineHandle {
         cmd.arg(url);
         #[cfg(windows)]
         cmd.creation_flags(0x08000000);
-
         let output = match cmd.output() {
             Ok(o) if o.status.success() => o,
             _ => {
@@ -606,10 +587,8 @@ impl PlaybackEngineHandle {
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
         }
-
         let json: serde_json::Value =
             serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-
         let mut seen: std::collections::BTreeSet<(i64, bool)> = std::collections::BTreeSet::new();
         if let Some(formats) = json.get("formats").and_then(|f| f.as_array()) {
             for f in formats {
@@ -629,12 +608,10 @@ impl PlaybackEngineHandle {
                 seen.insert((h, has_audio));
             }
         }
-
         let mut heights: Vec<i64> = seen.iter().map(|(h, _)| *h).collect();
         heights.sort_unstable();
         heights.dedup();
         heights.reverse();
-
         Ok(heights
             .into_iter()
             .map(|h| QualityOption {
@@ -649,7 +626,6 @@ impl PlaybackEngineHandle {
     pub fn extract_media(&self, url: &str) -> Result<ExtractedMedia, String> {
         let ytdlp = locate_ytdlp().ok_or_else(|| "yt-dlp introuvable".to_string())?;
         log::info!("[playback] extraction hybride (HTML5/mpv) : {url}");
-
         let pot_args = self.pot_extractor_args();
         if !pot_args.is_empty() {
             let mut cmd = std::process::Command::new(&ytdlp);
@@ -665,14 +641,13 @@ impl PlaybackEngineHandle {
             cmd.arg(url);
             #[cfg(windows)]
             cmd.creation_flags(0x08000000);
-
             if let Ok(output) = cmd.output() {
                 if output.status.success() {
                     let urls: Vec<String> = String::from_utf8_lossy(&output.stdout)
                         .lines()
                         .map(str::trim)
                         .filter(|l| !l.is_empty())
-                        .map(str::to_string)
+                        .map(|s| s.to_string())
                         .collect();
                     if !urls.is_empty() {
                         return Ok(if urls.len() == 1 {
@@ -692,7 +667,6 @@ impl PlaybackEngineHandle {
                 }
             }
         }
-
         let configs: &[&[&str]] = &[
             &[],
             &["--extractor-args", "youtube:player_client=android"],
@@ -711,14 +685,13 @@ impl PlaybackEngineHandle {
             cmd.arg(url);
             #[cfg(windows)]
             cmd.creation_flags(0x08000000);
-
             match cmd.output() {
                 Ok(output) if output.status.success() => {
                     let urls: Vec<String> = String::from_utf8_lossy(&output.stdout)
                         .lines()
                         .map(str::trim)
                         .filter(|l| !l.is_empty())
-                        .map(str::to_string)
+                        .map(|s| s.to_string())
                         .collect();
                     if urls.is_empty() {
                         last_err = "aucun flux extrait".to_string();
@@ -744,7 +717,6 @@ impl PlaybackEngineHandle {
                 Err(e) => last_err = e.to_string(),
             }
         }
-
         Err(format!("yt-dlp en échec : {last_err}"))
     }
 
@@ -761,8 +733,7 @@ impl PlaybackEngineHandle {
 
     /// 0.5.2 : récupère un PO Token (cache 30 min, refresh à 20 min), ou None si sidecar absent/échec.
     fn fetch_pot_token(&self) -> Option<(String, String)> {
-        // 1. Cache encore valide ? (refresh à 20 min pour éviter expiration pendant usage)
-        const CACHE_TTL_SECS: u64 = 20 * 60; // Refresh avant expiration (30 min théorique)
+        const CACHE_TTL_SECS: u64 = 20 * 60;
         {
             let guard = self.pot_cache.lock().unwrap_or_else(|p| p.into_inner());
             if let Some((v, t, instant)) = guard.as_ref() {
@@ -771,13 +742,10 @@ impl PlaybackEngineHandle {
                 }
             }
         }
-
-        // 2. Génération
         let pot_bin = locate_bgutil_pot()?;
         let mut cmd = std::process::Command::new(&pot_bin);
         #[cfg(windows)]
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-
         let output = match cmd.output() {
             Ok(o) if o.status.success() => o,
             Ok(o) => {
@@ -792,7 +760,6 @@ impl PlaybackEngineHandle {
                 return None;
             }
         };
-
         let stdout = String::from_utf8_lossy(&output.stdout);
         let json: serde_json::Value = match serde_json::from_str(&stdout) {
             Ok(j) => j,
@@ -801,21 +768,17 @@ impl PlaybackEngineHandle {
                 return None;
             }
         };
-
         let token = json.get("poToken").and_then(|v| v.as_str())?.to_string();
         let visitor = json.get("contentBinding").and_then(|v| v.as_str())?.to_string();
         if token.is_empty() || visitor.is_empty() {
             log::warn!("[playback] bgutil-pot : token ou visitor vide");
             return None;
         }
-
         log::info!(
             "[playback] PO Token généré (visitor={}…, token={}…)",
             &visitor[..visitor.len().min(20)],
             &token[..token.len().min(20)]
         );
-
-        // 3. Mise en cache
         *self.pot_cache.lock().unwrap_or_else(|p| p.into_inner()) =
             Some((visitor.clone(), token.clone(), Instant::now()));
         Some((visitor, token))
@@ -852,8 +815,7 @@ impl PlaybackEngineHandle {
         // 0.5.3 : action utilisateur explicite → priorité sur la start gate.
         self.gate.disarm();
         // 0.5.4 : pause/reprise repart sur une ardoise propre — les trames
-        // encore « en vol » avant la pause sont abandonnées (le frontend
-        // les jettera de toute façon via le plafond strict de sw_render).
+        // encore « en vol » avant la pause sont abandonnées.
         if let Some(state) = self.surface.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
             state.in_flight_frames.store(0, Ordering::Relaxed);
         }
@@ -885,28 +847,7 @@ impl PlaybackEngineHandle {
     /// FONCTIONNALITÉ (amélioration audio — spatialisation) : élargissement
     /// stéréo / crossfeed casque, via le filtre `crossfeed` de FFmpeg
     /// (algorithme Bauer stereophonic-to-binaural — bs2b) — déjà lié par
-    /// mpv, donc aucune dépendance supplémentaire ni fichier de données
-    /// externe (contrairement à un vrai rendu binaural HRTF type
-    /// "sofalizer", qui nécessiterait d'embarquer un fichier SOFA de
-    /// plusieurs Mo — écarté pour rester proportionné).
-    ///
-    /// CORRECTIF (retour utilisateur : « son étouffé, seules les basses
-    /// passent ») : premier essai avec le filtre `earwax`, remplacé ici
-    /// par `crossfeed`. Ce n'était pas un bug de branchement — `earwax`
-    /// produit VRAIMENT ce son-là par nature (un filtre RIF ancien et
-    /// assez brutal, qui atténue nettement les aigus, ce qui fait
-    /// paraître les basses proéminentes en comparaison). `crossfeed` est
-    /// spécifiquement conçu pour l'écoute au casque (mélange progressif
-    /// gauche/droite, sans toucher au reste du spectre) et est largement
-    /// considéré comme bien plus transparent. Réglages par défaut de
-    /// FFmpeg conservés (`strength=0.2, range=0.5, slope=0.5`), déjà
-    /// pensés pour rester subtils.
-    ///
-    /// Réglage global : `commands::playback::player_load` le réapplique
-    /// automatiquement à chaque nouveau média, à partir de la préférence
-    /// persistée (voir `commands::settings::get_/set_audio_spatialization_enabled`)
-    /// — aucune action requise de l'utilisateur après l'avoir activé une
-    /// fois.
+    /// mpv, donc aucune dépendance supplémentaire.
     pub fn set_audio_spatialization(&self, enabled: bool) -> Result<(), String> {
         let filter = if enabled { "lavfi=[crossfeed]" } else { "" };
         self.command(&["set", "af", filter])
@@ -951,9 +892,26 @@ impl PlaybackEngineHandle {
         Ok(list)
     }
 
+        /// 0.9.14 — Arrêt PROPRE + SILENCE IMMÉDIAT :
+    /// 1) Pause mpv : coupe l'audio en < 50 ms, AVANT que le stop ne
+    ///    purge le cache HLS (qui peut prendre plusieurs secondes sur
+    ///    un flux live en buffer).
+    /// 2) Stop : libère décodeurs, démuxeur, cache.
+    /// 3) Détachement du thread de rendu (arrête sw_render).
+    /// 4) Désarmement de la start gate.
     pub fn stop(&self) -> Result<(), String> {
+        // 1. Pause immédiate : coupe l'audio avant même que le stop
+        //    n'ait fini de démonter le démuxeur. Indispensable pour
+        //    les flux HLS dont le cache met plusieurs secondes à se
+        //    vider après un simple stop.
+		let _ = self.set_property_flag("pause", true);
+        let _ = self.set_property_flag("pause", true);
+        // 2. Stop : arrête la lecture et libère les ressources.
         let result = self.command(&["stop"]);
+        // 3. Détache la surface (arrête le thread sw_render).
         self.detach_internal();
+        // 4. Désarme la start gate (un load suivant repart propre).
+        self.gate.disarm();
         result
     }
 
@@ -978,20 +936,16 @@ impl PlaybackEngineHandle {
                 let _ = render_thread.join();
             }
         }
-
         let size = Arc::new((AtomicI32::new(width), AtomicI32::new(height)));
         let stop_flag = Arc::new(AtomicBool::new(false));
         let in_flight_frames = Arc::new(AtomicI32::new(0));
         let latest_frame = Arc::new(Mutex::new(Vec::new()));
-
         let functions = self.functions.clone();
         let mpv = sw_render::MpvHandlePtr(self.mpv.0);
-
         let render_stop_flag = stop_flag.clone();
         let render_size = size.clone();
         let render_in_flight = in_flight_frames.clone();
         let render_latest_frame = latest_frame.clone();
-
         let render_thread = std::thread::spawn(move || {
             sw_render::run(
                 functions,
@@ -1003,7 +957,6 @@ impl PlaybackEngineHandle {
                 render_latest_frame,
             );
         });
-
         *guard = Some(SurfaceState {
             stop_flag,
             render_thread: Some(render_thread),
@@ -1011,11 +964,12 @@ impl PlaybackEngineHandle {
             in_flight_frames,
             latest_frame,
         });
-
         // 0.5.0 (correctif écran noir) : le VO libmpv de mpv a pu démarrer
         // AVANT que ce contexte de rendu existe → rechargement complet de
         // la source 300 ms plus tard pour réinitialiser le VO AVEC le
-        // contexte présent.
+        // contexte présent. Configuration d'origine PROUVÉE (image OK sur
+        // HLS TV) : ni skip « flux direct » (0.9.12 → plus aucun son),
+        // ni wake seek (0.9.10 → image toujours noire).
         let source = self
             .last_source
             .lock()
@@ -1026,13 +980,10 @@ impl PlaybackEngineHandle {
         let gate = self.gate.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(300));
-
             let Some((video, audio)) = source else {
                 return;
             };
-
             let mpv_ptr = mpv_addr as *mut c_void;
-
             // Reprend la position courante pour que le rechargement
             // correctif ne remette PAS la lecture à zéro.
             let resume_cname = CString::new("time-pos").unwrap_or_default();
@@ -1046,7 +997,6 @@ impl PlaybackEngineHandle {
                 )
             };
             let resume = if rc < 0 { 0.0 } else { resume_val };
-
             let mut c_args = vec![
                 CString::new("loadfile").unwrap_or_default(),
                 CString::new(video.as_str()).unwrap_or_default(),
@@ -1062,7 +1012,6 @@ impl PlaybackEngineHandle {
             unsafe {
                 (functions_for_reload.command)(mpv_ptr, ptrs.as_ptr());
             }
-
             // 0.5.3 : après le reload correctif, on ne coupe PAS la start
             // gate si elle est armée. On ne dépause que si aucune gate
             // n'est active (fichiers locaux, re-mounts).
@@ -1079,7 +1028,6 @@ impl PlaybackEngineHandle {
                     (functions_for_reload.command)(mpv_ptr, uptrs.as_ptr());
                 }
             }
-
             if resume > 1.0 {
                 let r = format!("{resume:.3}");
                 let c_seek = vec![
@@ -1102,8 +1050,7 @@ impl PlaybackEngineHandle {
         if let Some(state) = guard.as_ref() {
             // 0.5.6 : borne basse STRICTE — un accusé ne doit JAMAIS faire
             // descendre in_flight sous 0 (double-ack frontend, ack d'une
-            // trame tirée par le polling…) : sinon la contre-pression est
-            // désamorcée silencieusement (vu en test : -1425).
+            // trame tirée par le polling…).
             let _ = state.in_flight_frames.fetch_update(
                 Ordering::Relaxed,
                 Ordering::Relaxed,
@@ -1312,7 +1259,6 @@ fn cobalt_extract(url: &str, height: Option<i64>) -> Option<String> {
         Some(h) => h.to_string(),
         None => "1080".to_string(),
     };
-
     for base in instances {
         let body = ureq::json!({
             "url": url,
@@ -1320,13 +1266,11 @@ fn cobalt_extract(url: &str, height: Option<i64>) -> Option<String> {
             "downloadMode": "auto",
             "filenameStyle": "basic",
         });
-
         let res = ureq::post(&format!("{base}/"))
             .set("Accept", "application/json")
             .set("Content-Type", "application/json")
             .timeout(std::time::Duration::from_secs(10))
             .send_json(body);
-
         match res {
             Ok(resp) => {
                 if let Ok(json) = resp.into_json::<serde_json::Value>() {
@@ -1334,7 +1278,6 @@ fn cobalt_extract(url: &str, height: Option<i64>) -> Option<String> {
                     if (status == "tunnel" || status == "redirect")
                         && json.get("url").and_then(|u| u.as_str()).is_some()
                     {
-                        // Fix P0: gestion sécurisée sans unwrap()
                         if let Some(u) = json["url"].as_str() {
                             let url = u.to_string();
                             log::info!("[playback] cobalt OK via {base} ({status})");
@@ -1477,7 +1420,6 @@ fn locate_bgutil_pot() -> Option<PathBuf> {
             resources.join("bgutil-pot-server"),
         ]
     };
-
     for c in candidates {
         if c.exists() {
             return Some(c);
@@ -1493,7 +1435,6 @@ fn locate_library() -> Result<PathBuf, String> {
         .ok()
         .and_then(|path| path.parent().map(|p| p.to_path_buf()))
         .ok_or_else(|| "Impossible de déterminer le dossier de l'exécutable".to_string())?;
-
     let resolved = platform::resolve_mpv(&exe_dir, Some(&exe_dir.join("resources")));
     if resolved.exists() {
         return Ok(resolved);
@@ -1529,7 +1470,6 @@ fn run_event_thread(
             continue;
         }
         let event = unsafe { &*event_ptr };
-
         match event.event_id {
             id if id == mpv_ffi::event_id::SHUTDOWN => {
                 log::info!("Playback Engine Bridge : arrêt du moteur mpv");
@@ -1543,10 +1483,8 @@ fn run_event_thread(
                 if prop.name.is_null() || prop.data.is_null() {
                     continue;
                 }
-
                 let name = unsafe { CStr::from_ptr(prop.name) }.to_string_lossy();
                 let mut payload = PlayerStateEvent::default();
-
                 match name.as_ref() {
                     "demuxer-cache-time" if prop.format == MpvFormat::Double as c_int => {
                         payload.buffered_seconds = Some(unsafe { *(prop.data as *const f64) });
@@ -1568,7 +1506,6 @@ fn run_event_thread(
                     }
                     _ => continue,
                 }
-
                 // 0.5.3 : start gate — libère la lecture à 30 % de buffer
                 // (ou timeout 45 s).
                 maybe_release_gate(
@@ -1578,7 +1515,6 @@ fn run_event_thread(
                     payload.duration_seconds,
                     payload.buffered_seconds,
                 );
-
                 let _ = app_handle.emit("player-state", payload);
             }
             id if id == mpv_ffi::event_id::END_FILE => {
@@ -1593,14 +1529,12 @@ fn run_event_thread(
                     Some(mpv_ffi::end_file_reason::EOF) | Some(mpv_ffi::end_file_reason::ERROR)
                 );
                 log::info!("[playback] END_FILE reason={reason:?} is_real_end={is_real_end}");
-
                 let error = match (reason, end_file) {
                     (Some(mpv_ffi::end_file_reason::ERROR), Some(ef)) => {
                         Some(error_string(&functions, ef.error))
                     }
                     _ => None,
                 };
-
                 let _ = app_handle.emit(
                     "player-state",
                     PlayerStateEvent {
@@ -1625,12 +1559,10 @@ fn find_trailer_ytdlp(title: &str) -> Option<String> {
     cmd.args(["-J", "--flat-playlist", "--no-warnings", &query]);
     #[cfg(windows)]
     cmd.creation_flags(0x08000000);
-
     let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
-
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     let first = json.get("entries")?.as_array()?.first()?;
     if let Some(id) = first.get("id").and_then(|v| v.as_str()) {

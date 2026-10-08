@@ -255,3 +255,23 @@ pub fn reading_save_settings(
             .map_err(|e| e.to_string())
     })
 }
+	
+	#[tauri::command]
+pub fn reading_reset_progress(
+    state: tauri::State<AppState>,
+    book_id: i64,
+) -> Result<(), String> {
+    let profile_id = state.read_active_profile_id()?;
+    with_conn!(state, conn, {
+        reading_repository::delete_progress(conn, profile_id, book_id)
+            .map_err(|e| e.to_string())
+    })
+}
+
+#[tauri::command]
+pub fn reading_reset_all_progress(state: tauri::State<AppState>) -> Result<u64, String> {
+    let profile_id = state.read_active_profile_id()?;
+    with_conn!(state, conn, {
+        reading_repository::delete_all_progress(conn, profile_id).map_err(|e| e.to_string())
+    })
+}

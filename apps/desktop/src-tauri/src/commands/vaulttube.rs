@@ -277,3 +277,44 @@ pub fn vaulttube_auto_sync_stop(
     }
     Ok(())
 }
+
+/// 0.7.3 — récupère les commentaires d'une vidéo via yt-dlp
+/// (--write-comments --skip-download --dump-json).
+#[tauri::command]
+pub fn vaulttube_get_comments(
+    state: State<'_, AppState>,
+    video_id: String,
+    source: Option<String>,
+) -> Result<Vec<crate::services::vaulttube::models::Comment>, String> {
+    VaultTubeSync::new(VaultTubeRepository::new(state.db_pool.clone()))
+        .get_comments(&video_id, source.as_deref())
+}
+
+/// 0.8.2 — télécharge une vidéo via yt-dlp dans Vidéos/AetherFy.
+#[tauri::command]
+pub fn vaulttube_download_video(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    video_id: String,
+    source: Option<String>,
+) -> Result<String, String> {
+    use tauri::Manager;
+    let sync = crate::services::vaulttube::VaultTubeSync::new(
+        crate::services::vaulttube::VaultTubeRepository::new(state.db_pool.clone()),
+    );
+    let dest = app_handle
+        .path()
+        .video_dir()
+        .map_err(|e| e.to_string())?
+        .join("AetherFy");
+    std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+    let dest_clone = dest.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = sync.download_video(&video_id, source.as_deref(), &dest_clone) {
+            log::warn!("[aetherfy] téléchargement échoué : {e}");
+        } else {
+            log::info!("[aetherfy] téléchargement terminé : {}", dest_clone.display());
+        }
+    });
+    Ok(dest.to_string_lossy().to_string())
+}

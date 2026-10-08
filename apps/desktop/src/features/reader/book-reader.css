@@ -1,0 +1,179 @@
+/* Racine commune */
+.avm-reading-book {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--color-bg, #0b0d12);
+  overflow: hidden;
+}
+
+.avm-reading-book__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(10px);
+  z-index: 10;
+}
+
+.avm-reading-book__modes,
+.avm-reading-book__zoom {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.avm-reading-book__mode {
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: var(--color-text, #e8e8ef);
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s ease;
+}
+
+.avm-reading-book__mode--active {
+  background: var(--color-accent, #7c5cff);
+  border-color: var(--color-accent, #7c5cff);
+  color: #fff;
+}
+
+.avm-reading-book__stage {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+/* === Spread (moteur 3D) === */
+.avm-book-spread {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Fond plus sombre pour renforcer l'effet "livre posé" */
+  background: radial-gradient(ellipse at center, #1a1d24 0%, #050608 100%);
+}
+
+/* ⚠️ Important : page-flip a besoin d'un conteneur visible avec des dimensions.
+   Laisse-lui 100% de la scène, il se redimensionne tout seul. */
+.avm-book-spread__canvas {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.avm-book-spread__controls {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 12px;
+  z-index: 5;
+}
+
+.avm-book-spread__nav {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  cursor: pointer;
+  font-size: 18px;
+  backdrop-filter: blur(10px);
+}
+
+.avm-book-spread__indicator {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  padding: 4px 12px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 12px;
+  backdrop-filter: blur(10px);
+}
+
+/* === Simple (moteur CSS) === */
+.avm-book-simple {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0a0b0f;
+}
+
+.avm-book-simple__image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  transition: transform 0.2s ease;
+  user-select: none;
+}
+
+.avm-book-simple__indicator {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+/* === Scroll (Webtoon) === */
+.avm-book-scroll {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #0a0b0f;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 0;
+  gap: 4px;
+}
+
+.avm-book-scroll__page {
+  max-width: 100%;
+  width: auto;
+  display: block;
+  user-select: none;
+}
+
+/* Filtres CSS : appliqués au canvas comme aux images.
+   Ajoute tes classes existantes (filter-grayscale, filter-vivid, etc.)
+   au conteneur parent, elles seront héritées automatiquement. */
+   
+   /* 0.7.0 correctif : garanties de taille — page-flip mesure son
+   conteneur à l'init ; sans hauteur réelle, canvas 0 px = pages
+   invisibles. */
+.avm-reading-book { height: 100%; min-height: 0; }
+.avm-reading-book__stage { flex: 1; min-height: 0; position: relative; }
+.avm-book-spread, .avm-book-simple { position: absolute; inset: 0; }
+.avm-book-spread__canvas { width: 100%; height: 100%; min-height: 320px; }
+.avm-reading-book__loading,
+.avm-reading-book__error {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--color-text-muted, #9a9aa3); font-size: 14px;
+}
+.avm-reading-book__error { color: #fb7185; }
+.avm-book-simple { display: flex; align-items: center; justify-content: center; }
+.avm-book-simple__image { max-width: 100%; max-height: 100%; object-fit: contain; }
+.avm-book-simple__controls {
+  position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 12px;
+}
+.avm-book-scroll { position: absolute; inset: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 4px; background: #0a0b0f; }
+.avm-book-scroll__page { max-width: 100%; display: block; }

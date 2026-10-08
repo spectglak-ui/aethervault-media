@@ -27,6 +27,7 @@ export interface VaultTubeVideo {
   added_at: number;
   source: string;
   mode: PlaybackMode;
+  is_short: boolean;  // ← AJOUT
 }
 
 export interface VaultTubePlaylist {
@@ -74,6 +75,14 @@ export interface SearchResult {
   source: "youtube" | "dailymotion" | "vimeo" | "peertube" | "generic";
 }
 
+export interface Comment {
+  author: string;
+  text: string;
+  likes: number | null;
+  published_at: number | null;
+  id: string;
+}
+
 /** Miniature garantie : motif officiel i.ytimg.com si yt-dlp n'a rien fourni. */
 export function videoThumb(v: VaultTubeVideo): string {
   return v.thumbnail_url ?? `https://i.ytimg.com/vi/${v.youtube_id}/hqdefault.jpg`;
@@ -92,6 +101,10 @@ export function watchUrl(source: string, id: string): string {
 }
 
 export const vaultTubeApi = {
+  downloadVideo: (videoId: string, source?: string) =>
+    invoke<string>("vaulttube_download_video", { videoId, source: source ?? null }),
+  getComments: (videoId: string, source?: string) =>
+    invoke<Comment[]>("vaulttube_get_comments", { videoId, source: source ?? null }),
   listSubscriptions: () => invoke<VaultTubeSubscription[]>("vaulttube_list_subscriptions"),
   listVideos: (subscriptionId: number) =>
     invoke<VaultTubeVideo[]>("vaulttube_list_videos", { subscriptionId }),

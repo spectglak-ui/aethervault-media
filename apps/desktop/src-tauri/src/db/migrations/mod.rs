@@ -93,55 +93,70 @@ pub const MIGRATIONS: &[Migration] = &[
         description: "Persistance des réglages du lecteur (volume, muet, vitesse)",
         sql: include_str!("0012_player_settings.sql"),
     },
-	Migration {
-    version: 13,
-    description: "Authentification des profils (mot de passe + code de récupération, Étape 6c)",
-    sql: include_str!("0013_profile_auth.sql"),
-},
-        Migration {
+    Migration {
+        version: 13,
+        description: "Authentification des profils (mot de passe + code de récupération, Étape 6c)",
+        sql: include_str!("0013_profile_auth.sql"),
+    },
+    Migration {
         version: 14,
         description: "Métadonnées TMDB et paramètres applicatifs (Étape 7)",
         sql: include_str!("0014_tmdb_and_settings.sql"),
     },
-	    Migration {
+    Migration {
         version: 15,
         description: "Sonde technique des fichiers média (résolution, codec vidéo, langues audio/sous-titres) pour l'Explorateur — Étape 7",
         sql: include_str!("0015_technical_probe.sql"),
     },
-	    Migration {
+    Migration {
         version: 16,
         description: "Collections utilisateur (Étape 8)",
         sql: include_str!("0016_collections.sql"),
     },
-	    Migration {
+    Migration {
         version: 17,
         description: "Historique de visionnage (Time Capsule, Étape 8)",
         sql: include_str!("0017_watch_history.sql"),
     },
-	    Migration {
+    Migration {
         version: 18,
         description: "AetherFy — colonne source multi-plateformes (jalon 3)",
         sql: include_str!("0018_aetherfy.sql"),
     },
-	    Migration {
+    Migration {
         version: 19,
         description: "AetherFy — colonne source pour les items des playlists locales (jalon 3)",
         sql: include_str!("0019_aetherfy_playlist_source.sql"),
     },
-	    Migration {
+    Migration {
         version: 20,
         description: "AetherFy — mode de lecture (video/audio) pour playlists et abonnements (jalon 3)",
         sql: include_str!("0020_aetherfy_modes.sql"),
     },
-	    Migration {
+    Migration {
         version: 21,
         description: "AetherFy — colonne mode sur vaulttube_videos (complément migration 20)",
         sql: include_str!("0021_aetherfy_videos_mode.sql"),
     },
-	    Migration {
+    Migration {
         version: 22,
         description: "Système d'amis et activité de visionnage",
         sql: include_str!("0022_friends_and_activity.sql"),
+    },
+    Migration {
+        version: 23,
+        description: "Amis distants (remote friends)",
+        sql: include_str!("0023_remote_friends.sql"),
+    },
+    Migration {
+        version: 24,
+        description: "AetherFy — colonne is_short sur vaulttube_videos (détection Shorts fiable)",
+        sql: include_str!("0024_aetherfy_shorts.sql"),
+    },
+	    Migration {
+        version: 25,
+        description: "Catégorie TV — table tv_channels (flux IPTV/HLS publics)",
+        sql: include_str!("0025_tv_channels.sql"),
     },
 ];
 

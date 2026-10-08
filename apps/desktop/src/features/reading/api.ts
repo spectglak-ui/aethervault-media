@@ -109,6 +109,13 @@ export const readingApi = {
   listContinue: (limit: number) =>
     invoke<ContinueReading[]>("reading_list_continue", { limit }),
 
+  // --- Réinitialisation de progression (0.7.2) ---
+  /** Retire un livre de « Continuer à lire » et le fait repartir page 1. */
+  resetProgress: (bookId: number) =>
+    invoke<void>("reading_reset_progress", { bookId }),
+  /** Purge toute la rangée « Continuer à lire » pour le profil actif. */
+  resetAllProgress: () => invoke<number>("reading_reset_all_progress"),
+
   // --- Réglages de lecture (par profil) ---
   getSettings: () => invoke<string | null>("reading_get_settings"),
   saveSettings: (settingsJson: string) =>

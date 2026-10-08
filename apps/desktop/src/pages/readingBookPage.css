@@ -1,9 +1,12 @@
 /* ==========================================================================
-   0.7.0 — Lecteur de livres immersif (ReadingBookPage)
-   Plein écran, modes single/spread/vertical, animations curl 3D / slide / fade,
-   filtres d'amélioration image via CSS filter.
+   0.7.8 — Lecteur de livres immersif (ReadingBookPage) — FICHIER RECONSOLIDÉ
+   Modes single/spread/vertical, animations curl 3D / slide / fade, filtres
+   d'amélioration image, UI flottante auto-masquable, kill-switch fond blanc.
+   (Trois commentaires mal fermés avalaient auparavant : UI flottante,
+   kill-switch + filtres, ratios — tout est vivant désormais.)
    ========================================================================== */
 
+/* ----- Scène ----- */
 .rbk-stage {
   position: fixed;
   inset: 0;
@@ -18,13 +21,11 @@
   user-select: none;
   cursor: default;
 }
-
 .rbk-stage--loading,
 .rbk-stage--error {
   flex-direction: column;
   gap: 18px;
 }
-
 .rbk-loader {
   display: flex;
   flex-direction: column;
@@ -33,12 +34,10 @@
   color: var(--color-text-muted, #9a9aa3);
   animation: rbk-pulse 1.8s ease-in-out infinite;
 }
-
 @keyframes rbk-pulse {
   0%, 100% { opacity: 0.55; }
   50% { opacity: 1; }
 }
-
 .rbk-error {
   color: #fb7185;
   font-size: 14px;
@@ -46,7 +45,6 @@
   text-align: center;
   padding: 0 20px;
 }
-
 .rbk-back-btn {
   display: inline-flex;
   align-items: center;
@@ -73,50 +71,49 @@
   transform-style: preserve-3d;
 }
 
-/* Mode single : une page centrée. */
+/* Mode simple : une page centrée, ratio naturel respecté. */
 .rbk-single-wrap {
-  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 100%;
+  height: 100%;
   transform-origin: center;
   transition: transform 200ms ease;
+}
+.rbk-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
 }
 .rbk-single-wrap .rbk-img {
-  max-height: 100%;
-  max-width: 100%;
-  object-fit: contain;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.75);
+}
+/* 0.7.4 : pages horizontales → toute la largeur ; verticales → toute la hauteur. */
+.rbk-single-wrap--landscape .rbk-img {
+  width: 100%;
+  height: auto;
+  max-height: 100%;
+}
+.rbk-single-wrap--portrait .rbk-img {
+  height: 100%;
+  width: auto;
+  max-width: 100%;
 }
 
-/* Mode spread : deux pages côte à côte. */
+/* Mode spread : conteneur du moteur page-flip (StPageFlip). */
 .rbk-spread {
+  width: 100%;
   height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  transform-style: preserve-3d;
 }
-.rbk-spread .rbk-page {
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transform-origin: center;
-  transition: transform 200ms ease;
-}
-.rbk-spread .rbk-page--left {
-  transform-origin: right center;
-}
-.rbk-spread .rbk-page--right {
-  transform-origin: left center;
-}
-.rbk-spread .rbk-img {
-  max-height: 100%;
-  max-width: 48vw;
-  object-fit: contain;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.75);
+/* 0.7.7 : secours anti-déformation (planches non découpées) + transparence. */
+.rbk-spread img {
+  object-fit: contain !important;
+  background: transparent !important;
 }
 
 /* Mode vertical : pages empilées (scroll). */
@@ -152,7 +149,6 @@
   height: auto;
   display: block;
 }
-
 .rbk-placeholder {
   width: 320px;
   height: 480px;
@@ -174,41 +170,36 @@
    ANIMATIONS DE TOURNÉ DE PAGE
    ========================================================================== */
 
-/* ----- Flip réaliste (curl 3D) ----- */
-/* En mode spread : la page sortante pivote sur son bord intérieur
-   (gauche si on tourne vers l'avant en LTR, droite en RTL). */
+/* ----- Flip réaliste (curl 3D), mode spread legacy ----- */
 .rbk-stage--flip.rbk-stage--anim-next.rbk-stage--ltr .rbk-page--right,
 .rbk-stage--flip.rbk-stage--anim-prev.rbk-stage--rtl .rbk-page--right {
-  animation: rbk-flip-right-out 550ms cubic-bezier(0.4, 0.0, 0.2, 1);
+  animation: rbk-flip-right-out 550ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .rbk-stage--flip.rbk-stage--anim-prev.rbk-stage--ltr .rbk-page--left,
 .rbk-stage--flip.rbk-stage--anim-next.rbk-stage--rtl .rbk-page--left {
-  animation: rbk-flip-left-out 550ms cubic-bezier(0.4, 0.0, 0.2, 1);
+  animation: rbk-flip-left-out 550ms cubic-bezier(0.4, 0, 0.2, 1);
 }
-
 @keyframes rbk-flip-right-out {
-  0%   { transform: rotateY(0deg);    box-shadow: 0 20px 60px rgba(0,0,0,.75); }
-  50%  { transform: rotateY(-85deg);  box-shadow: -30px 0 80px rgba(0,0,0,.6); }
-  100% { transform: rotateY(0deg);    box-shadow: 0 20px 60px rgba(0,0,0,.75); }
+  0%   { transform: rotateY(0deg);   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.75); }
+  50%  { transform: rotateY(-85deg); box-shadow: -30px 0 80px rgba(0, 0, 0, 0.6); }
+  100% { transform: rotateY(0deg);   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.75); }
 }
 @keyframes rbk-flip-left-out {
-  0%   { transform: rotateY(0deg);    box-shadow: 0 20px 60px rgba(0,0,0,.75); }
-  50%  { transform: rotateY(85deg);   box-shadow: 30px 0 80px rgba(0,0,0,.6); }
-  100% { transform: rotateY(0deg);    box-shadow: 0 20px 60px rgba(0,0,0,.75); }
+  0%   { transform: rotateY(0deg);  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.75); }
+  50%  { transform: rotateY(85deg); box-shadow: 30px 0 80px rgba(0, 0, 0, 0.6); }
+  100% { transform: rotateY(0deg);  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.75); }
 }
-
-/* Mode single : la page entière pivote sur son bord gauche/droite. */
+/* Mode simple : la page entière pivote sur son bord. */
 .rbk-stage--flip.rbk-stage--anim-next.rbk-stage--ltr .rbk-single-wrap,
 .rbk-stage--flip.rbk-stage--anim-prev.rbk-stage--rtl .rbk-single-wrap {
-  animation: rbk-flip-single-right 550ms cubic-bezier(0.4, 0.0, 0.2, 1);
+  animation: rbk-flip-single-right 550ms cubic-bezier(0.4, 0, 0.2, 1);
   transform-origin: left center;
 }
 .rbk-stage--flip.rbk-stage--anim-prev.rbk-stage--ltr .rbk-single-wrap,
 .rbk-stage--flip.rbk-stage--anim-next.rbk-stage--rtl .rbk-single-wrap {
-  animation: rbk-flip-single-left 550ms cubic-bezier(0.4, 0.0, 0.2, 1);
+  animation: rbk-flip-single-left 550ms cubic-bezier(0.4, 0, 0.2, 1);
   transform-origin: right center;
 }
-
 @keyframes rbk-flip-single-right {
   0%   { transform: rotateY(0deg); }
   50%  { transform: rotateY(-90deg); }
@@ -220,34 +211,33 @@
   100% { transform: rotateY(0deg); }
 }
 
-/* ----- Slide (glissement horizontal) ----- */
+/* ----- Slide (glissement horizontal), sélecteurs legacy ----- */
 .rbk-stage--slide.rbk-stage--anim-next .rbk-viewport {
-  animation: rbk-slide-next 400ms cubic-bezier(0.4, 0.0, 0.2, 1);
+  animation: rbk-slide-next 400ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .rbk-stage--slide.rbk-stage--anim-prev .rbk-viewport {
-  animation: rbk-slide-prev 400ms cubic-bezier(0.4, 0.0, 0.2, 1);
+  animation: rbk-slide-prev 400ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .rbk-stage--slide.rbk-stage--rtl.rbk-stage--anim-next .rbk-viewport {
-  animation: rbk-slide-prev 400ms cubic-bezier(0.4, 0.0, 0.2, 1);
+  animation: rbk-slide-prev 400ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .rbk-stage--slide.rbk-stage--rtl.rbk-stage--anim-prev .rbk-viewport {
-  animation: rbk-slide-next 400ms cubic-bezier(0.4, 0.0, 0.2, 1);
+  animation: rbk-slide-next 400ms cubic-bezier(0.4, 0, 0.2, 1);
 }
-
 @keyframes rbk-slide-next {
-  0%   { transform: translateX(0);    opacity: 1; }
+  0%   { transform: translateX(0);     opacity: 1; }
   45%  { transform: translateX(-30px); opacity: 0.4; }
   55%  { transform: translateX(30px);  opacity: 0.4; }
-  100% { transform: translateX(0);    opacity: 1; }
+  100% { transform: translateX(0);     opacity: 1; }
 }
 @keyframes rbk-slide-prev {
   0%   { transform: translateX(0);    opacity: 1; }
-  45%  { transform: translateX(30px);  opacity: 0.4; }
+  45%  { transform: translateX(30px); opacity: 0.4; }
   55%  { transform: translateX(-30px); opacity: 0.4; }
   100% { transform: translateX(0);    opacity: 1; }
 }
 
-/* ----- Fade (fondu) ----- */
+/* ----- Fade (fondu), sélecteurs legacy ----- */
 .rbk-stage--fade.rbk-stage--anim-next .rbk-viewport,
 .rbk-stage--fade.rbk-stage--anim-prev .rbk-viewport {
   animation: rbk-fade 350ms ease;
@@ -255,6 +245,38 @@
 @keyframes rbk-fade {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.2; }
+}
+
+/* ----- 0.7.4 : impulsions posées DIRECTEMENT sur le viewport par le
+   composant (classes rbk-viewport--anim-* / --fade). Keyframes dédiées
+   (rbk-vp-*) pour ne pas entrer en collision avec les legacy ci-dessus. */
+.rbk-viewport--anim-next {
+  animation: rbk-vp-slide-next 380ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.rbk-viewport--anim-prev {
+  animation: rbk-vp-slide-prev 380ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.rbk-viewport--fade {
+  animation: rbk-vp-fade 320ms ease;
+}
+/* RTL : on inverse le sens du glissement. */
+.rbk-stage--rtl .rbk-viewport--anim-next {
+  animation-name: rbk-vp-slide-prev;
+}
+.rbk-stage--rtl .rbk-viewport--anim-prev {
+  animation-name: rbk-vp-slide-next;
+}
+@keyframes rbk-vp-slide-next {
+  0%   { opacity: 0.35; transform: translateX(48px); }
+  100% { opacity: 1;    transform: translateX(0); }
+}
+@keyframes rbk-vp-slide-prev {
+  0%   { opacity: 0.35; transform: translateX(-48px); }
+  100% { opacity: 1;    transform: translateX(0); }
+}
+@keyframes rbk-vp-fade {
+  0%   { opacity: 0; }
+  100% { opacity: 1; }
 }
 
 /* ==========================================================================
@@ -274,10 +296,10 @@
 .rbk-ui > * {
   pointer-events: auto;
 }
+/* 0.7.2 : le curseur reste TOUJOURS visible, même UI masquée. */
 .rbk-stage--ui-hidden {
-  cursor: none;
+  cursor: default;
 }
-
 .rbk-topbar {
   position: absolute;
   top: 0;
@@ -311,7 +333,6 @@
   display: flex;
   gap: 6px;
 }
-
 .rbk-bottombar {
   position: absolute;
   bottom: 0;
@@ -341,7 +362,6 @@
   opacity: 0.35;
   cursor: default;
 }
-
 .rbk-progress-wrap {
   flex: 1;
   display: flex;
@@ -383,8 +403,6 @@
   min-width: 60px;
   text-align: right;
 }
-
-/* Boutons icônes (topbar, settings, zoom) */
 .rbk-icon-btn {
   width: 34px;
   height: 34px;
@@ -442,13 +460,6 @@
   text-transform: uppercase;
   color: var(--color-text-muted, #9a9aa3);
 }
-.rbk-settings__control {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-/* Segmented control */
 .rbk-segmented {
   display: flex;
   gap: 2px;
@@ -481,7 +492,10 @@
   background: rgba(124, 92, 255, 0.22);
   color: #fff;
 }
-
+.rbk-segmented__opt:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
 .rbk-zoom-row {
   display: flex;
   align-items: center;
@@ -512,4 +526,84 @@
   border: none;
   border-radius: 50%;
   cursor: pointer;
+}
+
+/* ==========================================================================
+   0.7.2 — KILL-SWITCH FOND BLANC : page-flip peint ses feuilles en blanc
+   (styles internes/inline). Tout fond non-ombre devient transparent,
+   canvas compris — seules les images flottent sur le fond de l'app.
+   ========================================================================== */
+.rbk-stage,
+.avm-reading-book {
+  background: transparent !important;
+}
+.rbk-stage [class*="stf__"]:not([class*="shadow"]),
+.avm-reading-book [class*="stf__"]:not([class*="shadow"]) {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+.rbk-stage [class*="stf__"] img,
+.avm-reading-book [class*="stf__"] img {
+  background: transparent !important;
+  object-fit: contain;
+}
+/* La page vierge appairée à la couverture ne doit montrer aucune feuille. */
+.rbk-stage [class*="stf__"]:empty {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.rbk-viewport,
+.rbk-viewport :not([class*="shadow"]) {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* ==========================================================================
+   0.7.4 — Amélioration image (N&B, Vif, sepia, contraste) :
+   classes posées sur le viewport → filtrent canvas page-flip ET <img>.
+   ========================================================================== */
+.filter-grayscale {
+  filter: grayscale(1) contrast(1.12) brightness(1.02);
+}
+.filter-vivid {
+  filter: saturate(1.35) contrast(1.1) brightness(1.02);
+}
+.filter-sepia {
+  filter: sepia(0.55) contrast(1.05);
+}
+.filter-high-contrast {
+  filter: contrast(1.45) brightness(1.05) saturate(0.9);
+}
+
+/* ==========================================================================
+   0.7.5 — Overlay planche horizontale en mode Double
+   ========================================================================== */
+.rbk-spread-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.95);
+  pointer-events: none;
+}
+.rbk-spread-overlay__img {
+  max-width: 95%;
+  max-height: 95%;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+.rbk-spread-overlay__badge {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  backdrop-filter: blur(8px);
 }
