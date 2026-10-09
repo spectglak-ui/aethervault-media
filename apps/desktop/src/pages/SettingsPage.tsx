@@ -23,6 +23,7 @@ import { metadataApi } from "../features/settings/api";
 import { playerApi } from "../features/player/api";
 import { readPersistedTheme, writePersistedTheme } from "../theme/persistedCustomTheme";
 import { RenderQualitySection } from "./RenderQualitySection";
+import { readCategoryBackdropHidden, CATEGORY_BACKDROP_EVENT } from "../hooks/useCategoryBackdropHidden";
 
 type DiagnosticsState =
   | { kind: "loading" }
@@ -1278,7 +1279,6 @@ function TypographySection() {
 function HidePrivateSection() {
   const [hidePrivate, setHidePrivate] = useState(() => {
     try {
-      // 0.9.14 — ALIGNEMENT avec HomePage : même clé "avm-home-hide-private"
       return localStorage.getItem("avm-home-hide-private") === "1";
     } catch {
       return false;
@@ -1300,12 +1300,50 @@ function HidePrivateSection() {
     <section className="avm-settings-section">
       <h2>Visibilité — Catégorie Privé</h2>
       <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <input type="checkbox" checked={hidePrivate} onChange={(e) => toggle(e.target.checked)} />
+        <input
+          type="checkbox"
+          checked={hidePrivate}
+          onChange={(e) => toggle(e.target.checked)}
+        />
         Masquer la catégorie Privé de la page d'accueil
       </label>
       <p className="avm-settings-muted">
         La catégorie Privé reste accessible depuis la barre latérale ; cette option
         retire seulement sa tuile de l'accueil.
+      </p>
+    </section>
+  );
+}
+
+function CategoryBackdropSection() {
+  const [hidden, setHidden] = useState(readCategoryBackdropHidden);
+
+  const toggle = (value: boolean) => {
+    setHidden(value);
+    try {
+      localStorage.setItem("avm-hide-category-backdrop", value ? "1" : "0");
+    } catch {
+      // best-effort
+    }
+    window.dispatchEvent(new Event(CATEGORY_BACKDROP_EVENT));
+  };
+
+  return (
+    <section className="avm-settings-section">
+      <h2>Fonds des pages Catégorie</h2>
+      <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input
+          type="checkbox"
+          checked={hidden}
+          onChange={(e) => toggle(e.target.checked)}
+        />
+        Masquer le fond issu des bannières de catégorie
+      </label>
+      <p className="avm-settings-muted">
+        Quand cette option est active, les pages Films, Séries, Animés et
+        Documentaires n'affichent plus le fond généré depuis leur bannière
+        ou leur première vignette : seul le fond global du logiciel reste
+        visible.
       </p>
     </section>
   );
@@ -1335,6 +1373,7 @@ export function SettingsPage() {
 	  <RenderQualitySection />
       <TmdbSection />
       <HidePrivateSection />
+	  <CategoryBackdropSection />
       <AudioSection />
       <SecuritySection />
       <ExperimentalPlayerSection />
