@@ -1,0 +1,195 @@
+diff --git a/apps/desktop/src/pages/PrivateAlbumPage.tsx b/apps/desktop/src/pages/PrivateAlbumPage.tsx
+index 88744f9..ae26b84 100644
+--- a/apps/desktop/src/pages/PrivateAlbumPage.tsx
++++ b/apps/desktop/src/pages/PrivateAlbumPage.tsx
+@@ -1,7 +1,8 @@
+ import { useCallback, useEffect, useState, type MouseEvent } from "react";
+ import { useNavigate, useParams } from "react-router-dom"; // ← useNavigate ajouté
+ import { Image as ImagePlaceholder, Pencil, RotateCcw, Star, Trash2 } from "lucide-react"; // ← Pencil + Trash2 ajoutés
+-import { EmptyState, IconButton, PageHeader } from "@aethervault/ui-kit";
++import { EmptyState, IconButton } from "@aethervault/ui-kit";
++import { ModernPageHeader } from "../components/ModernPageHeader";
+ import type { PrivateImageFile, PrivateImageFolder } from "@aethervault/shared-types";
+ import { privacyApi } from "../features/privacy/api"; // ← privacyApi ajouté
+ import { privateImageApi } from "../features/privateImage/api";
+@@ -108,7 +109,10 @@ export function PrivateAlbumPage() {
+ 
+   return (
+     <div>
+-      <PageHeader
++      <ModernPageHeader
++        icon={<ImagePlaceholder size={26} />}
++        tint="148, 163, 184"
++        kicker="Album privé"
+         title={folder ? folderDisplayName(folder.path) : "Album introuvable"}
+         description={folder ? `${files.length} photo(s) — ${folder.path}` : undefined}
+         actions={
+diff --git a/apps/desktop/src/pages/PrivateImageLibraryPage.tsx b/apps/desktop/src/pages/PrivateImageLibraryPage.tsx
+index 50568ed..4f7f8d8 100644
+--- a/apps/desktop/src/pages/PrivateImageLibraryPage.tsx
++++ b/apps/desktop/src/pages/PrivateImageLibraryPage.tsx
+@@ -8,6 +8,7 @@ import { privacyApi } from "../features/privacy/api";
+ import { privateImageApi } from "../features/privateImage/api";
+ import { PrivateThumbnailImage } from "../features/privateImage/PrivateThumbnailImage";
+ import "./privateGallery.css";
++import "./private-modern.css";
+ 
+ function describeSummary(summary: {
+   added: number;
+diff --git a/apps/desktop/src/pages/PrivatePage.tsx b/apps/desktop/src/pages/PrivatePage.tsx
+index f7fa051..65a33f7 100644
+--- a/apps/desktop/src/pages/PrivatePage.tsx
++++ b/apps/desktop/src/pages/PrivatePage.tsx
+@@ -40,6 +40,7 @@ import { usePlayer } from "../player/PlayerContext";
+ import { PersonalizableImage } from "../features/personalization/PersonalizableImage";
+ import { assetUrl } from "../lib/assetUrl";
+ import "./privateGallery.css";
++import "./private-modern.css";
+ 
+ /* ------------------------------------------------------------------ */
+ /* 0.6.2 — Accueil unifié Privé (« VaultGallery »).                   */
+diff --git a/apps/desktop/src/pages/PrivateVideoLibraryPage.tsx b/apps/desktop/src/pages/PrivateVideoLibraryPage.tsx
+index af9897b..130a831 100644
+--- a/apps/desktop/src/pages/PrivateVideoLibraryPage.tsx
++++ b/apps/desktop/src/pages/PrivateVideoLibraryPage.tsx
+@@ -9,6 +9,7 @@ import { privateVideoApi } from "../features/privateVideo/api";
+ import { usePlayer } from "../player/PlayerContext";
+ import { PrivateScanProgressBar } from "../components/PrivateScanProgressBar";
+ import "./privateGallery.css";
++import "./private-modern.css";
+ 
+ /* 0.6.2 (étape 2, correctif) — Bibliothèque privée Vidéos restylée.
+    CORRECTIF crash « Invalid hook call » : tous les hooks (useNavigate,
+diff --git a/apps/desktop/src/pages/private-modern.css b/apps/desktop/src/pages/private-modern.css
+new file mode 100644
+index 0000000..c1852b7
+--- /dev/null
++++ b/apps/desktop/src/pages/private-modern.css
+@@ -0,0 +1,127 @@
++/* ==========================================================================
++   Privé — même langage que l'accueil (verre sombre, lueurs, survols qui
++   soulèvent, dégradé violet → rose). Surcharge PAINTURE UNIQUEMENT de
++   `privateGallery.css` : aucune mise en page n'est modifiée. Le préfixe
++   `#root` garantit la priorité quel que soit l'ordre de chargement des CSS.
++   Les états de départ des animations sont l'état final visible.
++   ========================================================================== */
++
++/* ---------- En-têtes (galerie + bibliothèques) ---------- */
++
++#root .pvg-header,
++#root .pvg-sub__head {
++  position: relative;
++  isolation: isolate;
++  padding-top: 6px;
++  animation: pvg-m-rise 0.55s cubic-bezier(0.2, 0.8, 0.2, 1) both;
++}
++#root .pvg-header::before,
++#root .pvg-sub__head::before {
++  content: "";
++  position: absolute;
++  inset: -2rem -2rem -0.5rem;
++  z-index: -1;
++  pointer-events: none;
++  background:
++    radial-gradient(46% 90% at 6% 40%, rgba(148, 163, 184, 0.2), transparent 72%),
++    radial-gradient(30% 70% at 30% 20%, rgba(124, 92, 255, 0.14), transparent 70%);
++}
++#root .pvg-header > div:first-child::before,
++#root .pvg-sub__head > div:first-child::before {
++  content: "Coffre privé";
++  display: block;
++  margin-bottom: 4px;
++  font-size: 11px;
++  font-weight: 600;
++  letter-spacing: 0.22em;
++  text-transform: uppercase;
++  color: #94a3b8;
++}
++#root .pvg-header__title {
++  font-family: var(--font-display);
++  font-size: clamp(1.7rem, 3vw, 2.5rem);
++  line-height: 1.1;
++  background: linear-gradient(90deg, var(--color-text, #f8fafc) 0%, #c4b5ff 85%);
++  -webkit-background-clip: text;
++  background-clip: text;
++  color: transparent;
++}
++
++/* ---------- Cartes (photos, vidéos, albums) ---------- */
++
++#root .pvg-card {
++  border-radius: 20px;
++  border-color: rgba(255, 255, 255, 0.1);
++  background:
++    linear-gradient(165deg, rgba(124, 92, 255, 0.1) 0%, transparent 55%),
++    rgba(11, 19, 34, 0.82);
++  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
++  transition:
++    transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
++    border-color 0.3s ease,
++    box-shadow 0.35s ease;
++}
++#root .pvg-card:hover {
++  transform: translateY(-5px);
++  border-color: rgba(124, 92, 255, 0.7);
++  box-shadow:
++    0 20px 40px rgba(0, 0, 0, 0.42),
++    0 0 0 1px rgba(124, 92, 255, 0.35),
++    0 0 36px rgba(124, 92, 255, 0.22);
++}
++
++/* ---------- Puces, boutons ---------- */
++
++#root .pvg-chip {
++  transition:
++    border-color 0.25s ease,
++    transform 0.25s ease,
++    box-shadow 0.25s ease;
++}
++#root .pvg-chip:hover {
++  transform: translateY(-1px);
++  border-color: rgba(124, 92, 255, 0.6);
++}
++#root .pvg-chip--active {
++  background: linear-gradient(135deg, rgba(124, 92, 255, 0.55), rgba(236, 72, 153, 0.4));
++  box-shadow: 0 0 22px rgba(124, 92, 255, 0.3);
++}
++#root .pvg-btn-accent {
++  background: linear-gradient(90deg, #7c5cff, #a855f7, #ec4899);
++  box-shadow: 0 10px 26px rgba(124, 92, 255, 0.4);
++  transition:
++    transform 0.25s ease,
++    box-shadow 0.25s ease;
++}
++#root .pvg-btn-accent:hover {
++  transform: translateY(-2px);
++  box-shadow: 0 14px 32px rgba(124, 92, 255, 0.5);
++}
++#root .pvg-btn-soft {
++  transition:
++    border-color 0.25s ease,
++    transform 0.25s ease;
++}
++#root .pvg-btn-soft:hover {
++  transform: translateY(-1px);
++  border-color: rgba(124, 92, 255, 0.6);
++}
++
++/* ---------- Écran de déverrouillage ---------- */
++
++#root .pvg-gate__card {
++  border-color: rgba(255, 255, 255, 0.12);
++  background:
++    linear-gradient(165deg, rgba(124, 92, 255, 0.16), rgba(8, 10, 18, 0.94) 60%);
++  box-shadow:
++    0 28px 70px rgba(0, 0, 0, 0.5),
++    0 0 60px rgba(124, 92, 255, 0.14);
++  animation: pvg-m-rise 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
++}
++
++@keyframes pvg-m-rise {
++  from {
++    opacity: 0;
++    transform: translateY(12px);
++  }
++}

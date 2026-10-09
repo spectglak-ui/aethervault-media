@@ -1,0 +1,61 @@
+--- a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs	2026-10-08 23:11:32.371522976 +0000
++++ b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs	2026-10-08 23:11:32.420641073 +0000
+@@ -72,10 +72,6 @@
+     render_thread: Option<std::thread::JoinHandle<()>>,
+     size: Arc<(AtomicI32, AtomicI32)>,
+     in_flight_frames: Arc<AtomicI32>,
+-    /// Repli PiP : dernière image rendue, partagée avec le thread de rendu
+-    /// (`sw_render.rs`) et lue par la commande `player_pull_frame` pour les
+-    /// fenêtres dont le canal Tauri est muet (fenêtre détachée).
+-    latest_frame: Arc<Mutex<Vec<u8>>>,
+ }
+ 
+ /// 0.5.3 : « start gate » — pour les flux réseau, la lecture reste en
+@@ -958,13 +954,11 @@
+         let size = Arc::new((AtomicI32::new(width), AtomicI32::new(height)));
+         let stop_flag = Arc::new(AtomicBool::new(false));
+         let in_flight_frames = Arc::new(AtomicI32::new(0));
+-        let latest_frame = Arc::new(Mutex::new(Vec::new()));
+         let functions = self.functions.clone();
+         let mpv = sw_render::MpvHandlePtr(self.mpv.0);
+         let render_stop_flag = stop_flag.clone();
+         let render_size = size.clone();
+         let render_in_flight = in_flight_frames.clone();
+-        let render_latest_frame = latest_frame.clone();
+         let render_thread = std::thread::spawn(move || {
+             sw_render::run(
+                 functions,
+@@ -973,7 +967,6 @@
+                 render_stop_flag,
+                 render_size,
+                 render_in_flight,
+-                render_latest_frame,
+             );
+         });
+         *guard = Some(SurfaceState {
+@@ -981,7 +974,6 @@
+             render_thread: Some(render_thread),
+             size,
+             in_flight_frames,
+-            latest_frame,
+         });
+         // 0.5.0 (correctif écran noir) : le VO libmpv de mpv a pu démarrer
+         // AVANT que ce contexte de rendu existe → rechargement complet de
+--- a/apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs	2026-10-08 23:11:32.375300580 +0000
++++ b/apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs	2026-10-08 23:11:32.421094659 +0000
+@@ -304,7 +304,6 @@
+     stop_flag: Arc<AtomicBool>,
+     size: Arc<(AtomicI32, AtomicI32)>,
+     in_flight: Arc<AtomicI32>,
+-    latest_frame: Arc<Mutex<Vec<u8>>>,
+ ) {
+     let mut params = [
+         mpv_ffi::mpv_render_param {
+@@ -606,7 +605,6 @@
+         // prouvé en test réel) : copie de la dernière image partagée avec la
+         // commande `player_pull_frame` (voir mod.rs) — la fenêtre détachée
+         // « tire » ce buffer au lieu de le recevoir par le canal.
+-        *latest_frame.lock().unwrap_or_else(|p| p.into_inner()) = buffer.clone();
+         *LATEST_FRAME.lock().unwrap_or_else(|p| p.into_inner()) = buffer.clone();
+         if !first_frame_logged {
+             first_frame_logged = true;

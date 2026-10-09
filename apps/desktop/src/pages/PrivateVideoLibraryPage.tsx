@@ -9,6 +9,7 @@ import { privateVideoApi } from "../features/privateVideo/api";
 import { usePlayer } from "../player/PlayerContext";
 import { PrivateScanProgressBar } from "../components/PrivateScanProgressBar";
 import "./privateGallery.css";
+import "./private-modern.css";
 
 /* 0.6.2 (étape 2, correctif) — Bibliothèque privée Vidéos restylée.
    CORRECTIF crash « Invalid hook call » : tous les hooks (useNavigate,

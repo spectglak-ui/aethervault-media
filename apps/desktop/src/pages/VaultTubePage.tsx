@@ -24,6 +24,8 @@ import { usePlayer } from "../player/PlayerContext";
 import { formatDuration } from "./VaultTubeVideoGrid";
 import { VaultTubePlaylistPicker, type PickableVideo } from "../components/VaultTubePlaylistPicker";
 import "./pages.css";
+import { ModernPageHeader } from "../components/ModernPageHeader";
+import "../features/aetherfy/aetherfy-modern.css";
 
 const inputStyle: CSSProperties = {
   flex: 1,
@@ -496,60 +498,35 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
 
   return (
     <div>
-      {/* Header dégradé façon Spotify */}
-      <div
-        style={{
-          margin: "-20px -20px 0",
-          padding: "30px 26px 26px",
-          background: "linear-gradient(180deg, rgba(124,92,255,.30), rgba(124,92,255,0) 95%)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div
-            style={{
-              width: 58,
-              height: 58,
-              borderRadius: 12,
-              background: "linear-gradient(135deg, #7c5cff, #4c3a99)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              boxShadow: "0 6px 18px rgba(0,0,0,.45)",
-            }}
-          >
-            {defaultMode === "audio" ? (
-              <Music size={26} color="#fff" />
-            ) : defaultMode === "video" ? (
-              <Video size={26} color="#fff" />
-            ) : (
-              <Radio size={26} color="#fff" />
-            )}
-          </div>
-          <div>
-            <div
-              style={{
-                fontSize: 11,
-                textTransform: "uppercase",
-                letterSpacing: 1.2,
-                color: "var(--color-text-muted, #9a9aa3)",
-              }}
-            >
-              {defaultMode === "audio"
-                ? "Vos playlists et chaînes musicales"
-                : defaultMode === "video"
-                  ? "Vos chaînes et playlists vidéo"
-                  : "Streaming multi-sources"}
-            </div>
-            <div style={{ fontSize: 30, fontWeight: 800, margin: 0 }}>
-              {/* FONCTIONNALITÉ : identité "AetherFy" en Major Mono
-                  Display — seul ce mot change de police, "Vidéo"/
-                  "Musique" restent dans la police de titres habituelle. */}
-              <span className="avm-brand-aetherfy">AetherFy</span>
-              {defaultMode === "audio" ? " Musique" : defaultMode === "video" ? " Vidéo" : ""}
-            </div>
-          </div>
-        </div>
-
+      {/* En-tête moderne (même langage que l'accueil). Le mot-symbole
+          « AetherFy » garde la police Major Mono Display ; « Vidéo » /
+          « Musique » restent dans la police de titres. */}
+      <ModernPageHeader
+        icon={
+          defaultMode === "audio" ? (
+            <Music size={26} />
+          ) : defaultMode === "video" ? (
+            <Video size={26} />
+          ) : (
+            <Radio size={26} />
+          )
+        }
+        tint={defaultMode === "audio" ? "29, 185, 84" : defaultMode === "video" ? "255, 46, 99" : "124, 92, 255"}
+        kicker={
+          defaultMode === "audio"
+            ? "Vos playlists et chaînes musicales"
+            : defaultMode === "video"
+              ? "Vos chaînes et playlists vidéo"
+              : "Streaming multi-sources"
+        }
+        title={
+          <>
+            <span className="avm-brand-aetherfy">AetherFy</span>
+            {defaultMode === "audio" ? " Musique" : defaultMode === "video" ? " Vidéo" : ""}
+          </>
+        }
+      />
+      <div className="avm-hxp-search">
         {/* Recherche + sélecteur de source */}
         <div style={{ display: "flex", gap: 8, marginTop: 20, alignItems: "center" }}>
           <div style={{ position: "relative", flex: 1 }}>

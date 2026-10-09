@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { FolderHeart, Plus, Trash2, X } from "lucide-react";
-import { Button, EmptyState, IconButton, PageHeader } from "@aethervault/ui-kit";
+import { Button, EmptyState, IconButton } from "@aethervault/ui-kit";
+import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
+import { Layers as CollectionsIcon } from "lucide-react";
 import type { Category, TitleSummary } from "@aethervault/shared-types";
 import { titleApi, type CollectionRecord } from "../features/title/api";
 import { categoryApi } from "../features/category/api";
@@ -82,7 +84,10 @@ export function CollectionsPage() {
 
   return (
     <div>
-      <PageHeader
+      <ModernPageHeader
+        icon={<CollectionsIcon size={26} />}
+        tint={PAGE_TINTS.collections}
+        kicker="Vos listes"
         title="Collections"
         description="Vos listes personnalisées : à voir, favoris, sagas…"
       />

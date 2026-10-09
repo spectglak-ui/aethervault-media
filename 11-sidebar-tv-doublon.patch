@@ -1,0 +1,18 @@
+diff --git a/apps/desktop/src/layout/Sidebar.tsx b/apps/desktop/src/layout/Sidebar.tsx
+index fba9b74..8139bec 100644
+--- a/apps/desktop/src/layout/Sidebar.tsx
++++ b/apps/desktop/src/layout/Sidebar.tsx
+@@ -89,7 +89,12 @@ export function Sidebar({ collapsed, canToggle, onToggleCollapsed }: SidebarProp
+             onClick={() => navigate("/")}
+           />
+         </li>
+-        {categories.map((category) => (
++        {/* La catégorie « tv » (si elle existe en base) faisait doublon avec
++            l'entrée TV ci-dessous et menait à `/category/tv` au lieu de la
++            vraie page TV (`/tv`) : on ne l'affiche pas ici. */}
++        {categories
++          .filter((category) => category.key !== "tv")
++          .map((category) => (
+           <li key={category.id}>
+             <NavItem
+               icon={categoryIcon(category.key)}

@@ -40,15 +40,6 @@ pub fn list_by_season(conn: &Connection, season_id: i64) -> rusqlite::Result<Vec
     rows.collect()
 }
 
-pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<EpisodeRecord>> {
-    conn.query_row(
-        &format!("SELECT {COLUMNS} FROM episodes WHERE id = ?1"),
-        rusqlite::params![id],
-        map_row,
-    )
-    .optional()
-}
-
 /// Recherche-ou-création par numéro d'épisode au sein d'une saison — même
 /// logique que les autres `find_or_create` de ce module Étape 4.
 pub fn find_or_create(

@@ -1,0 +1,59 @@
+/* Sélecteur des fonds intégrés (Paramètres → Fond de la page d'accueil / Fond animé) */
+
+.avm-bd-presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+}
+.avm-bd-preset {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 148px;
+  padding: 8px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--color-text);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-text) 12%, transparent);
+  transition:
+    transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 0.3s ease,
+    box-shadow 0.3s ease;
+}
+.avm-bd-preset:hover:not(:disabled) {
+  transform: translateY(-3px);
+  border-color: rgba(124, 92, 255, 0.6);
+}
+.avm-bd-preset:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.avm-bd-preset--active {
+  border-color: rgba(124, 92, 255, 0.85);
+  box-shadow:
+    0 0 0 1px rgba(124, 92, 255, 0.4),
+    0 0 26px rgba(124, 92, 255, 0.28);
+}
+.avm-bd-preset__thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 10px;
+}
+.avm-bd-preset__thumb--default {
+  background:
+    radial-gradient(circle at 20% 30%, #fff 0 1px, transparent 1.6px),
+    radial-gradient(circle at 72% 58%, #fff 0 1px, transparent 1.6px),
+    radial-gradient(circle at 45% 82%, #fff 0 1px, transparent 1.6px),
+    radial-gradient(circle at 85% 20%, #c4b5ff 0 1px, transparent 1.6px),
+    #0b0b14;
+}
+.avm-bd-preset__label {
+  font-size: 12px;
+  font-weight: 600;
+}

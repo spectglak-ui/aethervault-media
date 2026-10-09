@@ -20,6 +20,7 @@ import { ProfilesPage } from "./pages/ProfilesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ExperimentalPlayerPage } from "./pages/ExperimentalPlayerPage";
 import { VaultTubePage } from "./pages/VaultTubePage";
+import { AetherFyGatewayPage } from "./pages/AetherFyGatewayPage";
 import { VaultTubeVideosPage } from "./pages/VaultTubeVideosPage";
 import { VaultTubePlaylistsPage } from "./pages/VaultTubePlaylistsPage";
 import { VaultTubePlaylistPreviewPage } from "./pages/VaultTubePlaylistPreviewPage";
@@ -80,7 +81,9 @@ export const router = createHashRouter([
       { path: "/private", element: <PrivatePage /> },
       { path: "/private/videos/:id", element: <PrivateVideoLibraryPage /> },
       { path: "/private/images/:id", element: <PrivateImageLibraryPage /> },
-      { path: "/vaulttube", element: <VaultTubePage /> },
+      // Tuile « AetherFy » de l'accueil : page de transition Vidéo / Musique.
+      // `VaultTubePage` reste utilisée par `/vaulttube/video` et `/vaulttube/music`.
+      { path: "/vaulttube", element: <AetherFyGatewayPage /> },
       { path: "/vaulttube/video", element: <VaultTubePage defaultMode="video" /> },
       { path: "/vaulttube/music", element: <VaultTubePage defaultMode="audio" /> },
       { path: "/vaulttube/:id", element: <VaultTubeVideosPage /> },

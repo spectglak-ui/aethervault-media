@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Compass, SlidersHorizontal } from "lucide-react";
-import { Button, EmptyState, PageHeader } from "@aethervault/ui-kit";
+import { Button, EmptyState } from "@aethervault/ui-kit";
+import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
+import { Compass as ExploreIcon } from "lucide-react";
 import type { Category, SearchFacets, TitleSearchQuery, TitleSearchResult } from "@aethervault/shared-types";
 import { titleApi } from "../features/title/api";
 import { categoryApi } from "../features/category/api";
@@ -123,7 +125,10 @@ export function ExplorePage() {
 
   return (
     <div>
-      <PageHeader
+      <ModernPageHeader
+        icon={<ExploreIcon size={26} />}
+        tint={PAGE_TINTS.explore}
+        kicker="Découverte"
         title="Explorer"
         description="Recherche multicritères dans Films, Séries, Anime et Documentaires."
       />

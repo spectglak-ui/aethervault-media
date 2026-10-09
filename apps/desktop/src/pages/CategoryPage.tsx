@@ -12,7 +12,10 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { Button, Card, EmptyState, IconButton, Modal, PageHeader } from "@aethervault/ui-kit";
+import { Button, Card, EmptyState, IconButton, Modal } from "@aethervault/ui-kit";
+import { ModernPageHeader } from "../components/ModernPageHeader";
+import { categoryIcon } from "../lib/categoryIcon";
+import { tintFor } from "./home/homeTheme";
 import type { Category, Library, TitleSummary } from "@aethervault/shared-types";
 import { categoryApi } from "../features/category/api";
 import { titleApi } from "../features/title/api";
@@ -251,8 +254,11 @@ export function CategoryPage() {
           le fond statique de CETTE page (ci-dessus, resté à 0) sans jamais
           couvrir ce contenu. */}
       <div className="avm-category-page__content" style={{ position: "relative", zIndex: 3 }}>
-        <PageHeader
-          title={`${category.icon ?? ""} ${category.name}`.trim()}
+        <ModernPageHeader
+          icon={categoryIcon(category.key, 26)}
+          tint={tintFor(category.key)}
+          kicker="Catalogue"
+          title={category.name}
           description={
             categoryLibraries.length > 0
               ? `${categoryLibraries.length} bibliothèque(s) — ${titles?.length ?? 0} titre(s)`

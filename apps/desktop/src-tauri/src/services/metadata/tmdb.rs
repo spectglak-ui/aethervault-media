@@ -206,9 +206,7 @@ pub struct TmdbSearchCandidate {
 }
 
 pub struct TmdbDetails {
-    pub name: String,
     pub description: Option<String>,
-    pub year: Option<i32>,
     pub rating: Option<f64>,
     pub genres: Vec<String>,
     pub studios: Vec<String>,
@@ -375,24 +373,11 @@ impl TmdbClient {
             "&append_to_response=credits,external_ids",
             &self.lang,
         ))?;
-        let name = v
-            .get("title")
-            .or_else(|| v.get("name"))
-            .and_then(|x| x.as_str())
-            .unwrap_or_default()
-            .to_string();
         let mut overview = v
             .get("overview")
             .and_then(|x| x.as_str())
             .unwrap_or_default()
             .to_string();
-        let date = v
-            .get("release_date")
-            .or_else(|| v.get("first_air_date"))
-            .and_then(|x| x.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let year = date.get(0..4).and_then(|y| y.parse::<i32>().ok());
         let rating = v.get("vote_average").and_then(|x| x.as_f64());
         if overview.is_empty() && self.lang != "en-US" {
             if let Some(en) = get_json(&self.url(&path, "", "en-US")) {
@@ -469,13 +454,11 @@ impl TmdbClient {
                 .map(|()| dest.to_string_lossy().to_string())
         });
         Some(TmdbDetails {
-            name,
             description: if overview.is_empty() {
                 None
             } else {
                 Some(overview)
             },
-            year,
             rating,
             genres,
             studios,

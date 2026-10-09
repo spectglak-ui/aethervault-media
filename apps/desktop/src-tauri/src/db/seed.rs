@@ -40,6 +40,7 @@ const SYSTEM_CATEGORIES: &[(&str, &str, &str)] = &[
     ("movies", "Films", "🎬"),
     ("series", "Séries", "📺"),
     ("anime", "Anime", "🌸"),
+    ("tv", "TV", "📡"),  // ← AJOUTER ICI
     ("documentaries", "Documentaires", "🎥"),
     ("private", "Privé", "🔒"),
 ];

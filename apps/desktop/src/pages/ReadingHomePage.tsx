@@ -12,6 +12,8 @@ import {
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { readingApi, type ContinueReading, type ReadingLibrary, type ReadingLibraryKind } from "../features/reading/api";
 import { Trash2 } from "lucide-react";
+import { ModernPageHeader } from "../components/ModernPageHeader";
+import "./reading-modern.css";
 
 const KIND_LABEL: Record<ReadingLibraryKind, string> = {
   manga: "Manga",
@@ -66,31 +68,24 @@ export function ReadingHomePage() {
 
   return (
     <div style={styles.page}>
-      {/* ----- Hero ----- */}
-      <div style={styles.hero}>
-        <div style={styles.heroGlow} />
-        <div style={styles.heroInner}>
-          <div style={styles.heroIconWrap}>
-            <BookOpen size={28} style={{ color: "#fff" }} />
-          </div>
-          <div style={{ minWidth: 0 }}>
-            <h1 style={styles.heroTitle}>Lecture</h1>
-            <p style={styles.heroSub}>
-              {libraries.length === 0
-                ? "Créez votre première bibliothèque pour commencer à lire."
-                : `${libraries.length} bibliothèque${libraries.length > 1 ? "s" : ""} · votre espace de lecture personnel`}
-            </p>
-          </div>
-          <button
-            type="button"
-            style={styles.heroCta}
-            onClick={() => setCreateOpen(true)}
-          >
+      {/* ----- En-tête moderne ----- */}
+      <ModernPageHeader
+        icon={<BookOpen size={26} />}
+        tint="245, 158, 11"
+        kicker="Votre espace de lecture"
+        title="Lecture"
+        description={
+          libraries.length === 0
+            ? "Créez votre première bibliothèque pour commencer à lire."
+            : `${libraries.length} bibliothèque${libraries.length > 1 ? "s" : ""} · votre espace de lecture personnel`
+        }
+        actions={
+          <button type="button" style={styles.heroCta} onClick={() => setCreateOpen(true)}>
             <Plus size={18} strokeWidth={2.4} />
             <span>Nouvelle bibliothèque</span>
           </button>
-        </div>
-      </div>
+        }
+      />
 
       {error && <p style={styles.error}>{error}</p>}
 
@@ -114,6 +109,7 @@ export function ReadingHomePage() {
                 <button
                   key={`continue-${entry.book.id}`}
                   type="button"
+                  className="avm-hxr-card"
                   style={styles.continueCard}
                   onClick={() => navigate(`/reading/book/${entry.book.id}`)}
                   title={`${entry.book.title} · ${formatProgressLabel(entry.current_page, entry.total_pages)}`}
@@ -204,7 +200,7 @@ export function ReadingHomePage() {
 function LibraryCard({ library, onOpen }: { library: ReadingLibrary; onOpen: () => void }) {
   const accent = library.accent_color ?? "#7c5cff";
   return (
-    <button type="button" style={styles.libraryCard} onClick={onOpen}>
+    <button type="button" className="avm-hxr-card" style={styles.libraryCard} onClick={onOpen}>
       <div
         style={{
           ...styles.libraryBanner,

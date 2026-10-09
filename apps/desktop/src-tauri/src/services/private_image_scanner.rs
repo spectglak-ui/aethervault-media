@@ -252,6 +252,9 @@ fn write_gathered_file(
 /// persiste le résultat — unité réutilisable telle quelle par un futur
 /// watcher (un événement = un appel ici), sans jamais avoir à reparcourir
 /// tout un dossier ni à passer par le chemin parallélisé de `scan_library`.
+// Pas encore appelée : équivalent image de `private_video_scanner::upsert_one_file`,
+// conservée pour le futur watcher décrit ci-dessus.
+#[allow(dead_code)]
 pub fn upsert_one_file(
     conn: &Connection,
     private_library_id: i64,

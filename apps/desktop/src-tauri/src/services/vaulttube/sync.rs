@@ -200,7 +200,7 @@ impl VaultTubeSync {
                     duration,
                     published_at,
                     &sub.source,
-                    detect_short(&video),
+                    is_short,
                 );
                 count += 1;
             }

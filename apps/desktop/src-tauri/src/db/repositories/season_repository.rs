@@ -32,15 +32,6 @@ pub fn list_by_title(conn: &Connection, title_id: i64) -> rusqlite::Result<Vec<S
     rows.collect()
 }
 
-pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<SeasonRecord>> {
-    conn.query_row(
-        "SELECT id, title_id, season_number, name FROM seasons WHERE id = ?1",
-        rusqlite::params![id],
-        map_row,
-    )
-    .optional()
-}
-
 /// Nombre d'épisodes d'une Saison — utilisé pour l'affichage (doc §6.3,
 /// page Série) sans avoir à charger la liste complète des épisodes.
 pub fn count_episodes(conn: &Connection, season_id: i64) -> rusqlite::Result<i64> {

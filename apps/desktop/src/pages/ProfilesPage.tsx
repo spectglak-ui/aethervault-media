@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Eye, EyeOff, Pencil, Plus, Trash2, UserPlus, Users } from "lucide-react";
-import { Avatar, Button, EmptyState, IconButton, PageHeader } from "@aethervault/ui-kit";
+import { Avatar, Button, EmptyState, IconButton } from "@aethervault/ui-kit";
+import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
+import { Users as UsersIcon } from "lucide-react";
 import type { Profile } from "@aethervault/shared-types";
 import { useActiveProfile } from "../profile/ActiveProfileContext";
 import { ProfileFormModal } from "../features/profile/ProfileFormModal";
@@ -215,7 +217,10 @@ export function ProfilesPage() {
 
   return (
     <div>
-      <PageHeader
+      <ModernPageHeader
+        icon={<UsersIcon size={26} />}
+        tint={PAGE_TINTS.profiles}
+        kicker="Compte"
         title="Profils & Amis"
         description="Gérez vos profils locaux et votre liste d'amis pour partager des médias et voir ce qu'ils regardent."
         actions={

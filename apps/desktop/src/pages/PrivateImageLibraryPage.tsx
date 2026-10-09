@@ -8,6 +8,7 @@ import { privacyApi } from "../features/privacy/api";
 import { privateImageApi } from "../features/privateImage/api";
 import { PrivateThumbnailImage } from "../features/privateImage/PrivateThumbnailImage";
 import "./privateGallery.css";
+import "./private-modern.css";
 
 function describeSummary(summary: {
   added: number;
