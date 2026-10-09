@@ -11,7 +11,6 @@ export interface AfySavedVideo {
   channel: string | null;
   duration_seconds: number | null;
   added_at: number; // epoch secondes
-  added_at: number; // epoch secondes
   plays?: number;   // 0.8.1 : nombre de visionnages (pour la page Tendances)
 }
 

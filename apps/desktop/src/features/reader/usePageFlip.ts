@@ -186,7 +186,7 @@ export function usePageFlip({
         });
         const clamped = Math.min(Math.max(startPage, 0), images.length - 1);
         const target = plan.origToDisp[clamped];
-        pf.turnToPage(target >= 0 ? target : 0);
+        pf.flip(target >= 0 ? target : 0);
       });
     })();
 

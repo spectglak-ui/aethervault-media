@@ -27,7 +27,9 @@ export interface VaultTubeVideo {
   added_at: number;
   source: string;
   mode: PlaybackMode;
-  is_short: boolean;  // ← AJOUT
+  is_short: boolean;
+  channel?: string | null;
+  views?: number | null;
 }
 
 export interface VaultTubePlaylist {
