@@ -1,0 +1,9 @@
+diff --git a/apps/desktop/src/components/ModernPageHeader.tsx b/apps/desktop/src/components/ModernPageHeader.tsx
+new file mode 100644
+index 0000000..a1982c1
+--- /dev/null
++++ b/apps/desktop/src/components/ModernPageHeader.tsx
+@@ -0,0 +1,57 @@
++import type { CSSProperties, ReactNode } from "react";
++import "./modern-page.css";
++

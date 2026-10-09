@@ -1,0 +1,12 @@
+diff --git a/apps/desktop/src/pages/HomePage.tsx b/apps/desktop/src/pages/HomePage.tsx
+index 751e88d..dea36e9 100644
+--- a/apps/desktop/src/pages/HomePage.tsx
++++ b/apps/desktop/src/pages/HomePage.tsx
+@@ -1,6 +1,6 @@
+ import { useEffect, useState, type ReactNode } from "react";
+ import { useNavigate } from "react-router-dom";
+-import { Info, Play, Tv } from "lucide-react";
++import { Info, Play } from "lucide-react";
+ import { Button, PageHeader } from "@aethervault/ui-kit";
+ import type { Category, TitleDetails, TitleSummary } from "@aethervault/shared-types";
+ import { convertFileSrc, invoke } from "@tauri-apps/api/core";

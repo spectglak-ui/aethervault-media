@@ -1,0 +1,11 @@
+--- a/apps/desktop/src-tauri/src/services/vaulttube/sync.rs	2026-10-08 23:02:24.460118746 +0000
++++ b/apps/desktop/src-tauri/src/services/vaulttube/sync.rs	2026-10-08 23:02:24.538017368 +0000
+@@ -200,7 +200,7 @@
+                     duration,
+                     published_at,
+                     &sub.source,
+-                    detect_short(&video),
++                    is_short,
+                  );
+                  count += 1;
+              }

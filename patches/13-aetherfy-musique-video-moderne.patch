@@ -1,0 +1,12 @@
+diff --git a/apps/desktop/src/components/ModernPageHeader.tsx b/apps/desktop/src/components/ModernPageHeader.tsx
+index a1982c1..e854b55 100644
+--- a/apps/desktop/src/components/ModernPageHeader.tsx
++++ b/apps/desktop/src/components/ModernPageHeader.tsx
+@@ -2,7 +2,7 @@ import type { CSSProperties, ReactNode } from "react";
+ import "./modern-page.css";
+ 
+ interface ModernPageHeaderProps {
+-  title: string;
++  title: ReactNode;
+   description?: ReactNode;
+   actions?: ReactNode;
