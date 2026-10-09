@@ -1,0 +1,28 @@
+--- a/apps/desktop/src/player/PlayerContext.tsx	2026-09-21 22:53:52.707494092 +0000
++++ b/apps/desktop/src/player/PlayerContext.tsx	2026-09-21 22:53:52.708738759 +0000
+@@ -165,6 +165,25 @@
+   const shuffleRef = useRef(shuffleEnabled);
+   shuffleRef.current = shuffleEnabled;
+ 
++  // CORRECTIF (lecture automatique — mauvais épisode/film) : la fenêtre
++  // "player" (PiP, aujourd'hui masquée côté frontend mais toujours
++  // PRÉ-CRÉÉE et active — voir commands::window::open_player_window)
++  // monte, elle aussi, un <PlayerProvider> complet et reçoit les MÊMES
++  // événements globaux ("player-state", "player-queue-changed") que la
++  // fenêtre "main", puisque `emit`/`app_handle.emit(...)` diffusent à
++  // toutes les fenêtres. Sans ce garde-fou, les DEUX fenêtres réagissent
++  // chacune de leur côté à un même événement de fin de lecture et
++  // décident, indépendamment, du média suivant (deux tirages aléatoires
++  // différents en mode Aléatoire, ou deux appels `player_load`
++  // concurrents en mode séquentiel) — c'est la cause du bug "épisode/
++  // film suivant aléatoire". Seule la fenêtre "main" reste autorisée à
++  // piloter l'avance automatique et la sauvegarde périodique de
++  // progression ; la fenêtre "player" continue de simplement refléter
++  // l'état reçu (elle garde ses boutons Suivant/Précédent manuels, qui
++  // restent des actions utilisateur ponctuelles et ne posent pas ce
++  // problème de duplication).
++  const isPipWindow = useRef(getWindowLabel() === "player").current;
++
+   const currentMedia =
+     queue.currentIndex !== null ? queue.items[queue.currentIndex] ?? null : null;
+ 

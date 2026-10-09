@@ -1,0 +1,4 @@
+--- a/apps/desktop/src/pages/SettingsPage.tsx	2026-10-09 12:30:00.000000000 +0000
++++ b/apps/desktop/src/pages/SettingsPage.tsx	2026-10-09 12:30:00.000000000 +0000
+@@ -1,5 +1,5 @@
+ // Placeholder pour 16-fonds-integres.patch
