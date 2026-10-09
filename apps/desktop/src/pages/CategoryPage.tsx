@@ -1,3 +1,4 @@
+import { useCategoryBackdropHidden } from "../hooks/useCategoryBackdropHidden";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
@@ -59,6 +60,7 @@ export function CategoryPage() {
   // animé global est actif, plutôt que de compter sur l'empilement
   // z-index (voir le hook pour le pourquoi).
   const animatedBackdropActive = useAnimatedBackdropActive();
+  const hideCategoryBackdrop = useCategoryBackdropHidden();
   const [category, setCategory] = useState<Category | null | undefined>(undefined);
   const [titles, setTitles] = useState<TitleSummary[] | null>(null);
   const [libraries, setLibraries] = useState<Library[]>([]);
@@ -224,7 +226,7 @@ export function CategoryPage() {
           contenu (z-index 0 vs 1) — indispensable au thème Transparent.
           FONCTIONNALITÉ : masqué quand le fond animé est actif, pour
           qu'il ne reste jamais visible par-dessus. */}
-      {wallpaper && !animatedBackdropActive && (
+      {wallpaper && !animatedBackdropActive && !hideCategoryBackdrop && (
         <div
           aria-hidden="true"
           style={{
