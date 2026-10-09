@@ -1,0 +1,9 @@
+--- a/apps/desktop/src/layout/TopBar.tsx	2026-10-08 18:15:20.404832777 +0000
++++ b/apps/desktop/src/layout/TopBar.tsx	2026-10-08 18:15:20.463157649 +0000
+@@ -1,4 +1,5 @@
+-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
++import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
++import { createPortal } from "react-dom";
+ import { useLocation, useNavigate } from "react-router-dom";
+ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+ import { Film } from "lucide-react";

@@ -1,0 +1,11 @@
+--- a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs	2026-10-08 12:10:16.710520797 +0000
++++ b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs	2026-10-08 12:10:16.768920134 +0000
+@@ -14,7 +14,7 @@
+ use std::ffi::{c_void, CStr, CString};
+ use std::os::raw::{c_char, c_int};
+ use std::path::{Path, PathBuf};
+-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
++use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+ use std::sync::{Arc, Mutex};
+ use std::time::{Duration, Instant};
+ use tauri::ipc::{Channel, InvokeResponseBody};

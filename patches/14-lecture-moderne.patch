@@ -1,0 +1,13 @@
+diff --git a/apps/desktop/src/pages/ReadingHomePage.tsx b/apps/desktop/src/pages/ReadingHomePage.tsx
+index d7629de..5968366 100644
+--- a/apps/desktop/src/pages/ReadingHomePage.tsx
++++ b/apps/desktop/src/pages/ReadingHomePage.tsx
+@@ -12,6 +12,8 @@ import {
+ import { convertFileSrc } from "@tauri-apps/api/core";
+ import { readingApi, type ContinueReading, type ReadingLibrary, type ReadingLibraryKind } from "../features/reading/api";
+ import { Trash2 } from "lucide-react";
++import { ModernPageHeader } from "../components/ModernPageHeader";
++import "./reading-modern.css";
+ 
+ const KIND_LABEL: Record<ReadingLibraryKind, string> = {
+   manga: "Manga",

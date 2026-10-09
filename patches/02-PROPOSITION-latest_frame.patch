@@ -1,0 +1,15 @@
+diff --git a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+index 3787625..8fa1b53 100644
+--- a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
++++ b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+@@ -75,10 +75,6 @@ struct SurfaceState {
+     render_thread: Option<std::thread::JoinHandle<()>>,
+     size: Arc<(AtomicI32, AtomicI32)>,
+     in_flight_frames: Arc<AtomicI32>,
+-    /// Repli PiP : dernière image rendue, partagée avec le thread de rendu
+-    /// (`sw_render.rs`) et lue par la commande `player_pull_frame` pour les
+-    /// fenêtres dont le canal Tauri est muet (fenêtre détachée).
+-    latest_frame: Arc<Mutex<Vec<u8>>>,
+ }
+ 
+ /// 0.5.3 : « start gate » — pour les flux réseau, la lecture reste en

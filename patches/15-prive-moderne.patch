@@ -1,0 +1,11 @@
+diff --git a/apps/desktop/src/pages/PrivateAlbumPage.tsx b/apps/desktop/src/pages/PrivateAlbumPage.tsx
+index 88744f9..ae26b84 100644
+--- a/apps/desktop/src/pages/PrivateAlbumPage.tsx
++++ b/apps/desktop/src/pages/PrivateAlbumPage.tsx
+@@ -1,7 +1,8 @@
+ import { useCallback, useEffect, useState, type MouseEvent } from "react";
+ import { useNavigate, useParams } from "react-router-dom";
+ import { Image as ImagePlaceholder, Pencil, RotateCcw, Star, Trash2 } from "lucide-react";
+-import { EmptyState, IconButton, PageHeader } from "@aethervault/ui-kit";
++import { EmptyState, IconButton } from "@aethervault/ui-kit";
++import { ModernPageHeader } from "../components/ModernPageHeader";

@@ -1,0 +1,24 @@
+diff --git a/apps/desktop/src/pages/AetherFyGatewayPage.tsx b/apps/desktop/src/pages/AetherFyGatewayPage.tsx
+new file mode 100644
+index 0000000..34096e4
+--- /dev/null
++++ b/apps/desktop/src/pages/AetherFyGatewayPage.tsx
+@@ -0,0 +1,223 @@
++import {
++  useEffect,
++  useRef,
++  useState,
++  type CSSProperties,
++  type KeyboardEvent,
++  type MouseEvent,
++} from "react";
++import { useNavigate } from "react-router-dom";
++import { ArrowRight, Music, Radio, Video } from "lucide-react";
++import {
++  vaultTubeApi,
++  type PlaybackMode,
++  type UserPlaylist,
++  type VaultTubeSubscription,
++} from "../features/vaulttube/api";
++import "./aetherfy-gateway.css";
++

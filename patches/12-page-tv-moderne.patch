@@ -1,0 +1,13 @@
+diff --git a/apps/desktop/src/pages/TvPage.tsx b/apps/desktop/src/pages/TvPage.tsx
+index a1e366d..701af89 100644
+--- a/apps/desktop/src/pages/TvPage.tsx
++++ b/apps/desktop/src/pages/TvPage.tsx
+@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
+ import { Tv, Plus, Link2, Trash2, Download } from "lucide-react";
+ import { tvApi, IPTV_FR_URL, type TvChannel } from "../features/tv/api";
+ import { TvStreamGuard } from "../features/tv/TvStreamGuard";
++import { ModernPageHeader } from "../components/ModernPageHeader";
++import "./modern-tv.css";
+ 
+ export function TvPage() {
+   const navigate = useNavigate();

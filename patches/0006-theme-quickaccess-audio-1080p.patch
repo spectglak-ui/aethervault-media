@@ -1,0 +1,15 @@
+--- a/apps/desktop/src/main.tsx	2026-09-26 12:31:00.069873542 +0000
++++ b/apps/desktop/src/main.tsx	2026-09-26 12:31:00.074983258 +0000
+@@ -3,6 +3,12 @@
+ import ReactDOM from "react-dom/client";
+ import App from "./App";
+ import "./styles/global.css";
++import { applyPersistedTheme } from "./theme/persistedCustomTheme";
++
++// CORRECTIF (le thème se réinitialise au redémarrage) : réapplique, avant
++// le premier rendu, le thème choisi dans Paramètres → Personnalisation
++// lors d'une session précédente (voir SettingsPage.tsx).
++applyPersistedTheme();
+ 
+ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+   <React.StrictMode>

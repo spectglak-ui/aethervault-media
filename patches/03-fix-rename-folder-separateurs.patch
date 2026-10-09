@@ -1,0 +1,28 @@
+diff --git a/apps/desktop/src-tauri/src/db/repositories/private_image_repository.rs b/apps/desktop/src-tauri/src/db/repositories/private_image_repository.rs
+index b40586f..f92c2ef 100644
+--- a/apps/desktop/src-tauri/src/db/repositories/private_image_repository.rs
++++ b/apps/desktop/src-tauri/src/db/repositories/private_image_repository.rs
+@@ -346,19 +346,10 @@ pub fn rename_folder(
+     // 6. Mise à jour du folder.
+     update_folder_path(conn, folder_id, &new_path)?;
+     
+-    // 7. Mise à jour en masse des fichiers contenus (leur chemin absolu
+-    //    commence par l'ancien chemin du dossier).
+-    let old_prefix = if old_path.ends_with('/') || old_path.ends_with('\\') {
+-        old_path.clone()
+-    } else {
+-        format!("{old_path}/")
+-    };
+-    let new_prefix = if new_path.ends_with('/') || new_path.ends_with('\\') {
+-        new_path.clone()
+-    } else {
+-        format!("{new_path}/")
+-    };
+-    
++    // 7. Mise à jour en masse des fichiers contenus : leur chemin absolu
++    //    commence par l'ancien chemin du dossier. Le séparateur n'est jamais
++    //    supposé : sous Windows `WalkDir` produit des `\`, alors qu'un dossier
++    //    peut avoir été enregistré avec des `/` (voir `rebase_path`).
+     let mut stmt = conn.prepare(
+         "SELECT id, path FROM private_image_files WHERE folder_id = ?1",
+     )?;

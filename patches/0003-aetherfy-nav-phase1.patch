@@ -1,0 +1,28 @@
+--- a/apps/desktop/src/pages/VaultTubePage.tsx	2026-09-24 08:35:16.065184363 +0000
++++ b/apps/desktop/src/pages/VaultTubePage.tsx	2026-09-24 08:35:16.066242329 +0000
+@@ -303,10 +303,24 @@
+   margin: "26px 0 14px",
+ };
+ 
++/**
++ * FONCTIONNALITÉ (refonte UI AetherFy, Phase 1 — séparation navigation) :
++ * `defaultMode` filtre l'affichage sur les chaînes/playlists de ce mode
++ * (`sub.mode`/`p.mode`, déjà stocké par élément — aucun changement
++ * backend nécessaire). `undefined` = comportement d'origine, tout
++ * confondu (route `/vaulttube` historique, conservée pour compatibilité
++ * des liens existants). Voir `router.tsx` (`/vaulttube/video`,
++ * `/vaulttube/music`) et `layout/Sidebar.tsx` pour les deux nouvelles
++ * entrées de navigation.
++ */
++export interface VaultTubePageProps {
++  defaultMode?: PlaybackMode;
++}
++
+ /** 0.4.0 — AetherFy : hub multi-sources façon Spotify (YouTube,
+  * Dailymotion, Vimeo, PeerTube) — abonnements, playlists locales avec
+  * mode musique/vidéo, recherche unifiée, lecture en un clic. */
+-export function VaultTubePage() {
++export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+   const navigate = useNavigate();
+   const { playQueue } = usePlayer();
+ 
