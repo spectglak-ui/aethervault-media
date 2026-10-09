@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { getBuiltinImage, getBuiltinVideo } from "../lib/builtinBackdrops";
 
 /**
  * 0.5.4 — Fond d'arrière-plan GLOBAL : une couche FIXE plein-fenêtre,
@@ -25,10 +26,15 @@ export function AppBackdrop() {
   const [backdrop, setBackdrop] = useState<string | null>(null);
   const [videoBackdrop, setVideoBackdrop] = useState<string | null>(null);
   const [videoEnabled, setVideoEnabled] = useState(false);
+  // Fonds intégrés (Paramètres) : utilisés seulement en l'absence de fond personnel.
+  const [builtinImage, setBuiltinImageState] = useState(getBuiltinImage);
+  const [builtinVideo, setBuiltinVideoState] = useState(getBuiltinVideo);
 
   useEffect(() => {
     let alive = true;
     const refresh = () => {
+      setBuiltinImageState(getBuiltinImage());
+      setBuiltinVideoState(getBuiltinVideo());
       invoke<string | null>("get_home_backdrop")
         .then((path) => {
           if (alive) setBackdrop(path);
@@ -59,12 +65,14 @@ export function AppBackdrop() {
     };
   }, []);
 
-  if (videoEnabled && videoBackdrop) {
+  const videoSrc = videoBackdrop ? convertFileSrc(videoBackdrop) : (builtinVideo?.src ?? null);
+  if (videoEnabled && videoSrc) {
     return (
       <video
+        key={videoSrc}
         className="avm-app-backdrop avm-app-backdrop--video"
         aria-hidden="true"
-        src={convertFileSrc(videoBackdrop)}
+        src={videoSrc}
         autoPlay
         loop
         muted
@@ -73,13 +81,12 @@ export function AppBackdrop() {
     );
   }
 
+  const imageSrc = backdrop ? convertFileSrc(backdrop) : (builtinImage?.src ?? null);
   return (
     <div
       className="avm-app-backdrop"
       aria-hidden="true"
-      style={
-        backdrop ? { backgroundImage: `url("${convertFileSrc(backdrop)}")` } : undefined
-      }
+      style={imageSrc ? { backgroundImage: `url("${imageSrc}")` } : undefined}
     />
   );
 }

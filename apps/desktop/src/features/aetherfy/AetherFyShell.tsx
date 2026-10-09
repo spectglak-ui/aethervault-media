@@ -2,6 +2,7 @@ import { type ReactNode } from "react";
 import { Outlet } from "react-router-dom";
 import { AetherFySidebar } from "./AetherFySidebar";
 import { AetherFyTopbar } from "./AetherFyTopbar";
+import "./aetherfy-modern.css";
 
 /**
  * Layout dédié AetherFy : sidebar + topbar + zone de contenu.

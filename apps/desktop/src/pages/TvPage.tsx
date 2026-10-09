@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { Tv, Plus, Link2, Trash2, Download } from "lucide-react";
 import { tvApi, IPTV_FR_URL, type TvChannel } from "../features/tv/api";
 import { TvStreamGuard } from "../features/tv/TvStreamGuard";
+import { ModernPageHeader } from "../components/ModernPageHeader";
+import "./modern-tv.css";
 
 export function TvPage() {
   const navigate = useNavigate();
@@ -73,29 +75,33 @@ export function TvPage() {
 
   return (
     <div style={{ padding: "8px 24px 48px" }}>
-      <div className="afy-page-head">
-        <h1>
-          <Tv size={20} style={{ color: "#2ec4b6" }} /> TV
-        </h1>
-        <div className="afy-page-head__actions">
-          <TvStreamGuard />
-          <button
-            type="button"
-            className="afy-btn-primary"
-            disabled={importing}
-            onClick={() => void doImport(IPTV_FR_URL)}
-            title="Importe les chaînes françaises publiques agrégées par iptv-org"
-          >
-            <Download size={14} /> {importing ? "Import…" : "Chaînes FR officielles"}
-          </button>
-          <button type="button" className="afy-btn-secondary" onClick={() => void importPrompt()}>
-            <Link2 size={14} /> Importer M3U
-          </button>
-          <button type="button" className="afy-btn-secondary" onClick={() => void addManual()}>
-            <Plus size={14} /> Ajouter une chaîne
-          </button>
-        </div>
-      </div>
+      <ModernPageHeader
+        icon={<Tv size={26} />}
+        tint="56, 189, 248"
+        kicker="Télévision en direct"
+        title="TV"
+        description="Chaînes publiques en flux HLS, lues directement dans AetherVault."
+        actions={
+            <div className="afy-page-head__actions">
+              <TvStreamGuard />
+              <button
+                type="button"
+                className="afy-btn-primary"
+                disabled={importing}
+                onClick={() => void doImport(IPTV_FR_URL)}
+                title="Importe les chaînes françaises publiques agrégées par iptv-org"
+              >
+                <Download size={14} /> {importing ? "Import…" : "Chaînes FR officielles"}
+              </button>
+              <button type="button" className="afy-btn-secondary" onClick={() => void importPrompt()}>
+                <Link2 size={14} /> Importer M3U
+              </button>
+              <button type="button" className="afy-btn-secondary" onClick={() => void addManual()}>
+                <Plus size={14} /> Ajouter une chaîne
+              </button>
+            </div>
+        }
+      />
       {msg && (
         <div style={{ margin: "10px 0", fontSize: 13, color: "#93a8af" }}>{msg}</div>
       )}

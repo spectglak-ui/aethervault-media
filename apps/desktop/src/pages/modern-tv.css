@@ -1,0 +1,60 @@
+/* ==========================================================================
+   Page TV — même langage que l'accueil et les autres pages modernisées.
+   Portée : `:has(.avm-hxp-header)` (la page affiche ModernPageHeader), donc
+   les autres pages AetherFy qui utilisent `.afy-sub-card` / `.afy-chip`
+   gardent leur style. Propriétés de peinture uniquement.
+   ========================================================================== */
+
+.avm-shell__content:has(.avm-hxp-header) .afy-chip {
+  padding: 8px 16px;
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-text) 12%, transparent);
+  transition:
+    background 0.25s ease,
+    border-color 0.25s ease,
+    transform 0.25s ease,
+    box-shadow 0.25s ease;
+}
+.avm-shell__content:has(.avm-hxp-header) .afy-chip:hover {
+  transform: translateY(-1px);
+  border-color: rgba(56, 189, 248, 0.6);
+}
+.avm-shell__content:has(.avm-hxp-header) .afy-chip--active {
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.45), rgba(46, 196, 182, 0.35));
+  border-color: rgba(56, 189, 248, 0.8);
+  color: #fff;
+  box-shadow: 0 0 22px rgba(56, 189, 248, 0.3);
+}
+
+/* Cartes de chaînes */
+.avm-shell__content:has(.avm-hxp-header) .afy-sub-card {
+  border-radius: 20px;
+  background:
+    linear-gradient(165deg, rgba(56, 189, 248, 0.12) 0%, transparent 55%),
+    color-mix(in srgb, var(--color-surface) 86%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-text) 11%, transparent);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
+  transition:
+    transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 0.3s ease,
+    box-shadow 0.35s ease;
+}
+.avm-shell__content:has(.avm-hxp-header) .afy-sub-card:hover {
+  transform: translateY(-5px);
+  border-color: rgba(56, 189, 248, 0.7);
+  box-shadow:
+    0 20px 40px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(56, 189, 248, 0.35),
+    0 0 40px rgba(56, 189, 248, 0.22);
+}
+
+/* États vides / chargement */
+.avm-shell__content:has(.avm-hxp-header) .afy-empty {
+  margin-top: 16px;
+  border-radius: 22px;
+  border: 1px dashed color-mix(in srgb, var(--color-text) 18%, transparent);
+  background: color-mix(in srgb, var(--color-surface) 70%, transparent);
+}
+.avm-shell__content:has(.avm-hxp-header) .afy-empty__icon {
+  color: rgb(56, 189, 248);
+}

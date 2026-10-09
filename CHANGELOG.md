@@ -2,6 +2,22 @@
 
 Toutes les modifications notables apportées à ce projet seront documentées dans ce fichier.
 
+## [0.7.0 « Orbite »] - 2026-10-09
+
+### Ajouté
+- **Nouvelle identité visuelle « Orbite »** : page de transition AetherFy (choix Vidéo / Musique), accueil repensé (« À la une », « Vos univers », « Ajouts récents », « En chiffres »), en-têtes et surfaces modernes sur les pages Catégories, Paramètres, Profils, Time Capsule, Partage, Collections, Explorer, TV, AetherFy Vidéo et Musique, Lecture et Privé
+- **Fonds intégrés** : image « Voie lactée » et fond animé « Ciel de carrés », sélectionnables dans Paramètres (fonds personnels toujours possibles)
+
+### Corrigé
+- **Fuite audio HLS** : l'audio d'une chaîne TV pouvait continuer 5 à 10 s après le retour sur la grille (rechargement différé d'`attach_surface` relancé après l'arrêt)
+- **Menu de suggestions de la recherche** : toujours affiché au premier plan
+- **Barre latérale** : entrée TV en double (menant à `/category/tv`) retirée
+- **Avertissements Rust** : plus aucun warning à la compilation
+
+### Changé
+- **Version** : 0.7.0 « Orbite » (remplace l'étiquette « Alpha » affichée dans Paramètres)
+- **Fond d'AetherFy Vidéo** : transparent, c'est le fond du logiciel qui apparaît
+
 ## [0.5.7] - 2026-09-18
 
 ### Ajouté

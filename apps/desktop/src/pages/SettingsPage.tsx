@@ -4,7 +4,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AppStatus, VaultStatus } from "@aethervault/shared-types";
-import { Button, IconButton, PageHeader, useTheme } from "@aethervault/ui-kit";
+import { Button, IconButton, useTheme } from "@aethervault/ui-kit";
+import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
+import { Settings as SettingsIcon } from "lucide-react";
+import {
+  BUILTIN_IMAGES,
+  BUILTIN_VIDEOS,
+  getBuiltinImage,
+  getBuiltinVideo,
+  setBuiltinImage,
+  setBuiltinVideo,
+} from "../lib/builtinBackdrops";
+import "../components/backdrop-presets.css";
 import { useActiveProfile } from "../profile/ActiveProfileContext";
 import { privacyApi } from "../features/privacy/api";
 import "./pages.css";
@@ -311,6 +322,7 @@ function QuickAccessSection() {
 
 function HomeBackdropSection() {
   const [backdrop, setBackdrop] = useState<string | null>(null);
+  const [builtinId, setBuiltinId] = useState<string | null>(() => getBuiltinImage()?.id ?? null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -332,6 +344,8 @@ function HomeBackdropSection() {
       await invoke("set_home_backdrop", { fileName: file.name, bytes });
       const refreshed = await invoke<string | null>("get_home_backdrop");
       setBackdrop(refreshed);
+      setBuiltinImage(null); // le fond personnel prend la place du fond intégré
+      setBuiltinId(null);
       window.dispatchEvent(new Event("avm-home-backdrop-changed"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Enregistrement impossible.");
@@ -354,12 +368,51 @@ function HomeBackdropSection() {
     }
   };
 
+  /** Choisit un fond intégré (ou `null` = fond par défaut) : retire le fond personnel. */
+  const selectBuiltin = async (id: string | null) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("clear_home_backdrop");
+      setBackdrop(null);
+      setBuiltinImage(id);
+      setBuiltinId(id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Changement impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <section className="avm-settings-section">
       <h2>Fond de la page d'accueil</h2>
       <p className="avm-settings-muted">
         Image personnelle en arrière-plan de l'Accueil, assombrie pour garder les cartes lisibles.
       </p>
+      <div className="avm-bd-presets" role="group" aria-label="Fonds intégrés">
+        <button
+          type="button"
+          className={`avm-bd-preset${!backdrop && !builtinId ? " avm-bd-preset--active" : ""}`}
+          onClick={() => void selectBuiltin(null)}
+          disabled={busy}
+        >
+          <span className="avm-bd-preset__thumb avm-bd-preset__thumb--default" />
+          <span className="avm-bd-preset__label">Par défaut</span>
+        </button>
+        {BUILTIN_IMAGES.map((preset) => (
+          <button
+            key={preset.id}
+            type="button"
+            className={`avm-bd-preset${!backdrop && builtinId === preset.id ? " avm-bd-preset--active" : ""}`}
+            onClick={() => void selectBuiltin(preset.id)}
+            disabled={busy}
+          >
+            <img className="avm-bd-preset__thumb" src={preset.src} alt="" />
+            <span className="avm-bd-preset__label">{preset.label}</span>
+          </button>
+        ))}
+      </div>
       <input
         ref={fileInputRef}
         type="file"
@@ -404,6 +457,7 @@ function HomeBackdropSection() {
  */
 function AnimatedBackdropSection() {
   const [videoPath, setVideoPath] = useState<string | null>(null);
+  const [builtinVideoId, setBuiltinVideoId] = useState<string | null>(() => getBuiltinVideo()?.id ?? null);
   const [enabled, setEnabled] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -438,6 +492,8 @@ function AnimatedBackdropSection() {
       await invoke("set_home_backdrop_video", { sourcePath: selected });
       const refreshed = await invoke<string | null>("get_home_backdrop_video");
       setVideoPath(refreshed);
+      setBuiltinVideo(null); // la vidéo personnelle prend la place de la vidéo intégrée
+      setBuiltinVideoId(null);
       window.dispatchEvent(new Event("avm-home-backdrop-changed"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Enregistrement impossible.");
@@ -474,6 +530,24 @@ function AnimatedBackdropSection() {
     }
   };
 
+  /** Choisit une vidéo intégrée : retire la vidéo personnelle et active le fond animé. */
+  const selectBuiltinVideo = async (id: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("clear_home_backdrop_video");
+      await invoke("set_backdrop_video_enabled", { enabled: true });
+      setVideoPath(null);
+      setEnabled(true);
+      setBuiltinVideo(id);
+      setBuiltinVideoId(id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Changement impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <section className="avm-settings-section">
       <h2>Fond animé</h2>
@@ -481,6 +555,32 @@ function AnimatedBackdropSection() {
         Remplace le fond image par une vidéo en boucle, partout dans le logiciel (pas seulement
         l'Accueil). Formats acceptés : .mp4, .webm — 300 Mo maximum.
       </p>
+      <div className="avm-bd-presets" role="group" aria-label="Fonds animés intégrés">
+        {BUILTIN_VIDEOS.map((preset) => (
+          <button
+            key={preset.id}
+            type="button"
+            className={`avm-bd-preset${!videoPath && builtinVideoId === preset.id ? " avm-bd-preset--active" : ""}`}
+            onClick={() => void selectBuiltinVideo(preset.id)}
+            disabled={busy}
+          >
+            <video className="avm-bd-preset__thumb" src={preset.src} autoPlay loop muted playsInline />
+            <span className="avm-bd-preset__label">{preset.label}</span>
+          </button>
+        ))}
+        {builtinVideoId && !videoPath && (
+          <Button
+            variant="ghost"
+            onClick={() => {
+              setBuiltinVideo(null);
+              setBuiltinVideoId(null);
+            }}
+            disabled={busy}
+          >
+            Retirer
+          </Button>
+        )}
+      </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         {videoPath && (
           <video
@@ -505,7 +605,7 @@ function AnimatedBackdropSection() {
         <input
           type="checkbox"
           checked={enabled}
-          disabled={!loaded || busy || !videoPath}
+          disabled={!loaded || busy || (!videoPath && !builtinVideoId)}
           onChange={(e) => void toggleEnabled(e.target.checked)}
         />
         Utiliser le fond animé (remplace le fond image partout, tant qu'il est activé)
@@ -1178,7 +1278,8 @@ function TypographySection() {
 function HidePrivateSection() {
   const [hidePrivate, setHidePrivate] = useState(() => {
     try {
-      return localStorage.getItem("avm-hide-private") === "1";
+      // 0.9.14 — ALIGNEMENT avec HomePage : même clé "avm-home-hide-private"
+      return localStorage.getItem("avm-home-hide-private") === "1";
     } catch {
       return false;
     }
@@ -1187,11 +1288,12 @@ function HidePrivateSection() {
   const toggle = (value: boolean) => {
     setHidePrivate(value);
     try {
-      localStorage.setItem("avm-hide-private", value ? "1" : "0");
+      localStorage.setItem("avm-home-hide-private", value ? "1" : "0");
     } catch {
       // best-effort
     }
-    window.dispatchEvent(new Event("avm-hide-private-changed"));
+    // 0.9.14 — ALIGNEMENT avec HomePage : même événement
+    window.dispatchEvent(new Event("avm-home-hide-private-changed"));
   };
 
   return (
@@ -1216,7 +1318,10 @@ function HidePrivateSection() {
 export function SettingsPage() {
   return (
     <div>
-      <PageHeader
+      <ModernPageHeader
+        icon={<SettingsIcon size={26} />}
+        tint={PAGE_TINTS.settings}
+        kicker="Configuration"
         title="Paramètres"
         description="Apparence, sécurité du coffre privé et informations système."
       />

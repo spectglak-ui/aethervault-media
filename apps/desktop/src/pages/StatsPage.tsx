@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { BarChart3, Trash2 } from "lucide-react";
-import { Button, EmptyState, PageHeader } from "@aethervault/ui-kit";
+import { Button, EmptyState } from "@aethervault/ui-kit";
+import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
+import { BarChart3 as StatsIcon } from "lucide-react";
 import type { Category, TitleSummary } from "@aethervault/shared-types";
 import { titleApi, type WatchSession, type WatchStats } from "../features/title/api";
 import { categoryApi } from "../features/category/api";
@@ -98,7 +100,10 @@ export function StatsPage() {
 
   return (
     <div>
-      <PageHeader
+      <ModernPageHeader
+        icon={<StatsIcon size={26} />}
+        tint={PAGE_TINTS.stats}
+        kicker="Vos statistiques"
         title="Time Capsule"
         description="Vos statistiques de visionnage : heures regardées, genres préférés, titres les plus vus."
         actions={

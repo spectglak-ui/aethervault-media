@@ -1,0 +1,202 @@
+diff --git a/apps/desktop/src/pages/ReadingHomePage.tsx b/apps/desktop/src/pages/ReadingHomePage.tsx
+index d7629de..5968366 100644
+--- a/apps/desktop/src/pages/ReadingHomePage.tsx
++++ b/apps/desktop/src/pages/ReadingHomePage.tsx
+@@ -12,6 +12,8 @@ import {
+ import { convertFileSrc } from "@tauri-apps/api/core";
+ import { readingApi, type ContinueReading, type ReadingLibrary, type ReadingLibraryKind } from "../features/reading/api";
+ import { Trash2 } from "lucide-react";
++import { ModernPageHeader } from "../components/ModernPageHeader";
++import "./reading-modern.css";
+ 
+ const KIND_LABEL: Record<ReadingLibraryKind, string> = {
+   manga: "Manga",
+@@ -66,31 +68,24 @@ export function ReadingHomePage() {
+ 
+   return (
+     <div style={styles.page}>
+-      {/* ----- Hero ----- */}
+-      <div style={styles.hero}>
+-        <div style={styles.heroGlow} />
+-        <div style={styles.heroInner}>
+-          <div style={styles.heroIconWrap}>
+-            <BookOpen size={28} style={{ color: "#fff" }} />
+-          </div>
+-          <div style={{ minWidth: 0 }}>
+-            <h1 style={styles.heroTitle}>Lecture</h1>
+-            <p style={styles.heroSub}>
+-              {libraries.length === 0
+-                ? "Créez votre première bibliothèque pour commencer à lire."
+-                : `${libraries.length} bibliothèque${libraries.length > 1 ? "s" : ""} · votre espace de lecture personnel`}
+-            </p>
+-          </div>
+-          <button
+-            type="button"
+-            style={styles.heroCta}
+-            onClick={() => setCreateOpen(true)}
+-          >
++      {/* ----- En-tête moderne ----- */}
++      <ModernPageHeader
++        icon={<BookOpen size={26} />}
++        tint="245, 158, 11"
++        kicker="Votre espace de lecture"
++        title="Lecture"
++        description={
++          libraries.length === 0
++            ? "Créez votre première bibliothèque pour commencer à lire."
++            : `${libraries.length} bibliothèque${libraries.length > 1 ? "s" : ""} · votre espace de lecture personnel`
++        }
++        actions={
++          <button type="button" style={styles.heroCta} onClick={() => setCreateOpen(true)}>
+             <Plus size={18} strokeWidth={2.4} />
+             <span>Nouvelle bibliothèque</span>
+           </button>
+-        </div>
+-      </div>
++        }
++      />
+ 
+       {error && <p style={styles.error}>{error}</p>}
+ 
+@@ -114,6 +109,7 @@ export function ReadingHomePage() {
+                 <button
+                   key={`continue-${entry.book.id}`}
+                   type="button"
++                  className="avm-hxr-card"
+                   style={styles.continueCard}
+                   onClick={() => navigate(`/reading/book/${entry.book.id}`)}
+                   title={`${entry.book.title} · ${formatProgressLabel(entry.current_page, entry.total_pages)}`}
+@@ -204,7 +200,7 @@ export function ReadingHomePage() {
+ function LibraryCard({ library, onOpen }: { library: ReadingLibrary; onOpen: () => void }) {
+   const accent = library.accent_color ?? "#7c5cff";
+   return (
+-    <button type="button" style={styles.libraryCard} onClick={onOpen}>
++    <button type="button" className="avm-hxr-card" style={styles.libraryCard} onClick={onOpen}>
+       <div
+         style={{
+           ...styles.libraryBanner,
+diff --git a/apps/desktop/src/pages/ReadingLibraryPage.tsx b/apps/desktop/src/pages/ReadingLibraryPage.tsx
+index 52b88ca..694ca84 100644
+--- a/apps/desktop/src/pages/ReadingLibraryPage.tsx
++++ b/apps/desktop/src/pages/ReadingLibraryPage.tsx
+@@ -1,4 +1,6 @@
+ import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
++import { ModernPageHeader } from "../components/ModernPageHeader";
++import "./reading-modern.css";
+ import { Link, useNavigate, useParams } from "react-router-dom";
+ import { convertFileSrc } from "@tauri-apps/api/core";
+ import {
+@@ -170,46 +172,32 @@ export function ReadingLibraryPage() {
+         <span style={styles.crumbCurrent}>{library.name}</span>
+       </nav>
+ 
+-      {/* En-tête */}
+-      <div style={styles.head}>
+-        <div style={styles.headMain}>
+-          <div
+-            style={{
+-              ...styles.headIcon,
+-              background: `linear-gradient(135deg, ${accent}55, ${accent}10)`,
+-              borderColor: `${accent}55`,
+-            }}
+-          >
+-            <BookOpen size={22} style={{ color: accent }} />
++      {/* En-tête moderne */}
++      <ModernPageHeader
++        icon={<BookOpen size={26} />}
++        tint={hexToTint(accent)}
++        kicker={kindLabel}
++        title={library.name}
++        description={`${availableBooks.length} livre${availableBooks.length > 1 ? "s" : ""}`}
++        actions={
++          <div style={styles.headActions}>
++            <button type="button" style={styles.ghostBtn} onClick={handleAddFolder} disabled={busy}>
++              <FolderPlus size={15} />
++              Ajouter un dossier
++            </button>
++            <button type="button" style={styles.ghostBtn} onClick={handleScan} disabled={busy}>
++              <RefreshCw size={15} />
++              {busy ? "Analyse…" : "Scanner"}
++            </button>
++            <button type="button" style={styles.iconBtn} onClick={handleRename} title="Renommer" disabled={busy}>
++              <Pencil size={15} />
++            </button>
++            <button type="button" style={styles.iconBtnDanger} onClick={handleDelete} title="Supprimer" disabled={busy}>
++              <Trash2 size={15} />
++            </button>
+           </div>
+-          <div style={styles.headText}>
+-            <h1 style={styles.headTitle}>{library.name}</h1>
+-            <p style={styles.headSub}>
+-              <span style={{ ...styles.kindPill, background: `${accent}22`, color: accent, borderColor: `${accent}55` }}>
+-                {kindLabel}
+-              </span>
+-              <span style={styles.headDot}>·</span>
+-              <span>{availableBooks.length} livre{availableBooks.length > 1 ? "s" : ""}</span>
+-            </p>
+-          </div>
+-        </div>
+-        <div style={styles.headActions}>
+-          <button type="button" style={styles.ghostBtn} onClick={handleAddFolder} disabled={busy}>
+-            <FolderPlus size={15} />
+-            Ajouter un dossier
+-          </button>
+-          <button type="button" style={styles.ghostBtn} onClick={handleScan} disabled={busy}>
+-            <RefreshCw size={15} />
+-            {busy ? "Analyse…" : "Scanner"}
+-          </button>
+-          <button type="button" style={styles.iconBtn} onClick={handleRename} title="Renommer" disabled={busy}>
+-            <Pencil size={15} />
+-          </button>
+-          <button type="button" style={styles.iconBtnDanger} onClick={handleDelete} title="Supprimer" disabled={busy}>
+-            <Trash2 size={15} />
+-          </button>
+-        </div>
+-      </div>
++        }
++      />
+ 
+       {error && <p style={styles.error}>{error}</p>}
+       {lastSummary && !error && <p style={styles.summary}>{lastSummary}</p>}
+@@ -241,10 +229,18 @@ export function ReadingLibraryPage() {
+   );
+ }
+ 
++/** « #rrggbb » → « r, g, b » pour `ModernPageHeader` (violet par défaut si invalide). */
++function hexToTint(hex: string): string {
++  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
++  if (!m) return "124, 92, 255";
++  const n = parseInt(m[1], 16);
++  return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
++}
++
+ function BookCard({ book, onOpen }: { book: ReadingBook; onOpen: () => void }) {
+   const cover = book.cover_path ? convertFileSrc(book.cover_path) : null;
+   return (
+-    <button type="button" style={styles.bookCard} onClick={onOpen}>
++    <button type="button" className="avm-hxr-card" style={styles.bookCard} onClick={onOpen}>
+       <div style={styles.bookCoverWrap}>
+         {cover ? (
+           <img src={cover} alt="" style={styles.bookCover} draggable={false} />
+diff --git a/apps/desktop/src/pages/reading-modern.css b/apps/desktop/src/pages/reading-modern.css
+new file mode 100644
+index 0000000..51ac776
+--- /dev/null
++++ b/apps/desktop/src/pages/reading-modern.css
+@@ -0,0 +1,16 @@
++/* ==========================================================================
++   Lecture — survol des cartes (couvertures, bibliothèques) dans le style de
++   l'accueil. Les cartes sont stylées en ligne : on n'ajoute que des effets
++   de survol (transform/filter), jamais de mise en page.
++   ========================================================================== */
++
++.avm-hxr-card {
++  transition:
++    transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
++    filter 0.35s ease;
++}
++.avm-hxr-card:hover,
++.avm-hxr-card:focus-visible {
++  transform: translateY(-5px);
++  filter: drop-shadow(0 16px 26px rgba(0, 0, 0, 0.45)) drop-shadow(0 0 22px rgba(245, 158, 11, 0.28));
++}

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type MouseEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom"; // ← useNavigate ajouté
 import { Image as ImagePlaceholder, Pencil, RotateCcw, Star, Trash2 } from "lucide-react"; // ← Pencil + Trash2 ajoutés
-import { EmptyState, IconButton, PageHeader } from "@aethervault/ui-kit";
+import { EmptyState, IconButton } from "@aethervault/ui-kit";
+import { ModernPageHeader } from "../components/ModernPageHeader";
 import type { PrivateImageFile, PrivateImageFolder } from "@aethervault/shared-types";
 import { privacyApi } from "../features/privacy/api"; // ← privacyApi ajouté
 import { privateImageApi } from "../features/privateImage/api";
@@ -108,7 +109,10 @@ export function PrivateAlbumPage() {
 
   return (
     <div>
-      <PageHeader
+      <ModernPageHeader
+        icon={<ImagePlaceholder size={26} />}
+        tint="148, 163, 184"
+        kicker="Album privé"
         title={folder ? folderDisplayName(folder.path) : "Album introuvable"}
         description={folder ? `${files.length} photo(s) — ${folder.path}` : undefined}
         actions={

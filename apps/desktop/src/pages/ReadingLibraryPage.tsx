@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
+import { ModernPageHeader } from "../components/ModernPageHeader";
+import "./reading-modern.css";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
@@ -170,46 +172,32 @@ export function ReadingLibraryPage() {
         <span style={styles.crumbCurrent}>{library.name}</span>
       </nav>
 
-      {/* En-tête */}
-      <div style={styles.head}>
-        <div style={styles.headMain}>
-          <div
-            style={{
-              ...styles.headIcon,
-              background: `linear-gradient(135deg, ${accent}55, ${accent}10)`,
-              borderColor: `${accent}55`,
-            }}
-          >
-            <BookOpen size={22} style={{ color: accent }} />
+      {/* En-tête moderne */}
+      <ModernPageHeader
+        icon={<BookOpen size={26} />}
+        tint={hexToTint(accent)}
+        kicker={kindLabel}
+        title={library.name}
+        description={`${availableBooks.length} livre${availableBooks.length > 1 ? "s" : ""}`}
+        actions={
+          <div style={styles.headActions}>
+            <button type="button" style={styles.ghostBtn} onClick={handleAddFolder} disabled={busy}>
+              <FolderPlus size={15} />
+              Ajouter un dossier
+            </button>
+            <button type="button" style={styles.ghostBtn} onClick={handleScan} disabled={busy}>
+              <RefreshCw size={15} />
+              {busy ? "Analyse…" : "Scanner"}
+            </button>
+            <button type="button" style={styles.iconBtn} onClick={handleRename} title="Renommer" disabled={busy}>
+              <Pencil size={15} />
+            </button>
+            <button type="button" style={styles.iconBtnDanger} onClick={handleDelete} title="Supprimer" disabled={busy}>
+              <Trash2 size={15} />
+            </button>
           </div>
-          <div style={styles.headText}>
-            <h1 style={styles.headTitle}>{library.name}</h1>
-            <p style={styles.headSub}>
-              <span style={{ ...styles.kindPill, background: `${accent}22`, color: accent, borderColor: `${accent}55` }}>
-                {kindLabel}
-              </span>
-              <span style={styles.headDot}>·</span>
-              <span>{availableBooks.length} livre{availableBooks.length > 1 ? "s" : ""}</span>
-            </p>
-          </div>
-        </div>
-        <div style={styles.headActions}>
-          <button type="button" style={styles.ghostBtn} onClick={handleAddFolder} disabled={busy}>
-            <FolderPlus size={15} />
-            Ajouter un dossier
-          </button>
-          <button type="button" style={styles.ghostBtn} onClick={handleScan} disabled={busy}>
-            <RefreshCw size={15} />
-            {busy ? "Analyse…" : "Scanner"}
-          </button>
-          <button type="button" style={styles.iconBtn} onClick={handleRename} title="Renommer" disabled={busy}>
-            <Pencil size={15} />
-          </button>
-          <button type="button" style={styles.iconBtnDanger} onClick={handleDelete} title="Supprimer" disabled={busy}>
-            <Trash2 size={15} />
-          </button>
-        </div>
-      </div>
+        }
+      />
 
       {error && <p style={styles.error}>{error}</p>}
       {lastSummary && !error && <p style={styles.summary}>{lastSummary}</p>}
@@ -241,10 +229,18 @@ export function ReadingLibraryPage() {
   );
 }
 
+/** « #rrggbb » → « r, g, b » pour `ModernPageHeader` (violet par défaut si invalide). */
+function hexToTint(hex: string): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return "124, 92, 255";
+  const n = parseInt(m[1], 16);
+  return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
+}
+
 function BookCard({ book, onOpen }: { book: ReadingBook; onOpen: () => void }) {
   const cover = book.cover_path ? convertFileSrc(book.cover_path) : null;
   return (
-    <button type="button" style={styles.bookCard} onClick={onOpen}>
+    <button type="button" className="avm-hxr-card" style={styles.bookCard} onClick={onOpen}>
       <div style={styles.bookCoverWrap}>
         {cover ? (
           <img src={cover} alt="" style={styles.bookCover} draggable={false} />

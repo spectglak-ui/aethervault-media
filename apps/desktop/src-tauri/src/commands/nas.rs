@@ -20,6 +20,8 @@ use std::process::Command;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+/// Utilisé uniquement par les chemins non-Windows (montage non supporté).
+#[cfg(not(target_os = "windows"))]
 const UNSUPPORTED_MSG: &str = "Le montage NAS n'est pas supporté sur cet OS. \
 Montez votre partage via votre gestionnaire de fichiers \
 (/mnt/... ou /Volumes/...) puis ajoutez le chemin monté comme dossier \
@@ -68,6 +70,9 @@ pub fn mount(folder: &NasFolder) -> Result<String, String> {
 }
 
 /// Démonte un partage NAS (best-effort).
+// Logique de démontage complète mais pas encore branchée sur une commande
+// Tauri (seuls `nas_test_connection` et `nas_connect` sont exposés).
+#[allow(dead_code)]
 pub fn unmount(path: &str) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     {

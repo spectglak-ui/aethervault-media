@@ -72,10 +72,6 @@ struct SurfaceState {
     render_thread: Option<std::thread::JoinHandle<()>>,
     size: Arc<(AtomicI32, AtomicI32)>,
     in_flight_frames: Arc<AtomicI32>,
-    /// Repli PiP : dernière image rendue, partagée avec le thread de rendu
-    /// (`sw_render.rs`) et lue par la commande `player_pull_frame` pour les
-    /// fenêtres dont le canal Tauri est muet (fenêtre détachée).
-    latest_frame: Arc<Mutex<Vec<u8>>>,
 }
 
 /// 0.5.3 : « start gate » — pour les flux réseau, la lecture reste en
@@ -958,13 +954,11 @@ impl PlaybackEngineHandle {
         let size = Arc::new((AtomicI32::new(width), AtomicI32::new(height)));
         let stop_flag = Arc::new(AtomicBool::new(false));
         let in_flight_frames = Arc::new(AtomicI32::new(0));
-        let latest_frame = Arc::new(Mutex::new(Vec::new()));
         let functions = self.functions.clone();
         let mpv = sw_render::MpvHandlePtr(self.mpv.0);
         let render_stop_flag = stop_flag.clone();
         let render_size = size.clone();
         let render_in_flight = in_flight_frames.clone();
-        let render_latest_frame = latest_frame.clone();
         let render_thread = std::thread::spawn(move || {
             sw_render::run(
                 functions,
@@ -973,7 +967,6 @@ impl PlaybackEngineHandle {
                 render_stop_flag,
                 render_size,
                 render_in_flight,
-                render_latest_frame,
             );
         });
         *guard = Some(SurfaceState {
@@ -981,7 +974,6 @@ impl PlaybackEngineHandle {
             render_thread: Some(render_thread),
             size,
             in_flight_frames,
-            latest_frame,
         });
         // 0.5.0 (correctif écran noir) : le VO libmpv de mpv a pu démarrer
         // AVANT que ce contexte de rendu existe → rechargement complet de

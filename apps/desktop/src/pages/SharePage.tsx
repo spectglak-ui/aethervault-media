@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Copy, Download, StopCircle } from "lucide-react";
-import { Button, PageHeader } from "@aethervault/ui-kit";
+import { Button } from "@aethervault/ui-kit";
+import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
+import { Share2 as ShareIcon } from "lucide-react";
 import type { EpisodeSummary, TitleDetails, TitleSearchResult } from "@aethervault/shared-types";
 import { titleApi } from "../features/title/api";
 import { shareApi, type ShareOffer, type ShareProgress } from "../features/share/api";
@@ -136,7 +138,10 @@ export function SharePage() {
 
   return (
     <div>
-      <PageHeader
+      <ModernPageHeader
+        icon={<ShareIcon size={26} />}
+        tint={PAGE_TINTS.share}
+        kicker="Échange local"
         title="Partage via code"
         description="Envoyez un média à un ami AetherVault : P2P direct chiffré, aucun cloud, intégrité SHA-256."
       />

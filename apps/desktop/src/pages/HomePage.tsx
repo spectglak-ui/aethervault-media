@@ -11,12 +11,10 @@ import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
 import { useAnimatedBackdropActive } from "../hooks/useAnimatedBackdropActive";
 import "./pages.css";
-import { categoryRoute } from "../lib/categoryRoute";
-
-/** 0.4.0 : détection tolérante de la catégorie Animés. */
-function isAnimeCategory(c: Category): boolean {
-  return c.key === "animes" || c.key === "anime" || c.name.toLowerCase().includes("anim");
-}
+import "./home/home-modern.css";
+import { HomeStats } from "./home/HomeStats";
+import { HomeUniverses } from "./home/HomeUniverses";
+import { HomeWelcome } from "./home/HomeWelcome";
 
 /**
  * Accueil v2 : héro « à la une », tuiles catégories 16:9, rangées
@@ -116,64 +114,6 @@ export function HomePage() {
     if (category) navigate(`/category/${category.key}/title/${title.id}`);
   };
 
-  const aetherfyTile = (
-    <button
-      key="aetherfy"
-      type="button"
-      className="avm-home-tile"
-      onClick={() => navigate("/vaulttube")}
-      style={{ position: "relative" }}
-    >
-      <div
-        aria-hidden="true"
-        style={{
-          position: "absolute",
-          inset: 0,
-          background: "linear-gradient(120deg, #140b2e 0%, #3b1d7a 50%, #7c5cff 100%)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        {/* FONCTIONNALITÉ : identité "AetherFy" en Major Mono Display. */}
-        <span
-          className="avm-brand-aetherfy"
-          style={{
-            fontSize: 22,
-            color: "#fff",
-            textShadow: "0 2px 14px rgba(0,0,0,.5)",
-          }}
-        >
-          AetherFy
-        </span>
-      </div>
-      <span className="avm-home-tile__overlay">
-        <span
-          className="avm-home-tile__name"
-          style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-        >
-          AetherFy
-          <span
-            style={{
-              fontSize: 9,
-              fontWeight: 700,
-              textTransform: "uppercase",
-              letterSpacing: 0.5,
-              padding: "2px 6px",
-              borderRadius: 999,
-              background: "rgba(255,255,255,.16)",
-              border: "1px solid rgba(255,255,255,.35)",
-              color: "#fff",
-            }}
-          >
-            Alpha
-          </span>
-        </span>
-        <span className="avm-home-tile__count">Streaming en ligne</span>
-      </span>
-    </button>
-  );
-
   return (
     <div>
       {/* 0.5.4 — fond personnalisé en couche FIXE plein-fenêtre : couvre
@@ -201,12 +141,14 @@ export function HomePage() {
           (z-index 1 quand actif, voir styles/global.css) passer par-dessus
           le fond statique de CETTE page (ci-dessus, resté à 0) sans jamais
           couvrir ce contenu. */}
-      <div style={{ position: "relative", zIndex: 3 }}>
+      <div className="avm-hx" style={{ position: "relative", zIndex: 3 }}>
+        <HomeWelcome />
         {hero && assetUrl(hero.banner) ? (
           <section className="avm-home-hero">
             <img src={assetUrl(hero.banner)} alt="" />
             <div className="avm-home-hero__overlay" />
             <div className="avm-home-hero__content">
+              <span className="avm-hx-pill">À la une</span>
               <h1>{hero.name}</h1>
               <p className="avm-home-hero__meta">
                 {[
@@ -251,61 +193,10 @@ export function HomePage() {
           />
         )}
         {categories !== null && (
-          <div className="avm-home-tiles">
-            {categories.flatMap((category) => {
-              const out: ReactNode[] = [];
-              if (category.key === "private") {
-                // 0.4.1 : Privé masquable uniquement depuis les Paramètres.
-                if (!hidePrivate) {
-                  out.push(
-                    <button
-                      key={category.id}
-                      className="avm-home-tile"
-                      onClick={() => navigate(categoryRoute(category))}
-                    >
-                      {assetUrl(category.banner) ? (
-                        <img src={assetUrl(category.banner)} alt="" />
-                      ) : (
-                        <div className="avm-card__placeholder" aria-hidden="true" />
-                      )}
-                      <span className="avm-home-tile__overlay">
-                        <span className="avm-home-tile__name">{category.name}</span>
-                        <span className="avm-home-tile__count">
-                          {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                }
-                return out;
-              }
-              out.push(
-                <button
-                  key={category.id}
-                  className="avm-home-tile"
-                  onClick={() => navigate(categoryRoute(category))}
-                >
-                  {assetUrl(category.banner) ? (
-                    <img src={assetUrl(category.banner)} alt="" />
-                  ) : (
-                    <div className="avm-card__placeholder" aria-hidden="true" />
-                  )}
-                  <span className="avm-home-tile__overlay">
-                    <span className="avm-home-tile__name">{category.name}</span>
-                    <span className="avm-home-tile__count">
-                      {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
-                    </span>
-                  </span>
-                </button>
-              );
-              if (isAnimeCategory(category)) out.push(aetherfyTile);
-              return out;
-            })}
-            {!categories.some(isAnimeCategory) && aetherfyTile}
-          </div>
+          <HomeUniverses categories={categories} hidePrivate={hidePrivate} />
         )}
         {continueItems !== null && continueItems.length > 0 && (
-          <PosterRow title="Continuer à regarder">
+          <PosterRow title="Continuer à regarder" count={continueItems.length}>
             {continueItems.map((item) => {
               const percent = Math.min(
                 100,
@@ -335,17 +226,18 @@ export function HomePage() {
           </PosterRow>
         )}
         {recent !== null && recent.length > 0 && (
-          <PosterRow title="Ajouts récents">
+          <PosterRow title="Ajouts récents" count={recent.length} live>
             {recent.map((title) => (
               <PosterCard key={`recent-${title.id}`} title={title} onOpen={() => openTitle(title)} />
             ))}
           </PosterRow>
         )}
+        {categories !== null && <HomeStats categories={categories} />}
         {categories !== null &&
           categories
             .filter((c) => c.key !== "private" && (rows[c.id]?.length ?? 0) > 0)
             .map((category) => (
-              <PosterRow key={category.id} title={category.name}>
+              <PosterRow key={category.id} title={category.name} count={rows[category.id]?.length}>
                 {(rows[category.id] ?? []).map((title) => (
                   <PosterCard
                     key={`${category.key}-${title.id}`}
@@ -360,10 +252,25 @@ export function HomePage() {
   );
 }
 
-function PosterRow({ title, children }: { title: string; children: ReactNode }) {
+function PosterRow({
+  title,
+  count,
+  live,
+  children,
+}: {
+  title: string;
+  count?: number;
+  /** Pastille « Nouveau » animée (Ajouts récents). */
+  live?: boolean;
+  children: ReactNode;
+}) {
   return (
     <section className="avm-home-row">
-      <h2>{title}</h2>
+      <h2>
+        {title}
+        {count !== undefined && <span className="avm-hx-count">{count}</span>}
+        {live && <span className="avm-hx-live">Nouveau</span>}
+      </h2>
       <div className="avm-home-row__scroll">{children}</div>
     </section>
   );

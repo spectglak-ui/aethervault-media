@@ -304,7 +304,6 @@ pub fn run(
     stop_flag: Arc<AtomicBool>,
     size: Arc<(AtomicI32, AtomicI32)>,
     in_flight: Arc<AtomicI32>,
-    latest_frame: Arc<Mutex<Vec<u8>>>,
 ) {
     let mut params = [
         mpv_ffi::mpv_render_param {
@@ -606,7 +605,6 @@ pub fn run(
         // prouvé en test réel) : copie de la dernière image partagée avec la
         // commande `player_pull_frame` (voir mod.rs) — la fenêtre détachée
         // « tire » ce buffer au lieu de le recevoir par le canal.
-        *latest_frame.lock().unwrap_or_else(|p| p.into_inner()) = buffer.clone();
         *LATEST_FRAME.lock().unwrap_or_else(|p| p.into_inner()) = buffer.clone();
         if !first_frame_logged {
             first_frame_logged = true;

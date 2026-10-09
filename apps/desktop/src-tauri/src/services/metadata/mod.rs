@@ -26,7 +26,11 @@ use serde::Serialize;
 pub struct ParsedQuery {
     pub title_guess: String,
     pub year: Option<i32>,
+    // Champs du contrat commun des fournisseurs : renseignés par le service,
+    // pas encore lus par le fournisseur local (seul fournisseur actuel).
+    #[allow(dead_code)]
     pub season_number: Option<i32>,
+    #[allow(dead_code)]
     pub episode_number: Option<i32>,
 }
 

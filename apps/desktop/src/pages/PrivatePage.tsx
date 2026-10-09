@@ -40,6 +40,7 @@ import { usePlayer } from "../player/PlayerContext";
 import { PersonalizableImage } from "../features/personalization/PersonalizableImage";
 import { assetUrl } from "../lib/assetUrl";
 import "./privateGallery.css";
+import "./private-modern.css";
 
 /* ------------------------------------------------------------------ */
 /* 0.6.2 — Accueil unifié Privé (« VaultGallery »).                   */
