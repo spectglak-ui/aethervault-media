@@ -43,3 +43,362 @@ index 43f0de2..ce7615c 100644
  /// Bibliothèques dont `category_id` est encore `NULL` — file de travail de
  /// `db::seed::backfill_library_categories` (Étape 4, migration de
  /// `media_type` texte libre vers `category_id`), avec l'ancien
+diff --git a/apps/desktop/src-tauri/src/db/repositories/private_image_repository.rs b/apps/desktop/src-tauri/src/db/repositories/private_image_repository.rs
+index 38f982a..b40586f 100644
+--- a/apps/desktop/src-tauri/src/db/repositories/private_image_repository.rs
++++ b/apps/desktop/src-tauri/src/db/repositories/private_image_repository.rs
+@@ -87,24 +87,6 @@ pub fn create_folder(conn: &Connection, private_library_id: i64, path: &str) ->
+     Ok(conn.last_insert_rowid())
+ }
+ 
+-pub fn get_folder(conn: &Connection, folder_id: i64) -> rusqlite::Result<Option<PrivateImageFolderRecord>> {
+-    conn.query_row(
+-        "SELECT id, private_library_id, path, cover_file_id, added_at
+-         FROM private_image_folders WHERE id = ?1",
+-        rusqlite::params![folder_id],
+-        |row| {
+-            Ok(PrivateImageFolderRecord {
+-                id: row.get(0)?,
+-                private_library_id: row.get(1)?,
+-                path: row.get(2)?,
+-                cover_file_id: row.get(3)?,
+-                added_at: row.get(4)?,
+-            })
+-        },
+-    )
+-    .optional()
+-}
+-
+ pub fn list_folders_by_library(
+     conn: &Connection,
+     private_library_id: i64,
+@@ -326,11 +308,8 @@ pub fn rename_folder(
+     }
+     
+     // 2. Lecture de l'ancien chemin.
+-    let old_path: String = conn.query_row(
+-        "SELECT path FROM private_image_folders WHERE id = ?1",
+-        [folder_id],
+-        |row| row.get(0),
+-    )?;
++    let old_path = get_folder_path(conn, folder_id)?
++        .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+     
+     // 3. Construction du nouveau chemin (même parent).
+     let old_pb = std::path::PathBuf::from(&old_path);
+@@ -365,10 +344,7 @@ pub fn rename_folder(
+     })?;
+     
+     // 6. Mise à jour du folder.
+-    conn.execute(
+-        "UPDATE private_image_folders SET path = ?1 WHERE id = ?2",
+-        rusqlite::params![new_path, folder_id],
+-    )?;
++    update_folder_path(conn, folder_id, &new_path)?;
+     
+     // 7. Mise à jour en masse des fichiers contenus (leur chemin absolu
+     //    commence par l'ancien chemin du dossier).
+@@ -418,4 +394,75 @@ pub fn update_folder_path(conn: &Connection, folder_id: i64, new_path: &str) ->
+         rusqlite::params![new_path, folder_id],
+     )?;
+     Ok(())
+-}
+\ No newline at end of file
++}
++#[cfg(test)]
++mod rename_folder_tests {
++    use super::*;
++
++    /// Schéma minimal : uniquement les colonnes que `rename_folder` lit ou écrit.
++    fn stub_connection() -> Connection {
++        let conn = Connection::open_in_memory().expect("base mémoire");
++        conn.execute_batch(
++            "CREATE TABLE private_image_folders (id INTEGER PRIMARY KEY, path TEXT NOT NULL);
++             CREATE TABLE private_image_files (id INTEGER PRIMARY KEY, folder_id INTEGER NOT NULL, path TEXT NOT NULL);",
++        )
++        .expect("schéma de test");
++        conn
++    }
++
++    fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
++        let nanos = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .map(|d| d.as_nanos())
++            .unwrap_or(0);
++        let dir = std::env::temp_dir().join(format!("aethervault-{tag}-{}-{nanos}", std::process::id()));
++        std::fs::create_dir_all(&dir).expect("dossier temporaire");
++        dir
++    }
++
++    #[test]
++    fn renames_on_disk_then_updates_folder_and_file_paths() {
++        let root = unique_temp_dir("rename");
++        let old_dir = root.join("Vacances");
++        std::fs::create_dir_all(&old_dir).unwrap();
++        let old_path = old_dir.to_string_lossy().to_string();
++        let sep = std::path::MAIN_SEPARATOR;
++
++        let conn = stub_connection();
++        conn.execute("INSERT INTO private_image_folders (id, path) VALUES (1, ?1)", [&old_path]).unwrap();
++        conn.execute(
++            "INSERT INTO private_image_files (id, folder_id, path) VALUES (10, 1, ?1)",
++            [format!("{old_path}{sep}a.jpg")],
++        )
++        .unwrap();
++
++        let new_path = rename_folder(&conn, 1, "  Été 2024  ").expect("renommage");
++
++        assert_eq!(new_path, root.join("Été 2024").to_string_lossy().to_string());
++        assert!(root.join("Été 2024").exists());
++        assert!(!old_dir.exists());
++        assert_eq!(get_folder_path(&conn, 1).unwrap().as_deref(), Some(new_path.as_str()));
++        let file_path: String = conn
++            .query_row("SELECT path FROM private_image_files WHERE id = 10", [], |r| r.get(0))
++            .unwrap();
++        assert_eq!(file_path, format!("{new_path}{sep}a.jpg"));
++
++        let _ = std::fs::remove_dir_all(&root);
++    }
++
++    #[test]
++    fn unknown_folder_still_reports_query_returned_no_rows() {
++        let conn = stub_connection();
++        let err = rename_folder(&conn, 999, "Nouveau").unwrap_err();
++        assert!(matches!(err, rusqlite::Error::QueryReturnedNoRows), "erreur inattendue : {err:?}");
++    }
++
++    #[test]
++    fn rejects_names_that_are_paths() {
++        let conn = stub_connection();
++        for bad in ["", "   ", ".", "..", "a/b", "a\\b"] {
++            let err = rename_folder(&conn, 1, bad).unwrap_err();
++            assert!(matches!(err, rusqlite::Error::InvalidParameterName(_)), "nom accepté à tort : {bad:?}");
++        }
++    }
++}
+diff --git a/apps/desktop/src-tauri/src/db/repositories/profile_repository.rs b/apps/desktop/src-tauri/src/db/repositories/profile_repository.rs
+index 49a2836..ff345dc 100644
+--- a/apps/desktop/src-tauri/src/db/repositories/profile_repository.rs
++++ b/apps/desktop/src-tauri/src/db/repositories/profile_repository.rs
+@@ -59,22 +59,6 @@ pub fn get_by_id(conn: &Connection, id: i64) -> rusqlite::Result<Option<ProfileR
+     .optional()
+ }
+ 
+-/// Premier profil disposant de `can_manage_profiles`, par ordre de
+-/// création — c'est celui réactivé automatiquement à chaque lancement de
+-/// l'application (doc §6.5). `None` seulement si aucun profil administrateur
+-/// n'existe, situation que l'application ne devrait jamais atteindre
+-/// (`delete` l'empêche explicitement, voir `domain::profile`).
+-pub fn first_profile_with_manage_profiles(conn: &Connection) -> rusqlite::Result<Option<ProfileRecord>> {
+-    conn.query_row(
+-        &format!(
+-            "SELECT {SELECT_COLUMNS} FROM profiles WHERE can_manage_profiles = 1 ORDER BY id ASC LIMIT 1"
+-        ),
+-        [],
+-        map_row,
+-    )
+-    .optional()
+-}
+-
+ /// Nombre de profils disposant de `can_manage_profiles` — utilisé pour
+ /// interdire la suppression du dernier d'entre eux.
+ pub fn count_with_manage_profiles(conn: &Connection) -> rusqlite::Result<i64> {
+diff --git a/apps/desktop/src-tauri/src/domain/profile.rs b/apps/desktop/src-tauri/src/domain/profile.rs
+index a18ebf8..1326425 100644
+--- a/apps/desktop/src-tauri/src/domain/profile.rs
++++ b/apps/desktop/src-tauri/src/domain/profile.rs
+@@ -151,24 +151,3 @@ pub fn delete_profile(pool: &DbPool, active_profile_id: i64, target_id: i64) ->
+     // `ON DELETE CASCADE` (migration 0007) — pas de nettoyage manuel ici.
+     profile_repository::delete(&conn, target_id).map_err(|e| e.to_string())
+ }
+-
+-/// Profil réactivé automatiquement à chaque lancement de l'application —
+-/// le premier disposant de `can_manage_profiles` (doc §6.5). Appelé une
+-/// seule fois, au démarrage (`lib.rs`) ; la bascule en cours de session
+-/// passe par `switch_active_profile` ci-dessous.
+-pub fn default_startup_profile_id(pool: &DbPool) -> Result<i64, String> {
+-    let conn = pool.get().map_err(|e| e.to_string())?;
+-    profile_repository::first_profile_with_manage_profiles(&conn)
+-        .map_err(|e| e.to_string())?
+-        .map(|p| p.id)
+-        .ok_or_else(|| "Aucun profil administrateur trouvé.".to_string())
+-}
+-
+-/// Valide qu'un profil existe avant bascule — ne demande aucune
+-/// authentification propre : seul le coffre privé (§6.4) est protégé par
+-/// PIN/mot de passe, pas les profils entre eux. C'est la commande
+-/// appelante (`commands::profile::switch_active_profile`) qui écrit
+-/// ensuite le résultat dans `AppState::active_profile_id`.
+-pub fn switch_active_profile(pool: &DbPool, target_id: i64) -> Result<ProfileRecord, String> {
+-    get_profile(pool, target_id)
+-}
+diff --git a/apps/desktop/src-tauri/src/services/episode_thumbnails.rs b/apps/desktop/src-tauri/src/services/episode_thumbnails.rs
+index dd247ce..c965f65 100644
+--- a/apps/desktop/src-tauri/src/services/episode_thumbnails.rs
++++ b/apps/desktop/src-tauri/src/services/episode_thumbnails.rs
+@@ -100,7 +100,18 @@ fn align_up(value: usize, align: usize) -> usize {
+ 
+ #[derive(Clone, Copy)]
+ #[repr(align(64))]
+-struct AlignedPage([u8; 64]);
++struct AlignedPage {
++    // Jamais lu : seul le bloc (adresse alignée + taille) compte pour mpv.
++    _bytes: [u8; 64],
++}
++
++// Garde-fou compile-time : le cast `Vec<AlignedPage>` -> `*mut u8` et le calcul
++// `page_count = octets / MPV_SW_ALIGNMENT` ne sont valides que si un bloc fait
++// exactement MPV_SW_ALIGNMENT octets ET est aligné sur MPV_SW_ALIGNMENT.
++const _: () = assert!(
++    std::mem::size_of::<AlignedPage>() == MPV_SW_ALIGNMENT
++        && std::mem::align_of::<AlignedPage>() == MPV_SW_ALIGNMENT
++);
+ 
+ /// Réveil du thread par mpv — même contrat strict que dans
+ /// `sw_render.rs` : le callback C ne rappelle JAMAIS dans l'API mpv.
+@@ -338,7 +349,7 @@ fn grab_one_frame(
+                 let height = ((width as f64 / aspect) as usize).clamp(2, width) & !1;
+                 let stride = align_up(width * BYTES_PER_PIXEL, MPV_SW_ALIGNMENT);
+                 let page_count = (stride * height + MPV_SW_ALIGNMENT - 1) / MPV_SW_ALIGNMENT;
+-                let mut pages = vec![AlignedPage([0u8; MPV_SW_ALIGNMENT]); page_count.max(1)];
++                let mut pages = vec![AlignedPage { _bytes: [0u8; MPV_SW_ALIGNMENT] }; page_count.max(1)];
+                 let base = pages.as_mut_ptr() as *mut u8;
+                 let mut sw_size: [c_int; 2] = [width as c_int, height as c_int];
+                 let mut stride_value = stride;
+diff --git a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+index c13168e..3787625 100644
+--- a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
++++ b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+@@ -1112,14 +1112,6 @@ impl PlaybackEngineHandle {
+         }
+     }
+ 
+-    pub fn pull_frame(&self) -> Vec<u8> {
+-        let guard = self.surface.lock().unwrap_or_else(|p| p.into_inner());
+-        guard
+-            .as_ref()
+-            .map(|state| state.latest_frame.lock().unwrap_or_else(|p| p.into_inner()).clone())
+-            .unwrap_or_default()
+-    }
+-
+     pub fn resize_surface(&self, width: i32, height: i32) {
+         let guard = self.surface.lock().unwrap_or_else(|p| p.into_inner());
+         if let Some(state) = guard.as_ref() {
+diff --git a/apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs b/apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs
+index ea43d06..dcfccce 100644
+--- a/apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs
++++ b/apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs
+@@ -109,7 +109,18 @@ fn align_up(value: usize, align: usize) -> usize {
+ /// commentaire de `RenderTarget`).
+ #[derive(Clone, Copy)]
+ #[repr(align(64))]
+-struct AlignedPage([u8; 64]);
++struct AlignedPage {
++    // Jamais lu : seul le bloc (adresse alignée + taille) compte pour mpv.
++    _bytes: [u8; 64],
++}
++
++// Garde-fou compile-time : le cast `Vec<AlignedPage>` -> `*mut u8` et le calcul
++// `page_count = octets / MPV_SW_ALIGNMENT` ne sont valides que si un bloc fait
++// exactement MPV_SW_ALIGNMENT octets ET est aligné sur MPV_SW_ALIGNMENT.
++const _: () = assert!(
++    std::mem::size_of::<AlignedPage>() == MPV_SW_ALIGNMENT
++        && std::mem::align_of::<AlignedPage>() == MPV_SW_ALIGNMENT
++);
+ 
+ /// Buffer dédié exclusivement au rendu mpv — distinct du buffer envoyé au
+ /// frontend (voir `run()`). Réutilisé d'une image à l'autre, recréé
+@@ -159,7 +170,7 @@ impl RenderTarget {
+         let stride = align_up(width * BYTES_PER_PIXEL, MPV_SW_ALIGNMENT);
+         let total_bytes = stride * height;
+         let page_count = (total_bytes + MPV_SW_ALIGNMENT - 1) / MPV_SW_ALIGNMENT;
+-        self.pages = vec![AlignedPage([0u8; MPV_SW_ALIGNMENT]); page_count.max(1)];
++        self.pages = vec![AlignedPage { _bytes: [0u8; MPV_SW_ALIGNMENT] }; page_count.max(1)];
+         self.width = width;
+         self.height = height;
+         self.stride = stride;
+diff --git a/apps/desktop/src-tauri/src/services/scanner.rs b/apps/desktop/src-tauri/src/services/scanner.rs
+index 822a134..89d43db 100644
+--- a/apps/desktop/src-tauri/src/services/scanner.rs
++++ b/apps/desktop/src-tauri/src/services/scanner.rs
+@@ -140,15 +140,11 @@ pub fn scan_library(
+     }
+     
+     let total_files = all_entries.len() as u64;
+-    
+-    // Émettre progression initiale
+-    let _ = app_handle.emit("library:scan-progress", serde_json::json!({
+-        "library_id": library_id,
+-        "phase": "scan",
+-        "processed": 0,
+-        "total": total_files,
+-        "current": "détection terminée, traitement…"
+-    }));
++
++    // Progression : tick forcé au début/à la fin de phase, throttlé à
++    // `PROGRESS_INTERVAL` entre les deux (voir `ProgressEmitter`).
++    let mut progress = ProgressEmitter::new(app_handle, library_id, total_files);
++    progress.tick("scan", 0, "détection terminée, traitement…", true);
+     
+     // Deuxième passage : traitement avec barre déterminée
+     let mut added = 0u64;
+@@ -159,7 +155,7 @@ pub fn scan_library(
+     // Collecter les chemins vus pour détecter les suppressions
+     let mut seen_paths: HashSet<String> = HashSet::new();
+     
+-    for (idx, (path, size, modified_str)) in all_entries.into_iter().enumerate() {
++    for (path, size, modified_str) in all_entries {
+         let file_name = Path::new(&path)
+             .file_name()
+             .unwrap_or_default()
+@@ -192,16 +188,7 @@ pub fn scan_library(
+         
+         processed += 1;
+         
+-        // Throttle : émettre tous les 50 fichiers
+-        if idx % 50 == 0 {
+-            let _ = app_handle.emit("library:scan-progress", serde_json::json!({
+-                "library_id": library_id,
+-                "phase": "scan",
+-                "processed": processed,
+-                "total": total_files,
+-                "current": &file_name,
+-            }));
+-        }
++        progress.tick("scan", processed, &file_name, false);
+     }
+     
+     // Détection des fichiers supprimés (Fix P0)
+@@ -214,14 +201,8 @@ pub fn scan_library(
+         removed += count;
+     }
+     
+-    // Émettre fin de phase scan
+-    let _ = app_handle.emit("library:scan-progress", serde_json::json!({
+-        "library_id": library_id,
+-        "phase": "scan",
+-        "processed": processed,
+-        "total": total_files,
+-        "current": "scan terminé",
+-    }));
++    // Fin de phase scan
++    progress.tick("scan", processed, "scan terminé", true);
+     
+     Ok(ScanSummary {
+         library_id,
+diff --git a/apps/desktop/src-tauri/src/services/vaulttube/sync.rs b/apps/desktop/src-tauri/src/services/vaulttube/sync.rs
+index e6a148d..df7813e 100644
+--- a/apps/desktop/src-tauri/src/services/vaulttube/sync.rs
++++ b/apps/desktop/src-tauri/src/services/vaulttube/sync.rs
+@@ -19,11 +19,6 @@ pub struct VaultTubeSync {
+     ytdlp_path: Option<PathBuf>,
+ }
+ 
+-/// Miniature YouTube garantie (motif d'URL officiel).
+-pub fn fallback_thumbnail(youtube_id: &str) -> String {
+-    format!("https://i.ytimg.com/vi/{youtube_id}/hqdefault.jpg")
+-}
+-
+ fn now_secs() -> i64 {
+     std::time::SystemTime::now()
+         .duration_since(std::time::UNIX_EPOCH)

@@ -10,3 +10,1472 @@ index 751e88d..dea36e9 100644
  import { Button, PageHeader } from "@aethervault/ui-kit";
  import type { Category, TitleDetails, TitleSummary } from "@aethervault/shared-types";
  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+@@ -11,12 +11,10 @@ import { usePlayer } from "../player/PlayerContext";
+ import { assetUrl } from "../lib/assetUrl";
+ import { useAnimatedBackdropActive } from "../hooks/useAnimatedBackdropActive";
+ import "./pages.css";
+-import { categoryRoute } from "../lib/categoryRoute";
+-
+-/** 0.4.0 : détection tolérante de la catégorie Animés. */
+-function isAnimeCategory(c: Category): boolean {
+-  return c.key === "animes" || c.key === "anime" || c.name.toLowerCase().includes("anim");
+-}
++import "./home/home-modern.css";
++import { HomeStats } from "./home/HomeStats";
++import { HomeUniverses } from "./home/HomeUniverses";
++import { HomeWelcome } from "./home/HomeWelcome";
+ 
+ /**
+  * Accueil v2 : héro « à la une », tuiles catégories 16:9, rangées
+@@ -116,92 +114,6 @@ export function HomePage() {
+     if (category) navigate(`/category/${category.key}/title/${title.id}`);
+   };
+ 
+-  const aetherfyTile = (
+-    <button
+-      key="aetherfy"
+-      type="button"
+-      className="avm-home-tile"
+-      onClick={() => navigate("/vaulttube")}
+-      style={{ position: "relative" }}
+-    >
+-      <div
+-        aria-hidden="true"
+-        style={{
+-          position: "absolute",
+-          inset: 0,
+-          background: "linear-gradient(120deg, #140b2e 0%, #3b1d7a 50%, #7c5cff 100%)",
+-          display: "flex",
+-          alignItems: "center",
+-          justifyContent: "center",
+-        }}
+-      >
+-        {/* FONCTIONNALITÉ : identité "AetherFy" en Major Mono Display. */}
+-        <span
+-          className="avm-brand-aetherfy"
+-          style={{
+-            fontSize: 22,
+-            color: "#fff",
+-            textShadow: "0 2px 14px rgba(0,0,0,.5)",
+-          }}
+-        >
+-          AetherFy
+-        </span>
+-      </div>
+-      <span className="avm-home-tile__overlay">
+-        <span
+-          className="avm-home-tile__name"
+-          style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+-        >
+-          AetherFy
+-          <span
+-            style={{
+-              fontSize: 9,
+-              fontWeight: 700,
+-              textTransform: "uppercase",
+-              letterSpacing: 0.5,
+-              padding: "2px 6px",
+-              borderRadius: 999,
+-              background: "rgba(255,255,255,.16)",
+-              border: "1px solid rgba(255,255,255,.35)",
+-              color: "#fff",
+-            }}
+-          >
+-            Alpha
+-          </span>
+-        </span>
+-        <span className="avm-home-tile__count">Streaming en ligne</span>
+-      </span>
+-    </button>
+-  );
+-  
+-  const tvTile = (
+-  <button
+-    key="tv"
+-    type="button"
+-    className="avm-home-tile"
+-    onClick={() => navigate("/tv")}
+-    style={{ position: "relative" }}
+-  >
+-    <div
+-      aria-hidden="true"
+-      style={{
+-        position: "absolute",
+-        inset: 0,
+-        background: "linear-gradient(120deg, #0a2540 0%, #1e5f74 50%, #2ec4b6 100%)",
+-        display: "flex",
+-        alignItems: "center",
+-        justifyContent: "center",
+-      }}
+-    >
+-      <Tv size={48} style={{ color: "#fff", opacity: 0.9 }} />
+-    </div>
+-    <span className="avm-home-tile__overlay">
+-      <span className="avm-home-tile__name">TV</span>
+-      <span className="avm-home-tile__count">Chaînes en direct</span>
+-    </span>
+-  </button>
+-);
+-
+   return (
+     <div>
+       {/* 0.5.4 — fond personnalisé en couche FIXE plein-fenêtre : couvre
+@@ -229,12 +141,14 @@ export function HomePage() {
+           (z-index 1 quand actif, voir styles/global.css) passer par-dessus
+           le fond statique de CETTE page (ci-dessus, resté à 0) sans jamais
+           couvrir ce contenu. */}
+-      <div style={{ position: "relative", zIndex: 3 }}>
++      <div className="avm-hx" style={{ position: "relative", zIndex: 3 }}>
++        <HomeWelcome />
+         {hero && assetUrl(hero.banner) ? (
+           <section className="avm-home-hero">
+             <img src={assetUrl(hero.banner)} alt="" />
+             <div className="avm-home-hero__overlay" />
+             <div className="avm-home-hero__content">
++              <span className="avm-hx-pill">À la une</span>
+               <h1>{hero.name}</h1>
+               <p className="avm-home-hero__meta">
+                 {[
+@@ -279,69 +193,10 @@ export function HomePage() {
+           />
+         )}
+         {categories !== null && (
+-          <div className="avm-home-tiles">
+-            {categories.flatMap((category) => {
+-              const out: ReactNode[] = [];
+-              if (category.key === "private") {
+-                // 0.4.1 : Privé masquable uniquement depuis les Paramètres.
+-                if (!hidePrivate) {
+-                  out.push(
+-                    <button
+-                      key={category.id}
+-                      className="avm-home-tile"
+-                      onClick={() => navigate(categoryRoute(category))}
+-                    >
+-                      {assetUrl(category.banner) ? (
+-                        <img src={assetUrl(category.banner)} alt="" />
+-                      ) : (
+-                        <div className="avm-card__placeholder" aria-hidden="true" />
+-                      )}
+-                      <span className="avm-home-tile__overlay">
+-                        <span className="avm-home-tile__name">{category.name}</span>
+-                        <span className="avm-home-tile__count">
+-                          {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
+-                        </span>
+-                      </span>
+-                    </button>
+-                  );
+-                }
+-				if (!categories.some((c) => c.key === "tv")) {
+-  out.push(tvTile);
+-}
+-                return out;
+-              }
+-              out.push(
+-                <button
+-                  key={category.id}
+-                  className="avm-home-tile"
+-                  onClick={() => navigate(categoryRoute(category))}
+-                >
+-                  {assetUrl(category.banner) ? (
+-                    <img src={assetUrl(category.banner)} alt="" />
+-                  ) : (
+-                    <div className="avm-card__placeholder" aria-hidden="true" />
+-                  )}
+-                  <span className="avm-home-tile__overlay">
+-                    <span className="avm-home-tile__name">{category.name}</span>
+-                    <span className="avm-home-tile__count">
+-                      {category.title_count === null ? "🔒" : `${category.title_count} titre(s)`}
+-                    </span>
+-                  </span>
+-                </button>
+-              );
+-              if (isAnimeCategory(category)) out.push(aetherfyTile);
+-			  if (category.key === "tv") {
+-  // Remplacer la tuile standard par la tuile TV dédiée
+-  out.pop(); // retire la tuile standard qu'on vient de push
+-  out.push(tvTile);
+-}
+-              return out;
+-            })}
+-            {!categories.some(isAnimeCategory) && aetherfyTile}
+-          </div>
++          <HomeUniverses categories={categories} hidePrivate={hidePrivate} />
+         )}
+         {continueItems !== null && continueItems.length > 0 && (
+-          <PosterRow title="Continuer à regarder">
++          <PosterRow title="Continuer à regarder" count={continueItems.length}>
+             {continueItems.map((item) => {
+               const percent = Math.min(
+                 100,
+@@ -371,17 +226,18 @@ export function HomePage() {
+           </PosterRow>
+         )}
+         {recent !== null && recent.length > 0 && (
+-          <PosterRow title="Ajouts récents">
++          <PosterRow title="Ajouts récents" count={recent.length} live>
+             {recent.map((title) => (
+               <PosterCard key={`recent-${title.id}`} title={title} onOpen={() => openTitle(title)} />
+             ))}
+           </PosterRow>
+         )}
++        {categories !== null && <HomeStats categories={categories} />}
+         {categories !== null &&
+           categories
+             .filter((c) => c.key !== "private" && (rows[c.id]?.length ?? 0) > 0)
+             .map((category) => (
+-              <PosterRow key={category.id} title={category.name}>
++              <PosterRow key={category.id} title={category.name} count={rows[category.id]?.length}>
+                 {(rows[category.id] ?? []).map((title) => (
+                   <PosterCard
+                     key={`${category.key}-${title.id}`}
+@@ -396,10 +252,25 @@ export function HomePage() {
+   );
+ }
+ 
+-function PosterRow({ title, children }: { title: string; children: ReactNode }) {
++function PosterRow({
++  title,
++  count,
++  live,
++  children,
++}: {
++  title: string;
++  count?: number;
++  /** Pastille « Nouveau » animée (Ajouts récents). */
++  live?: boolean;
++  children: ReactNode;
++}) {
+   return (
+     <section className="avm-home-row">
+-      <h2>{title}</h2>
++      <h2>
++        {title}
++        {count !== undefined && <span className="avm-hx-count">{count}</span>}
++        {live && <span className="avm-hx-live">Nouveau</span>}
++      </h2>
+       <div className="avm-home-row__scroll">{children}</div>
+     </section>
+   );
+diff --git a/apps/desktop/src/pages/home/CountUp.tsx b/apps/desktop/src/pages/home/CountUp.tsx
+new file mode 100644
+index 0000000..83ddba6
+--- /dev/null
++++ b/apps/desktop/src/pages/home/CountUp.tsx
+@@ -0,0 +1,44 @@
++import { useEffect, useState } from "react";
++
++/**
++ * Compteur animé : monte de 0 à `target` (ease-out). Si l'utilisateur
++ * a demandé de réduire les animations, la valeur finale est affichée
++ * immédiatement.
++ */
++export function useCountUp(target: number, durationMs = 1100): number {
++  const [value, setValue] = useState(0);
++
++  useEffect(() => {
++    if (!Number.isFinite(target) || target <= 0) {
++      setValue(Number.isFinite(target) ? target : 0);
++      return;
++    }
++    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
++      setValue(target);
++      return;
++    }
++    let raf = 0;
++    const start = performance.now();
++    const tick = (now: number) => {
++      const t = Math.min(1, (now - start) / durationMs);
++      setValue(target * (1 - Math.pow(1 - t, 3)));
++      if (t < 1) raf = requestAnimationFrame(tick);
++    };
++    raf = requestAnimationFrame(tick);
++    return () => cancelAnimationFrame(raf);
++  }, [target, durationMs]);
++
++  return value;
++}
++
++export function CountUp({ value, decimals = 0 }: { value: number; decimals?: number }) {
++  const shown = useCountUp(value);
++  return (
++    <>
++      {shown.toLocaleString("fr-FR", {
++        minimumFractionDigits: decimals,
++        maximumFractionDigits: decimals,
++      })}
++    </>
++  );
++}
+diff --git a/apps/desktop/src/pages/home/HomeStats.tsx b/apps/desktop/src/pages/home/HomeStats.tsx
+new file mode 100644
+index 0000000..35261f5
+--- /dev/null
++++ b/apps/desktop/src/pages/home/HomeStats.tsx
+@@ -0,0 +1,246 @@
++import { useEffect, useState } from "react";
++import { useNavigate } from "react-router-dom";
++import { ArrowRight, Flame, Hourglass, Library } from "lucide-react";
++import type { Category } from "@aethervault/shared-types";
++import { titleApi, type WatchSession, type WatchStats } from "../../features/title/api";
++import { CountUp } from "./CountUp";
++import { tintFor } from "./homeTheme";
++
++const DAY_LETTERS = ["D", "L", "M", "M", "J", "V", "S"];
++const RING_RADIUS = 54;
++const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
++
++interface WeekDay {
++  letter: string;
++  label: string;
++  count: number;
++  today: boolean;
++}
++
++/** Séances par jour sur les 7 derniers jours (aujourd'hui = dernière barre). */
++function buildWeek(sessions: WatchSession[]): WeekDay[] {
++  const base = new Date();
++  base.setHours(0, 0, 0, 0);
++  const days: WeekDay[] = [];
++  for (let back = 6; back >= 0; back--) {
++    const d = new Date(base);
++    d.setDate(base.getDate() - back);
++    days.push({
++      letter: DAY_LETTERS[d.getDay()],
++      label: d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" }),
++      count: 0,
++      today: back === 0,
++    });
++  }
++  for (const session of sessions) {
++    const when = new Date(session.endedAt);
++    if (Number.isNaN(when.getTime())) continue;
++    when.setHours(0, 0, 0, 0);
++    const back = Math.round((base.getTime() - when.getTime()) / 86_400_000);
++    if (back >= 0 && back <= 6) days[6 - back].count += 1;
++  }
++  return days;
++}
++
++/**
++ * « En chiffres » : répartition de la médiathèque (anneau), Time Capsule
++ * résumée (heures, séances, activité sur 7 jours) et genres favoris.
++ * Mêmes commandes que la page Time Capsule (`/stats`) — rien de nouveau
++ * côté backend ; la répartition vient des catégories déjà chargées.
++ */
++export function HomeStats({ categories }: { categories: Category[] }) {
++  const navigate = useNavigate();
++  const [stats, setStats] = useState<WatchStats | null>(null);
++  const [genres, setGenres] = useState<[string, number][]>([]);
++  const [week, setWeek] = useState<WeekDay[]>(() => buildWeek([]));
++  // Les anneaux/barres démarrent « vides » puis se remplissent au premier
++  // rendu (transition CSS ; coupée si l'utilisateur réduit les animations).
++  const [ready, setReady] = useState(false);
++
++  useEffect(() => {
++    const raf = requestAnimationFrame(() => setReady(true));
++    return () => cancelAnimationFrame(raf);
++  }, []);
++
++  useEffect(() => {
++    let alive = true;
++    titleApi
++      .watchStats()
++      .then((value) => alive && setStats(value))
++      .catch(() => {});
++    titleApi
++      .topGenres(5)
++      .then((value) => alive && setGenres(value))
++      .catch(() => {});
++    const from = new Date();
++    from.setHours(0, 0, 0, 0);
++    from.setDate(from.getDate() - 6);
++    const to = new Date();
++    to.setHours(0, 0, 0, 0);
++    to.setDate(to.getDate() + 1);
++    titleApi
++      .watchSessions(from.toISOString(), to.toISOString())
++      .then((sessions) => alive && setWeek(buildWeek(sessions)))
++      .catch(() => {});
++    return () => {
++      alive = false;
++    };
++  }, []);
++
++  const slices = categories
++    .filter((c) => c.key !== "private" && (c.title_count ?? 0) > 0)
++    .map((c) => ({
++      key: c.key,
++      name: c.name,
++      count: c.title_count ?? 0,
++      tint: tintFor(c.key),
++    }));
++  const total = slices.reduce((sum, s) => sum + s.count, 0);
++
++  let cumulated = 0;
++  const arcs = slices.map((slice) => {
++    const fraction = total > 0 ? slice.count / total : 0;
++    const gap = slices.length > 1 ? 4 : 0;
++    const length = Math.max(0, fraction * RING_LENGTH - gap);
++    const offset = -cumulated * RING_LENGTH;
++    cumulated += fraction;
++    return { ...slice, length, offset };
++  });
++
++  const weekMax = Math.max(1, ...week.map((d) => d.count));
++  const genreMax = Math.max(1, ...genres.map(([, count]) => count));
++  const noWatch = stats !== null && stats.sessionCount === 0;
++
++  return (
++    <section className="avm-hx-section" aria-label="En chiffres">
++      <div className="avm-hx-head">
++        <span className="avm-hx-kicker">Votre médiathèque</span>
++        <h2>En chiffres</h2>
++      </div>
++
++      <div className="avm-hx-stats">
++        {/* Répartition */}
++        <article className="avm-hx-card">
++          <header className="avm-hx-card__label">
++            <Library size={14} /> Médiathèque
++          </header>
++          <div className="avm-hx-donut">
++            <svg viewBox="0 0 140 140" role="img" aria-label={`${total} titres au total`}>
++              <circle className="avm-hx-donut__track" cx="70" cy="70" r={RING_RADIUS} />
++              <g transform="rotate(-90 70 70)">
++                {arcs.map((arc) => (
++                  <circle
++                    key={arc.key}
++                    className="avm-hx-donut__arc"
++                    cx="70"
++                    cy="70"
++                    r={RING_RADIUS}
++                    stroke={`rgb(${arc.tint})`}
++                    strokeDasharray={ready ? `${arc.length} ${RING_LENGTH - arc.length}` : `0 ${RING_LENGTH}`}
++                    strokeDashoffset={arc.offset}
++                  />
++                ))}
++              </g>
++            </svg>
++            <div className="avm-hx-donut__center">
++              <span className="avm-hx-big">
++                <CountUp value={total} />
++              </span>
++              <span className="avm-hx-muted">titres</span>
++            </div>
++          </div>
++          <ul className="avm-hx-legend">
++            {slices.length === 0 && <li className="avm-hx-muted">Aucun titre pour l'instant.</li>}
++            {slices.map((slice) => (
++              <li key={slice.key}>
++                <span className="avm-hx-legend__dot" style={{ background: `rgb(${slice.tint})` }} />
++                <span className="avm-hx-legend__name">{slice.name}</span>
++                <span className="avm-hx-legend__count">{slice.count}</span>
++              </li>
++            ))}
++          </ul>
++        </article>
++
++        {/* Time Capsule */}
++        <article className="avm-hx-card">
++          <header className="avm-hx-card__label">
++            <Hourglass size={14} /> Time Capsule
++          </header>
++          <div className="avm-hx-hours">
++            <span className="avm-hx-big avm-hx-big--xl">
++              <CountUp value={stats?.totalHours ?? 0} decimals={1} />
++            </span>
++            <span className="avm-hx-muted">heures regardées</span>
++          </div>
++          <div className="avm-hx-chips">
++            <div>
++              <strong>{stats?.sessionCount ?? 0}</strong>
++              <span>séances</span>
++            </div>
++            <div>
++              <strong>{stats?.uniqueTitles ?? 0}</strong>
++              <span>titres vus</span>
++            </div>
++            <div>
++              <strong>{stats?.uniqueGenres ?? 0}</strong>
++              <span>genres</span>
++            </div>
++          </div>
++          <div className="avm-hx-week" aria-label="Séances des 7 derniers jours">
++            {week.map((day, i) => (
++              <div
++                key={i}
++                className={`avm-hx-week__day${day.today ? " avm-hx-week__day--today" : ""}`}
++                title={`${day.label} : ${day.count} séance${day.count > 1 ? "s" : ""}`}
++              >
++                <span className="avm-hx-week__track">
++                  <span
++                    className="avm-hx-week__bar"
++                    style={{ height: ready ? `${Math.max(day.count > 0 ? 14 : 5, (day.count / weekMax) * 100)}%` : "0%" }}
++                  />
++                </span>
++                <span className="avm-hx-week__letter">{day.letter}</span>
++              </div>
++            ))}
++          </div>
++          {noWatch && (
++            <p className="avm-hx-muted avm-hx-hint">Lancez un titre : vos statistiques apparaîtront ici.</p>
++          )}
++          <button type="button" className="avm-hx-link" onClick={() => navigate("/stats")}>
++            Ouvrir la Time Capsule <ArrowRight size={14} />
++          </button>
++        </article>
++
++        {/* Genres favoris */}
++        <article className="avm-hx-card">
++          <header className="avm-hx-card__label">
++            <Flame size={14} /> Genres favoris
++          </header>
++          {genres.length === 0 ? (
++            <p className="avm-hx-muted avm-hx-hint">
++              Vos genres favoris apparaîtront ici après quelques visionnages.
++            </p>
++          ) : (
++            <ul className="avm-hx-genres">
++              {genres.map(([genre, count], i) => (
++                <li key={genre}>
++                  <div className="avm-hx-genres__row">
++                    <span className="avm-hx-genres__rank">{i + 1}</span>
++                    <span className="avm-hx-genres__name">{genre}</span>
++                    <span className="avm-hx-genres__count">{count}</span>
++                  </div>
++                  <span className="avm-hx-genres__track">
++                    <span
++                      className="avm-hx-genres__bar"
++                      style={{ width: ready ? `${Math.max(6, (count / genreMax) * 100)}%` : "0%" }}
++                    />
++                  </span>
++                </li>
++              ))}
++            </ul>
++          )}
++        </article>
++      </div>
++    </section>
++  );
++}
+diff --git a/apps/desktop/src/pages/home/HomeUniverses.tsx b/apps/desktop/src/pages/home/HomeUniverses.tsx
+new file mode 100644
+index 0000000..4af5894
+--- /dev/null
++++ b/apps/desktop/src/pages/home/HomeUniverses.tsx
+@@ -0,0 +1,174 @@
++import type { CSSProperties, MouseEvent, ReactNode } from "react";
++import { useNavigate } from "react-router-dom";
++import { ArrowUpRight, Tv } from "lucide-react";
++import type { Category } from "@aethervault/shared-types";
++import { assetUrl } from "../../lib/assetUrl";
++import { categoryIcon } from "../../lib/categoryIcon";
++import { categoryRoute } from "../../lib/categoryRoute";
++import { CountUp } from "./CountUp";
++import { tintFor } from "./homeTheme";
++
++/** 0.4.0 : détection tolérante de la catégorie Animés. */
++function isAnimeCategory(c: Category): boolean {
++  return c.key === "animes" || c.key === "anime" || c.name.toLowerCase().includes("anim");
++}
++
++interface Portal {
++  id: string;
++  route: string;
++  name: string;
++  tint: string;
++  icon: ReactNode;
++  /** Grande icône décorative affichée quand il n'y a pas de bannière. */
++  ghost?: ReactNode;
++  banner?: string;
++  /** `undefined` : pas de compteur ; `null` : catégorie verrouillée (Privé). */
++  count?: number | null;
++  subtitle?: string;
++  badge?: string;
++  variant?: "aetherfy" | "tv";
++}
++
++function buildPortals(categories: Category[], hidePrivate: boolean): Portal[] {
++  const aetherfy: Portal = {
++    id: "aetherfy",
++    route: "/vaulttube",
++    name: "AetherFy",
++    tint: tintFor("aetherfy"),
++    icon: null,
++    subtitle: "Streaming en ligne",
++    badge: "Alpha",
++    variant: "aetherfy",
++  };
++  const tv: Portal = {
++    id: "tv",
++    route: "/tv",
++    name: "TV",
++    tint: tintFor("tv"),
++    icon: <Tv size={18} />,
++    ghost: <Tv size={120} />,
++    subtitle: "Chaînes en direct",
++    variant: "tv",
++  };
++
++  // Tuile TV : après Privé, ou à la place d'une éventuelle catégorie « tv »
++  // (même règle qu'avant la refonte) ; sinon en dernier recours à la fin.
++  const hasTvCategory = categories.some((c) => c.key === "tv");
++  const out: Portal[] = [];
++  let tvPlaced = false;
++  const placeTv = () => {
++    if (!tvPlaced) {
++      out.push(tv);
++      tvPlaced = true;
++    }
++  };
++  for (const category of categories) {
++    if (category.key === "tv") {
++      placeTv();
++      continue;
++    }
++    if (!(category.key === "private" && hidePrivate)) {
++      out.push({
++        id: `category-${category.id}`,
++        route: categoryRoute(category),
++        name: category.name,
++        tint: tintFor(category.key),
++        icon: categoryIcon(category.key, 18),
++        ghost: categoryIcon(category.key, 120),
++        banner: assetUrl(category.banner) ?? undefined,
++        count: category.title_count,
++      });
++    }
++    if (isAnimeCategory(category)) out.push(aetherfy);
++    if (category.key === "private" && !hasTvCategory) placeTv();
++  }
++  if (!categories.some(isAnimeCategory)) out.push(aetherfy);
++  placeTv();
++  return out;
++}
++
++/**
++ * « Vos univers » : les fonctionnalités principales sous forme de
++ * portails — catégories (avec leur bannière), AetherFy et TV. Mêmes
++ * destinations qu'avant ; Privé reste masquable depuis les Paramètres.
++ */
++export function HomeUniverses({
++  categories,
++  hidePrivate,
++}: {
++  categories: Category[];
++  hidePrivate: boolean;
++}) {
++  const navigate = useNavigate();
++  const portals = buildPortals(categories, hidePrivate);
++
++  // Projecteur qui suit le curseur (variables lues par la feuille de style).
++  const trackPointer = (e: MouseEvent<HTMLButtonElement>) => {
++    const rect = e.currentTarget.getBoundingClientRect();
++    e.currentTarget.style.setProperty("--mx", `${e.clientX - rect.left}px`);
++    e.currentTarget.style.setProperty("--my", `${e.clientY - rect.top}px`);
++  };
++
++  return (
++    <section className="avm-hx-section" aria-label="Vos univers">
++      <div className="avm-hx-head">
++        <span className="avm-hx-kicker">Naviguer</span>
++        <h2>Vos univers</h2>
++      </div>
++      <div className="avm-hx-universes">
++        {portals.map((portal) => (
++          <button
++            key={portal.id}
++            type="button"
++            className={`avm-hx-portal${portal.variant ? ` avm-hx-portal--${portal.variant}` : ""}`}
++            style={{ "--tint": portal.tint } as CSSProperties}
++            onMouseMove={trackPointer}
++            onClick={() => navigate(portal.route)}
++          >
++            {portal.banner ? (
++              <img className="avm-hx-portal__img" src={portal.banner} alt="" loading="lazy" />
++            ) : (
++              <span className="avm-hx-portal__ghost" aria-hidden="true">
++                {portal.ghost}
++              </span>
++            )}
++            {portal.variant === "aetherfy" && (
++              <span className="avm-hx-portal__waves" aria-hidden="true">
++                <span />
++                <span />
++                <span />
++              </span>
++            )}
++            <span className="avm-hx-portal__shade" aria-hidden="true" />
++
++            <span className="avm-hx-portal__top">
++              {portal.icon && <span className="avm-hx-portal__chip">{portal.icon}</span>}
++              {portal.badge && <span className="avm-hx-portal__badge">{portal.badge}</span>}
++              <ArrowUpRight className="avm-hx-portal__arrow" size={18} aria-hidden="true" />
++            </span>
++
++            <span className="avm-hx-portal__bottom">
++              <span className="avm-hx-portal__name">
++                {portal.variant === "aetherfy" ? (
++                  <span className="avm-brand-aetherfy">AetherFy</span>
++                ) : (
++                  portal.name
++                )}
++              </span>
++              <span className="avm-hx-portal__count">
++                {portal.subtitle ??
++                  (portal.count === null || portal.count === undefined ? (
++                    "🔒"
++                  ) : (
++                    <>
++                      <CountUp value={portal.count} /> titre{portal.count > 1 ? "s" : ""}
++                    </>
++                  ))}
++              </span>
++            </span>
++          </button>
++        ))}
++      </div>
++    </section>
++  );
++}
+diff --git a/apps/desktop/src/pages/home/HomeWelcome.tsx b/apps/desktop/src/pages/home/HomeWelcome.tsx
+new file mode 100644
+index 0000000..94b1558
+--- /dev/null
++++ b/apps/desktop/src/pages/home/HomeWelcome.tsx
+@@ -0,0 +1,30 @@
++import { useActiveProfile } from "../../profile/ActiveProfileContext";
++
++/** Bandeau d'accueil : salutation selon l'heure + date du jour. */
++export function HomeWelcome() {
++  const { activeProfile } = useActiveProfile();
++  const now = new Date();
++  const hour = now.getHours();
++  const greeting =
++    hour >= 5 && hour < 12 ? "Bonjour" : hour >= 12 && hour < 18 ? "Bon après-midi" : "Bonsoir";
++  const date = now.toLocaleDateString("fr-FR", {
++    weekday: "long",
++    day: "numeric",
++    month: "long",
++  });
++
++  return (
++    <div className="avm-hx-welcome">
++      <span className="avm-hx-kicker">{date}</span>
++      <div className="avm-hx-welcome__title">
++        {greeting}
++        {activeProfile ? (
++          <>
++            , <span className="avm-hx-welcome__name">{activeProfile.name}</span>
++          </>
++        ) : null}
++      </div>
++      <span className="avm-hx-welcome__sub">Votre univers, prêt à être exploré.</span>
++    </div>
++  );
++}
+diff --git a/apps/desktop/src/pages/home/home-modern.css b/apps/desktop/src/pages/home/home-modern.css
+new file mode 100644
+index 0000000..0da5c1f
+--- /dev/null
++++ b/apps/desktop/src/pages/home/home-modern.css
+@@ -0,0 +1,669 @@
++/* ==========================================================================
++   Accueil moderne — même langage visuel que la page de transition AetherFy
++   (verre sombre, teintes par univers, projecteur qui suit le curseur,
++   mot-symbole Major Mono). Tout est scopé sous `.avm-hx` : aucune autre
++   page n'est affectée. Les états de départ des animations sont toujours
++   l'état FINAL visible (si `prefers-reduced-motion` coupe les animations,
++   voir global.css, rien ne reste caché).
++   ========================================================================== */
++
++.avm-hx {
++  isolation: isolate;
++}
++
++/* Lueurs d'ambiance derrière le contenu (fond transparent : le fond du
++   logiciel reste visible). */
++.avm-hx::before {
++  content: "";
++  position: absolute;
++  inset: -2rem -2rem auto -2rem;
++  height: 640px;
++  z-index: -1;
++  pointer-events: none;
++  background:
++    radial-gradient(34% 55% at 18% 8%, rgba(124, 92, 255, 0.2), transparent 70%),
++    radial-gradient(30% 50% at 82% 14%, rgba(236, 72, 153, 0.12), transparent 70%),
++    radial-gradient(30% 50% at 55% 40%, rgba(46, 196, 182, 0.08), transparent 70%);
++}
++
++.avm-hx-kicker {
++  font-size: 11px;
++  letter-spacing: 0.22em;
++  text-transform: uppercase;
++  color: var(--color-text-muted, #9a9aa3);
++}
++.avm-hx-muted {
++  color: var(--color-text-muted, #9a9aa3);
++  font-size: 12px;
++  font-weight: 500;
++}
++
++/* ---------- Bandeau de bienvenue ---------- */
++
++.avm-hx-welcome {
++  display: flex;
++  flex-direction: column;
++  gap: 4px;
++  margin-bottom: 1.4rem;
++  animation: avm-hx-rise 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
++}
++.avm-hx-welcome__title {
++  font-family: var(--font-display);
++  font-weight: 800;
++  font-size: clamp(26px, 3.2vw, 40px);
++  line-height: 1.1;
++}
++#root .avm-hx-welcome__title {
++  font-family: var(--font-display);
++  font-weight: 800;
++}
++.avm-hx-welcome__name {
++  background: linear-gradient(90deg, #c4b5ff, #7c5cff 55%, #ec4899);
++  -webkit-background-clip: text;
++  background-clip: text;
++  color: transparent;
++}
++.avm-hx-welcome__sub {
++  font-size: 14px;
++  color: var(--color-text-muted, #9a9aa3);
++}
++
++/* ---------- « À la une » ---------- */
++
++.avm-hx .avm-home-hero {
++  height: clamp(300px, 42vh, 420px);
++  border-radius: 22px;
++  border-color: rgba(255, 255, 255, 0.1);
++  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
++  margin-bottom: 2.2rem;
++  animation: avm-hx-rise 0.7s 0.08s cubic-bezier(0.2, 0.8, 0.2, 1) both;
++}
++.avm-hx .avm-home-hero::after {
++  content: "";
++  position: absolute;
++  inset: 0;
++  pointer-events: none;
++  background: radial-gradient(60% 90% at 0% 100%, rgba(124, 92, 255, 0.35), transparent 70%);
++}
++.avm-hx .avm-home-hero__content {
++  z-index: 1;
++  padding: 1.6rem 1.8rem;
++}
++.avm-hx-pill {
++  padding: 3px 12px;
++  border-radius: 999px;
++  font-size: 10px;
++  letter-spacing: 0.14em;
++  text-transform: uppercase;
++  background: rgba(255, 255, 255, 0.12);
++  border: 1px solid rgba(255, 255, 255, 0.28);
++  color: #fff;
++}
++
++/* ---------- Titres de section ---------- */
++
++.avm-hx-section {
++  margin-bottom: 2.4rem;
++}
++.avm-hx-head {
++  display: flex;
++  flex-direction: column;
++  gap: 2px;
++  margin-bottom: 14px;
++}
++.avm-hx-head h2 {
++  margin: 0;
++  font-size: 1.35rem;
++}
++
++/* ---------- Portails (« Vos univers ») ---------- */
++
++.avm-hx-universes {
++  display: grid;
++  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
++  gap: 16px;
++}
++
++.avm-hx-portal {
++  --mx: 50%;
++  --my: 30%;
++  position: relative;
++  aspect-ratio: 16 / 10;
++  overflow: hidden;
++  padding: 0;
++  display: block;
++  text-align: left;
++  color: #fff;
++  cursor: pointer;
++  appearance: none;
++  border-radius: 20px;
++  border: 1px solid rgba(255, 255, 255, 0.1);
++  background: linear-gradient(165deg, rgba(var(--tint), 0.35), #0e0e14 75%);
++  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.32);
++  transition:
++    transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1),
++    border-color 0.3s ease,
++    box-shadow 0.35s ease;
++  animation: avm-hx-rise 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
++}
++.avm-hx-portal:nth-child(2) { animation-delay: 0.05s; }
++.avm-hx-portal:nth-child(3) { animation-delay: 0.1s; }
++.avm-hx-portal:nth-child(4) { animation-delay: 0.15s; }
++.avm-hx-portal:nth-child(5) { animation-delay: 0.2s; }
++.avm-hx-portal:nth-child(6) { animation-delay: 0.25s; }
++.avm-hx-portal:nth-child(n + 7) { animation-delay: 0.3s; }
++
++.avm-hx-portal__img {
++  position: absolute;
++  inset: 0;
++  width: 100%;
++  height: 100%;
++  object-fit: cover;
++  filter: saturate(1.1) brightness(0.62);
++  transition: transform 0.7s cubic-bezier(0.2, 0.8, 0.2, 1);
++}
++.avm-hx-portal__ghost {
++  position: absolute;
++  right: -10px;
++  bottom: -14px;
++  color: rgba(var(--tint), 0.22);
++  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
++}
++.avm-hx-portal__shade {
++  position: absolute;
++  inset: 0;
++  background:
++    radial-gradient(360px circle at var(--mx) var(--my), rgba(var(--tint), 0.32), transparent 65%),
++    linear-gradient(to top, rgba(8, 8, 12, 0.88) 0%, rgba(8, 8, 12, 0.1) 62%),
++    linear-gradient(165deg, rgba(var(--tint), 0.28), transparent 55%);
++}
++
++.avm-hx-portal:hover,
++.avm-hx-portal:focus-visible {
++  transform: translateY(-5px);
++  border-color: rgba(var(--tint), 0.7);
++  box-shadow:
++    0 24px 56px rgba(0, 0, 0, 0.45),
++    0 0 0 1px rgba(var(--tint), 0.35),
++    0 0 56px rgba(var(--tint), 0.22);
++}
++.avm-hx-portal:focus-visible {
++  outline: 2px solid rgba(var(--tint), 0.9);
++  outline-offset: 3px;
++}
++.avm-hx-portal:hover .avm-hx-portal__img {
++  transform: scale(1.07);
++}
++.avm-hx-portal:hover .avm-hx-portal__ghost {
++  transform: scale(1.08) rotate(-4deg);
++}
++
++.avm-hx-portal__top {
++  position: absolute;
++  top: 14px;
++  left: 14px;
++  right: 14px;
++  display: flex;
++  align-items: center;
++  gap: 8px;
++}
++.avm-hx-portal__chip {
++  width: 34px;
++  height: 34px;
++  display: grid;
++  place-items: center;
++  border-radius: 10px;
++  background: rgba(255, 255, 255, 0.12);
++  border: 1px solid rgba(255, 255, 255, 0.22);
++  backdrop-filter: blur(8px);
++  -webkit-backdrop-filter: blur(8px);
++}
++.avm-hx-portal__badge {
++  padding: 2px 8px;
++  border-radius: 999px;
++  font-size: 9px;
++  letter-spacing: 0.1em;
++  text-transform: uppercase;
++  background: rgba(255, 255, 255, 0.16);
++  border: 1px solid rgba(255, 255, 255, 0.35);
++}
++.avm-hx-portal__arrow {
++  margin-left: auto;
++  opacity: 0;
++  transform: translate(-6px, 6px);
++  transition:
++    opacity 0.3s ease,
++    transform 0.3s ease;
++}
++.avm-hx-portal:hover .avm-hx-portal__arrow,
++.avm-hx-portal:focus-visible .avm-hx-portal__arrow {
++  opacity: 1;
++  transform: none;
++}
++
++.avm-hx-portal__bottom {
++  position: absolute;
++  left: 16px;
++  right: 16px;
++  bottom: 14px;
++  display: flex;
++  flex-direction: column;
++  gap: 2px;
++}
++#root .avm-hx-portal__name {
++  font-family: var(--font-display);
++  font-weight: 800;
++  font-size: 1.25rem;
++  line-height: 1.1;
++  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.55);
++}
++.avm-hx-portal__count {
++  font-size: 12px;
++  font-weight: 500;
++  color: rgba(255, 255, 255, 0.78);
++}
++
++/* AetherFy : dégradé de marque + ondes ; double largeur si la place le permet */
++.avm-hx-portal--aetherfy {
++  background: linear-gradient(120deg, #140b2e 0%, #3b1d7a 55%, #7c5cff 100%);
++}
++#root .avm-hx-portal--aetherfy .avm-hx-portal__name {
++  font-size: clamp(1.5rem, 2.6vw, 2.2rem);
++}
++.avm-hx-portal__waves {
++  position: absolute;
++  right: 22%;
++  top: 38%;
++  width: 18px;
++  height: 18px;
++}
++.avm-hx-portal__waves span {
++  position: absolute;
++  inset: 0;
++  border-radius: 50%;
++  border: 1.5px solid rgba(255, 255, 255, 0.55);
++  opacity: 0;
++  animation: avm-hx-ping 3.6s ease-out infinite;
++}
++.avm-hx-portal__waves span:nth-child(2) { animation-delay: -1.2s; }
++.avm-hx-portal__waves span:nth-child(3) { animation-delay: -2.4s; }
++
++/* TV : dégradé d'origine de la tuile + balayage de signal */
++.avm-hx-portal--tv {
++  background: linear-gradient(120deg, #0a2540 0%, #1e5f74 50%, #2ec4b6 100%);
++}
++.avm-hx-portal--tv::after {
++  content: "";
++  position: absolute;
++  inset: 0;
++  pointer-events: none;
++  background: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.05) 0 1px, transparent 1px 4px);
++}
++
++@media (min-width: 1100px) {
++  .avm-hx-portal--aetherfy {
++    grid-column: span 2;
++    aspect-ratio: auto;
++  }
++}
++
++/* ---------- Rangées d'affiches ---------- */
++
++.avm-hx .avm-home-row {
++  margin-bottom: 2.2rem;
++}
++.avm-hx .avm-home-row h2 {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  font-size: 1.2rem;
++  margin: 0 0 0.8rem;
++}
++.avm-hx .avm-home-row h2::before {
++  content: "";
++  width: 4px;
++  height: 1.1em;
++  border-radius: 2px;
++  background: linear-gradient(180deg, #7c5cff, #ec4899);
++}
++.avm-hx-count {
++  padding: 1px 9px;
++  border-radius: 999px;
++  font-size: 11px;
++  font-weight: 600;
++  color: var(--color-text-muted, #9a9aa3);
++  background: rgba(255, 255, 255, 0.07);
++  border: 1px solid rgba(255, 255, 255, 0.1);
++}
++.avm-hx-live {
++  display: inline-flex;
++  align-items: center;
++  gap: 6px;
++  padding: 2px 10px;
++  border-radius: 999px;
++  font-size: 10px;
++  letter-spacing: 0.12em;
++  text-transform: uppercase;
++  color: #6ee7a0;
++  background: rgba(29, 185, 84, 0.12);
++  border: 1px solid rgba(29, 185, 84, 0.35);
++}
++.avm-hx-live::before {
++  content: "";
++  width: 6px;
++  height: 6px;
++  border-radius: 50%;
++  background: #1db954;
++  box-shadow: 0 0 0 0 rgba(29, 185, 84, 0.6);
++  animation: avm-hx-pulse 2s ease-out infinite;
++}
++.avm-hx .avm-home-row__scroll {
++  padding: 6px 4px 12px;
++}
++.avm-hx .avm-home-poster {
++  border-radius: 14px;
++  border-color: rgba(255, 255, 255, 0.08);
++  transition:
++    transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1),
++    border-color 0.3s ease,
++    box-shadow 0.3s ease;
++}
++.avm-hx .avm-home-poster:hover {
++  transform: translateY(-6px) scale(1.04);
++  border-color: rgba(124, 92, 255, 0.7);
++  box-shadow:
++    0 18px 34px rgba(0, 0, 0, 0.5),
++    0 0 0 1px rgba(124, 92, 255, 0.4),
++    0 0 36px rgba(124, 92, 255, 0.25);
++}
++
++/* ---------- Statistiques ---------- */
++
++.avm-hx-stats {
++  display: grid;
++  grid-template-columns: 1.15fr 1.1fr 0.95fr;
++  gap: 16px;
++}
++.avm-hx-card {
++  position: relative;
++  display: flex;
++  flex-direction: column;
++  gap: 14px;
++  padding: 20px;
++  border-radius: 20px;
++  border: 1px solid rgba(255, 255, 255, 0.1);
++  color: #fff;
++  background:
++    linear-gradient(165deg, rgba(124, 92, 255, 0.16) 0%, rgba(14, 14, 20, 0.88) 60%),
++    #0e0e14;
++  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.3);
++  animation: avm-hx-rise 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
++}
++.avm-hx-card:nth-child(2) { animation-delay: 0.08s; }
++.avm-hx-card:nth-child(3) { animation-delay: 0.16s; }
++.avm-hx-card__label {
++  display: inline-flex;
++  align-items: center;
++  gap: 8px;
++  font-size: 12px;
++  letter-spacing: 0.16em;
++  text-transform: uppercase;
++  color: rgba(255, 255, 255, 0.7);
++}
++#root .avm-hx-big {
++  font-family: var(--font-display);
++  font-weight: 800;
++  font-size: 1.9rem;
++  line-height: 1;
++}
++#root .avm-hx-big--xl {
++  font-size: clamp(2.6rem, 4.4vw, 3.6rem);
++  background: linear-gradient(90deg, #fff, #c4b5ff);
++  -webkit-background-clip: text;
++  background-clip: text;
++  color: transparent;
++}
++.avm-hx-hint {
++  margin: 0;
++  line-height: 1.5;
++}
++
++/* Anneau de répartition */
++.avm-hx-donut {
++  position: relative;
++  width: 170px;
++  height: 170px;
++  margin: 0 auto;
++}
++.avm-hx-donut svg {
++  width: 100%;
++  height: 100%;
++}
++.avm-hx-donut__track,
++.avm-hx-donut__arc {
++  fill: none;
++  stroke-width: 12;
++}
++.avm-hx-donut__track {
++  stroke: rgba(255, 255, 255, 0.06);
++}
++.avm-hx-donut__arc {
++  transition: stroke-dasharray 1.1s cubic-bezier(0.2, 0.8, 0.2, 1);
++}
++.avm-hx-donut__center {
++  position: absolute;
++  inset: 0;
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  justify-content: center;
++  gap: 4px;
++}
++.avm-hx-legend {
++  list-style: none;
++  margin: 0;
++  padding: 0;
++  display: flex;
++  flex-direction: column;
++  gap: 6px;
++}
++.avm-hx-legend li {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  font-size: 13px;
++}
++.avm-hx-legend__dot {
++  width: 8px;
++  height: 8px;
++  border-radius: 50%;
++  flex-shrink: 0;
++}
++.avm-hx-legend__name {
++  flex: 1;
++  color: rgba(255, 255, 255, 0.85);
++}
++.avm-hx-legend__count {
++  font-weight: 700;
++  color: #fff;
++}
++
++/* Time Capsule */
++.avm-hx-hours {
++  display: flex;
++  flex-direction: column;
++  gap: 6px;
++}
++.avm-hx-chips {
++  display: grid;
++  grid-template-columns: repeat(3, 1fr);
++  gap: 8px;
++}
++.avm-hx-chips > div {
++  display: flex;
++  flex-direction: column;
++  gap: 2px;
++  padding: 10px 12px;
++  border-radius: 12px;
++  background: rgba(255, 255, 255, 0.06);
++  border: 1px solid rgba(255, 255, 255, 0.08);
++}
++.avm-hx-chips strong {
++  font-size: 1.15rem;
++}
++.avm-hx-chips span {
++  font-size: 11px;
++  color: rgba(255, 255, 255, 0.6);
++}
++.avm-hx-week {
++  flex: 1;
++  min-height: 84px;
++  display: grid;
++  grid-template-columns: repeat(7, 1fr);
++  gap: 8px;
++  align-items: end;
++}
++.avm-hx-week__day {
++  height: 100%;
++  display: flex;
++  flex-direction: column;
++  gap: 6px;
++}
++.avm-hx-week__track {
++  flex: 1;
++  display: flex;
++  align-items: flex-end;
++  border-radius: 8px;
++  background: rgba(255, 255, 255, 0.05);
++  overflow: hidden;
++}
++.avm-hx-week__bar {
++  width: 100%;
++  border-radius: 8px;
++  background: linear-gradient(to top, #7c5cff, #c4b5ff);
++  transition: height 0.9s cubic-bezier(0.2, 0.8, 0.2, 1);
++}
++.avm-hx-week__day--today .avm-hx-week__bar {
++  background: linear-gradient(to top, #ec4899, #ffb4d6);
++  box-shadow: 0 0 16px rgba(236, 72, 153, 0.5);
++}
++.avm-hx-week__letter {
++  text-align: center;
++  font-size: 11px;
++  color: rgba(255, 255, 255, 0.55);
++}
++.avm-hx-week__day--today .avm-hx-week__letter {
++  color: #fff;
++  font-weight: 700;
++}
++.avm-hx-link {
++  align-self: flex-start;
++  display: inline-flex;
++  align-items: center;
++  gap: 8px;
++  padding: 8px 14px;
++  border-radius: 999px;
++  font-size: 13px;
++  color: #fff;
++  cursor: pointer;
++  background: rgba(255, 255, 255, 0.1);
++  border: 1px solid rgba(255, 255, 255, 0.2);
++  transition:
++    background 0.3s ease,
++    color 0.3s ease,
++    gap 0.3s ease;
++}
++.avm-hx-link:hover,
++.avm-hx-link:focus-visible {
++  gap: 12px;
++  background: #fff;
++  color: #0e0e14;
++}
++
++/* Genres favoris */
++.avm-hx-genres {
++  list-style: none;
++  margin: 0;
++  padding: 0;
++  display: flex;
++  flex-direction: column;
++  gap: 14px;
++}
++.avm-hx-genres__row {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  margin-bottom: 6px;
++  font-size: 13px;
++}
++.avm-hx-genres__rank {
++  width: 20px;
++  height: 20px;
++  display: grid;
++  place-items: center;
++  border-radius: 6px;
++  font-size: 11px;
++  font-weight: 700;
++  background: rgba(124, 92, 255, 0.25);
++}
++.avm-hx-genres__name {
++  flex: 1;
++  color: rgba(255, 255, 255, 0.9);
++}
++.avm-hx-genres__count {
++  font-weight: 700;
++}
++.avm-hx-genres__track {
++  display: block;
++  height: 6px;
++  border-radius: 6px;
++  background: rgba(255, 255, 255, 0.07);
++  overflow: hidden;
++}
++.avm-hx-genres__bar {
++  display: block;
++  height: 100%;
++  border-radius: 6px;
++  background: linear-gradient(90deg, #7c5cff, #ec4899);
++  transition: width 1s cubic-bezier(0.2, 0.8, 0.2, 1);
++}
++
++/* ---------- Animations ---------- */
++
++@keyframes avm-hx-rise {
++  from {
++    opacity: 0;
++    transform: translateY(14px);
++  }
++}
++@keyframes avm-hx-ping {
++  from {
++    transform: scale(1);
++    opacity: 0.7;
++  }
++  to {
++    transform: scale(9);
++    opacity: 0;
++  }
++}
++@keyframes avm-hx-pulse {
++  70% {
++    box-shadow: 0 0 0 8px rgba(29, 185, 84, 0);
++  }
++  100% {
++    box-shadow: 0 0 0 0 rgba(29, 185, 84, 0);
++  }
++}
++
++/* ---------- Fenêtre étroite ---------- */
++
++@media (max-width: 1100px) {
++  .avm-hx-stats {
++    grid-template-columns: 1fr 1fr;
++  }
++}
++@media (max-width: 760px) {
++  .avm-hx-stats {
++    grid-template-columns: 1fr;
++  }
++}
+diff --git a/apps/desktop/src/pages/home/homeTheme.ts b/apps/desktop/src/pages/home/homeTheme.ts
+new file mode 100644
+index 0000000..fc4250e
+--- /dev/null
++++ b/apps/desktop/src/pages/home/homeTheme.ts
+@@ -0,0 +1,23 @@
++/**
++ * Couleurs d'accent des « univers » de l'accueil (portails + graphique de
++ * répartition). Format « r, g, b » : utilisé dans `rgba(var(--tint), …)`.
++ * Une clé inconnue (catégorie personnalisée future) retombe sur le violet
++ * d'AetherVault, jamais sur une valeur invalide.
++ */
++const TINTS: Record<string, string> = {
++  movies: "255, 46, 99",
++  series: "124, 92, 255",
++  anime: "236, 72, 153",
++  animes: "236, 72, 153",
++  documentaries: "46, 196, 182",
++  reading: "245, 158, 11",
++  private: "148, 163, 184",
++  tv: "56, 189, 248",
++  aetherfy: "124, 92, 255",
++};
++
++export const DEFAULT_TINT = "124, 92, 255";
++
++export function tintFor(key: string): string {
++  return TINTS[key] ?? DEFAULT_TINT;
++}

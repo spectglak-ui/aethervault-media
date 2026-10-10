@@ -7,3 +7,628 @@ index 0000000..a1982c1
 +import type { CSSProperties, ReactNode } from "react";
 +import "./modern-page.css";
 +
++interface ModernPageHeaderProps {
++  title: string;
++  description?: ReactNode;
++  actions?: ReactNode;
++  /** Icône de l'emblème (lucide, ~26 px). */
++  icon: ReactNode;
++  /** Couleur d'accent au format « r, g, b » (voir `tintFor` / `PAGE_TINTS`). */
++  tint: string;
++  /** Petite étiquette au-dessus du titre (« Catalogue », « Réglages »…). */
++  kicker?: string;
++}
++
++/**
++ * Couleurs d'accent des pages hors catégories (même palette que les
++ * portails de l'accueil ; les catégories passent par `tintFor`).
++ */
++export const PAGE_TINTS = {
++  settings: "148, 163, 184",
++  profiles: "124, 92, 255",
++  stats: "245, 158, 11",
++  share: "56, 189, 248",
++  collections: "168, 85, 247",
++  explore: "46, 196, 182",
++} as const;
++
++/**
++ * En-tête des pages « modernisées » (même langage que l'accueil et la
++ * page de transition AetherFy). Remplace `PageHeader` de l'ui-kit sur ces
++ * pages seulement — les autres pages gardent l'en-tête d'origine. Sa
++ * simple présence active aussi le style moderne du corps de la page
++ * (voir `modern-page.css`, portée `:has(.avm-hxp-header)`).
++ */
++export function ModernPageHeader({
++  title,
++  description,
++  actions,
++  icon,
++  tint,
++  kicker,
++}: ModernPageHeaderProps) {
++  return (
++    <header className="avm-hxp-header" style={{ "--tint": tint } as CSSProperties}>
++      <div className="avm-hxp-header__emblem" aria-hidden="true">
++        {icon}
++      </div>
++      <div className="avm-hxp-header__text">
++        {kicker && <span className="avm-hxp-header__kicker">{kicker}</span>}
++        <h1 className="avm-hxp-header__title">{title}</h1>
++        {description && <p className="avm-hxp-header__desc">{description}</p>}
++      </div>
++      {actions && <div className="avm-hxp-header__actions">{actions}</div>}
++    </header>
++  );
++}
+diff --git a/apps/desktop/src/components/modern-page.css b/apps/desktop/src/components/modern-page.css
+new file mode 100644
+index 0000000..f67ec92
+--- /dev/null
++++ b/apps/desktop/src/components/modern-page.css
+@@ -0,0 +1,374 @@
++/* ==========================================================================
++   Pages modernisées (Catégories, Paramètres, Profils, Time Capsule, Partage,
++   Collections, Explorer) — même langage visuel que l'accueil et la page de
++   transition AetherFy. Uniquement des propriétés de PEINTURE (fond, bordure,
++   rayon, ombre, transitions) : aucune mise en page n'est modifiée.
++   Portée : `.avm-shell__content:has(.avm-hxp-header)` = contenu d'une page qui affiche `ModernPageHeader` ; les
++   autres pages (Bibliothèque, fiches titre…) ne sont pas touchées.
++   Les états de départ des animations sont l'état FINAL visible (si
++   `prefers-reduced-motion` les coupe, rien ne reste caché).
++   ========================================================================== */
++
++/* ---------- En-tête ---------- */
++
++.avm-hxp-header {
++  --tint: 124, 92, 255;
++  position: relative;
++  isolation: isolate;
++  display: flex;
++  align-items: center;
++  gap: 18px;
++  margin-bottom: 1.8rem;
++  animation: avm-hxp-rise 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
++}
++/* Lueur d'ambiance de la couleur de la page (fond transparent conservé) */
++.avm-hxp-header::before {
++  content: "";
++  position: absolute;
++  inset: -2.4rem -2rem -1rem -2rem;
++  z-index: -1;
++  pointer-events: none;
++  background: radial-gradient(46% 90% at 6% 40%, rgba(var(--tint), 0.22), transparent 72%);
++}
++
++.avm-hxp-header__emblem {
++  position: relative;
++  flex-shrink: 0;
++  width: 58px;
++  height: 58px;
++  display: grid;
++  place-items: center;
++  border-radius: 16px;
++  color: #fff;
++  background: linear-gradient(135deg, rgb(var(--tint)), rgba(var(--tint), 0.55));
++  box-shadow:
++    0 8px 28px rgba(var(--tint), 0.45),
++    inset 0 1px 0 rgba(255, 255, 255, 0.3);
++}
++/* Ondes discrètes (invisibles si l'animation est coupée) */
++.avm-hxp-header__emblem::before,
++.avm-hxp-header__emblem::after {
++  content: "";
++  position: absolute;
++  inset: 0;
++  border-radius: inherit;
++  border: 1.5px solid rgba(var(--tint), 0.7);
++  opacity: 0;
++  animation: avm-hxp-ping 3.6s ease-out infinite;
++}
++.avm-hxp-header__emblem::after {
++  animation-delay: -1.8s;
++}
++
++.avm-hxp-header__text {
++  flex: 1;
++  min-width: 0;
++  display: flex;
++  flex-direction: column;
++  gap: 3px;
++}
++.avm-hxp-header__kicker {
++  font-size: 11px;
++  letter-spacing: 0.22em;
++  text-transform: uppercase;
++  color: rgb(var(--tint));
++  font-weight: 600;
++}
++#root .avm-hxp-header__title {
++  margin: 0;
++  font-family: var(--font-display);
++  font-weight: 800;
++  font-size: clamp(1.7rem, 3vw, 2.5rem);
++  line-height: 1.1;
++  background: linear-gradient(
++    90deg,
++    var(--color-text) 0%,
++    color-mix(in srgb, rgb(var(--tint)) 65%, var(--color-text)) 100%
++  );
++  -webkit-background-clip: text;
++  background-clip: text;
++  color: transparent;
++}
++.avm-hxp-header__desc {
++  margin: 4px 0 0;
++  max-width: 62ch;
++  font-size: 0.92rem;
++  line-height: 1.5;
++  color: var(--color-text-muted);
++}
++.avm-hxp-header__actions {
++  flex-shrink: 0;
++  align-self: flex-start;
++}
++
++/* ---------- Surfaces « verre » ---------- */
++
++.avm-shell__content:has(.avm-hxp-header) .avm-settings-section,
++.avm-shell__content:has(.avm-hxp-header) .avm-share-panel,
++.avm-shell__content:has(.avm-hxp-header) .avm-stats-card,
++.avm-shell__content:has(.avm-hxp-header) .avm-explore-filters,
++.avm-shell__content:has(.avm-hxp-header) .avm-profile-list__item,
++.avm-shell__content:has(.avm-hxp-header) .avm-stats-genre,
++.avm-shell__content:has(.avm-hxp-header) .avm-media-list__item,
++.avm-shell__content:has(.avm-hxp-header) .avm-folder-list__item {
++  background:
++    linear-gradient(165deg, rgba(124, 92, 255, 0.1) 0%, transparent 55%),
++    color-mix(in srgb, var(--color-surface) 86%, transparent);
++  border: 1px solid color-mix(in srgb, var(--color-text) 11%, transparent);
++  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
++}
++
++/* Sections de panneaux : vrais « panneaux » avec titre accentué */
++.avm-shell__content:has(.avm-hxp-header) .avm-settings-section,
++.avm-shell__content:has(.avm-hxp-header) .avm-share-panel {
++  padding: 1.25rem 1.4rem;
++  border-radius: 20px;
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-settings-section h2,
++.avm-shell__content:has(.avm-hxp-header) .avm-share-panel h2,
++.avm-shell__content:has(.avm-hxp-header) .avm-stats-section h2,
++.avm-shell__content:has(.avm-hxp-header) .avm-category-libraries h2 {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-settings-section h2::before,
++.avm-shell__content:has(.avm-hxp-header) .avm-share-panel h2::before,
++.avm-shell__content:has(.avm-hxp-header) .avm-stats-section h2::before,
++.avm-shell__content:has(.avm-hxp-header) .avm-category-libraries h2::before {
++  content: "";
++  width: 4px;
++  height: 1.1em;
++  border-radius: 2px;
++  background: linear-gradient(180deg, #7c5cff, #ec4899);
++}
++
++/* Lignes (profils, listes de médias/dossiers, genres) */
++.avm-shell__content:has(.avm-hxp-header) .avm-profile-list__item,
++.avm-shell__content:has(.avm-hxp-header) .avm-media-list__item,
++.avm-shell__content:has(.avm-hxp-header) .avm-folder-list__item,
++.avm-shell__content:has(.avm-hxp-header) .avm-stats-genre {
++  border-radius: 16px;
++  transition:
++    transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1),
++    border-color 0.3s ease,
++    box-shadow 0.3s ease;
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-profile-list__item:hover,
++.avm-shell__content:has(.avm-hxp-header) .avm-media-list__item--playable:hover,
++.avm-shell__content:has(.avm-hxp-header) .avm-stats-genre:hover {
++  transform: translateY(-2px);
++  border-color: rgba(124, 92, 255, 0.6);
++  box-shadow:
++    0 16px 36px rgba(0, 0, 0, 0.28),
++    0 0 0 1px rgba(124, 92, 255, 0.3),
++    0 0 36px rgba(124, 92, 255, 0.16);
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-profile-list__item--active {
++  border-color: rgba(124, 92, 255, 0.75);
++  box-shadow:
++    0 12px 32px rgba(0, 0, 0, 0.2),
++    0 0 0 1px rgba(124, 92, 255, 0.4),
++    0 0 32px rgba(124, 92, 255, 0.2);
++}
++
++/* ---------- Affiches / cartes ---------- */
++
++.avm-shell__content:has(.avm-hxp-header) .avm-card,
++.avm-shell__content:has(.avm-hxp-header) .avm-explore-card {
++  border-radius: 16px;
++  border: 1px solid color-mix(in srgb, var(--color-text) 9%, transparent);
++  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.22);
++  transition:
++    transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
++    border-color 0.3s ease,
++    box-shadow 0.35s ease;
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-card:hover,
++.avm-shell__content:has(.avm-hxp-header) .avm-card--clickable:hover,
++.avm-shell__content:has(.avm-hxp-header) .avm-explore-card:hover {
++  transform: translateY(-6px);
++  border-color: rgba(124, 92, 255, 0.7);
++  box-shadow:
++    0 20px 40px rgba(0, 0, 0, 0.42),
++    0 0 0 1px rgba(124, 92, 255, 0.4),
++    0 0 40px rgba(124, 92, 255, 0.24);
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-card__image,
++.avm-shell__content:has(.avm-hxp-header) .avm-explore-card img {
++  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-card:hover .avm-card__image,
++.avm-shell__content:has(.avm-hxp-header) .avm-explore-card:hover img {
++  transform: scale(1.06);
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-card--selected {
++  box-shadow:
++    0 0 0 2px var(--color-accent),
++    0 0 36px rgba(124, 92, 255, 0.35);
++}
++
++/* ---------- Champs & puces ---------- */
++
++.avm-shell__content:has(.avm-hxp-header) .avm-form-field input,
++.avm-shell__content:has(.avm-hxp-header) .avm-form-field select,
++.avm-shell__content:has(.avm-hxp-header) .avm-explore-input,
++.avm-shell__content:has(.avm-hxp-header) .avm-explore-filters input,
++.avm-shell__content:has(.avm-hxp-header) .avm-explore-filters select,
++.avm-shell__content:has(.avm-hxp-header) .avm-collections__input,
++.avm-shell__content:has(.avm-hxp-header) .avm-share-code {
++  border-radius: 12px;
++  border: 1px solid color-mix(in srgb, var(--color-text) 14%, transparent);
++  background: color-mix(in srgb, var(--color-bg) 70%, transparent);
++  transition:
++    border-color 0.25s ease,
++    box-shadow 0.25s ease;
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-form-field input:focus,
++.avm-shell__content:has(.avm-hxp-header) .avm-form-field select:focus,
++.avm-shell__content:has(.avm-hxp-header) .avm-explore-input:focus,
++.avm-shell__content:has(.avm-hxp-header) .avm-explore-filters input:focus,
++.avm-shell__content:has(.avm-hxp-header) .avm-explore-filters select:focus,
++.avm-shell__content:has(.avm-hxp-header) .avm-collections__input:focus,
++.avm-shell__content:has(.avm-hxp-header) .avm-share-code:focus {
++  outline: none;
++  border-color: rgba(124, 92, 255, 0.8);
++  box-shadow: 0 0 0 3px rgba(124, 92, 255, 0.22);
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-explore-filters {
++  border-radius: 20px;
++  padding: 1.1rem 1.25rem;
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-chip {
++  padding: 0.28rem 0.85rem;
++  background: color-mix(in srgb, var(--color-text) 6%, transparent);
++  transition:
++    background 0.25s ease,
++    border-color 0.25s ease,
++    transform 0.25s ease,
++    box-shadow 0.25s ease;
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-chip:hover {
++  transform: translateY(-1px);
++  border-color: rgba(124, 92, 255, 0.6);
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-chip--active {
++  background: linear-gradient(135deg, rgba(124, 92, 255, 0.35), rgba(236, 72, 153, 0.25));
++  border-color: rgba(124, 92, 255, 0.8);
++  box-shadow: 0 0 20px rgba(124, 92, 255, 0.28);
++}
++
++/* ---------- Collections ---------- */
++
++.avm-shell__content:has(.avm-hxp-header) .avm-collections__side {
++  padding: 1rem;
++  border-radius: 20px;
++  align-self: start;
++  background:
++    linear-gradient(165deg, rgba(168, 85, 247, 0.12) 0%, transparent 55%),
++    color-mix(in srgb, var(--color-surface) 86%, transparent);
++  border: 1px solid color-mix(in srgb, var(--color-text) 11%, transparent);
++  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-collections__item {
++  border-radius: 12px;
++  transition:
++    background 0.25s ease,
++    border-color 0.25s ease,
++    transform 0.25s ease;
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-collections__item:hover {
++  transform: translateX(3px);
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-collections__active .avm-collections__item {
++  background: linear-gradient(135deg, rgba(124, 92, 255, 0.28), rgba(236, 72, 153, 0.16));
++  border-color: rgba(124, 92, 255, 0.75);
++}
++
++/* ---------- Time Capsule ---------- */
++
++.avm-shell__content:has(.avm-hxp-header) .avm-stats-card {
++  position: relative;
++  overflow: hidden;
++  border-radius: 20px;
++  transition:
++    transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
++    box-shadow 0.35s ease;
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-stats-card::before {
++  content: "";
++  position: absolute;
++  inset: 0 0 auto 0;
++  height: 3px;
++  background: linear-gradient(90deg, #7c5cff, #ec4899);
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-stats-card:hover {
++  transform: translateY(-4px);
++  box-shadow:
++    0 18px 40px rgba(0, 0, 0, 0.3),
++    0 0 36px rgba(124, 92, 255, 0.18);
++}
++#root .avm-shell__content:has(.avm-hxp-header) .avm-stats-value {
++  font-family: var(--font-display);
++  font-weight: 800;
++  font-size: 2.3rem;
++  background: linear-gradient(90deg, var(--color-text), #c4b5ff 70%, #ec4899);
++  -webkit-background-clip: text;
++  background-clip: text;
++  color: transparent;
++}
++
++/* ---------- Partage ---------- */
++
++.avm-shell__content:has(.avm-hxp-header) .avm-share-progress {
++  height: 8px;
++  border-radius: 8px;
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-share-progress div {
++  background: linear-gradient(90deg, #7c5cff, #ec4899);
++  border-radius: 8px;
++}
++
++/* ---------- Animations ---------- */
++
++.avm-shell__content:has(.avm-hxp-header) .avm-settings-section,
++.avm-shell__content:has(.avm-hxp-header) .avm-share-panel,
++.avm-shell__content:has(.avm-hxp-header) .avm-stats-card,
++.avm-shell__content:has(.avm-hxp-header) .avm-explore-filters,
++.avm-shell__content:has(.avm-hxp-header) .avm-profile-list__item {
++  animation: avm-hxp-rise 0.55s cubic-bezier(0.2, 0.8, 0.2, 1) both;
++}
++.avm-shell__content:has(.avm-hxp-header) .avm-profile-list__item:nth-child(2),
++.avm-shell__content:has(.avm-hxp-header) .avm-stats-card:nth-child(2) { animation-delay: 0.05s; }
++.avm-shell__content:has(.avm-hxp-header) .avm-profile-list__item:nth-child(3),
++.avm-shell__content:has(.avm-hxp-header) .avm-stats-card:nth-child(3) { animation-delay: 0.1s; }
++.avm-shell__content:has(.avm-hxp-header) .avm-profile-list__item:nth-child(n + 4),
++.avm-shell__content:has(.avm-hxp-header) .avm-stats-card:nth-child(n + 4) { animation-delay: 0.15s; }
++
++@keyframes avm-hxp-rise {
++  from {
++    opacity: 0;
++    transform: translateY(12px);
++  }
++}
++@keyframes avm-hxp-ping {
++  from {
++    transform: scale(1);
++    opacity: 0.6;
++  }
++  to {
++    transform: scale(1.9);
++    opacity: 0;
++  }
++}
++
++/* ---------- Fenêtre étroite ---------- */
++
++@media (max-width: 720px) {
++  .avm-hxp-header {
++    flex-wrap: wrap;
++  }
++  .avm-hxp-header__actions {
++    width: 100%;
++  }
++}
+diff --git a/apps/desktop/src/pages/CategoryPage.tsx b/apps/desktop/src/pages/CategoryPage.tsx
+index 8668f0c..c3d617a 100644
+--- a/apps/desktop/src/pages/CategoryPage.tsx
++++ b/apps/desktop/src/pages/CategoryPage.tsx
+@@ -12,7 +12,10 @@ import {
+   Trash2,
+   X,
+ } from "lucide-react";
+-import { Button, Card, EmptyState, IconButton, Modal, PageHeader } from "@aethervault/ui-kit";
++import { Button, Card, EmptyState, IconButton, Modal } from "@aethervault/ui-kit";
++import { ModernPageHeader } from "../components/ModernPageHeader";
++import { categoryIcon } from "../lib/categoryIcon";
++import { tintFor } from "./home/homeTheme";
+ import type { Category, Library, TitleSummary } from "@aethervault/shared-types";
+ import { categoryApi } from "../features/category/api";
+ import { titleApi } from "../features/title/api";
+@@ -251,8 +254,11 @@ export function CategoryPage() {
+           le fond statique de CETTE page (ci-dessus, resté à 0) sans jamais
+           couvrir ce contenu. */}
+       <div className="avm-category-page__content" style={{ position: "relative", zIndex: 3 }}>
+-        <PageHeader
+-          title={`${category.icon ?? ""} ${category.name}`.trim()}
++        <ModernPageHeader
++          icon={categoryIcon(category.key, 26)}
++          tint={tintFor(category.key)}
++          kicker="Catalogue"
++          title={category.name}
+           description={
+             categoryLibraries.length > 0
+               ? `${categoryLibraries.length} bibliothèque(s) — ${titles?.length ?? 0} titre(s)`
+diff --git a/apps/desktop/src/pages/CollectionsPage.tsx b/apps/desktop/src/pages/CollectionsPage.tsx
+index e1dbe9d..fc2ed2b 100644
+--- a/apps/desktop/src/pages/CollectionsPage.tsx
++++ b/apps/desktop/src/pages/CollectionsPage.tsx
+@@ -1,7 +1,9 @@
+ import { useCallback, useEffect, useState } from "react";
+ import { useNavigate } from "react-router-dom";
+ import { FolderHeart, Plus, Trash2, X } from "lucide-react";
+-import { Button, EmptyState, IconButton, PageHeader } from "@aethervault/ui-kit";
++import { Button, EmptyState, IconButton } from "@aethervault/ui-kit";
++import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
++import { Layers as CollectionsIcon } from "lucide-react";
+ import type { Category, TitleSummary } from "@aethervault/shared-types";
+ import { titleApi, type CollectionRecord } from "../features/title/api";
+ import { categoryApi } from "../features/category/api";
+@@ -82,7 +84,10 @@ export function CollectionsPage() {
+ 
+   return (
+     <div>
+-      <PageHeader
++      <ModernPageHeader
++        icon={<CollectionsIcon size={26} />}
++        tint={PAGE_TINTS.collections}
++        kicker="Vos listes"
+         title="Collections"
+         description="Vos listes personnalisées : à voir, favoris, sagas…"
+       />
+diff --git a/apps/desktop/src/pages/ExplorePage.tsx b/apps/desktop/src/pages/ExplorePage.tsx
+index 057d386..23112a7 100644
+--- a/apps/desktop/src/pages/ExplorePage.tsx
++++ b/apps/desktop/src/pages/ExplorePage.tsx
+@@ -1,7 +1,9 @@
+ import { useEffect, useMemo, useState } from "react";
+ import { useNavigate, useSearchParams } from "react-router-dom";
+ import { Compass, SlidersHorizontal } from "lucide-react";
+-import { Button, EmptyState, PageHeader } from "@aethervault/ui-kit";
++import { Button, EmptyState } from "@aethervault/ui-kit";
++import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
++import { Compass as ExploreIcon } from "lucide-react";
+ import type { Category, SearchFacets, TitleSearchQuery, TitleSearchResult } from "@aethervault/shared-types";
+ import { titleApi } from "../features/title/api";
+ import { categoryApi } from "../features/category/api";
+@@ -123,7 +125,10 @@ export function ExplorePage() {
+ 
+   return (
+     <div>
+-      <PageHeader
++      <ModernPageHeader
++        icon={<ExploreIcon size={26} />}
++        tint={PAGE_TINTS.explore}
++        kicker="Découverte"
+         title="Explorer"
+         description="Recherche multicritères dans Films, Séries, Anime et Documentaires."
+       />
+diff --git a/apps/desktop/src/pages/ProfilesPage.tsx b/apps/desktop/src/pages/ProfilesPage.tsx
+index f5c0196..818653d 100644
+--- a/apps/desktop/src/pages/ProfilesPage.tsx
++++ b/apps/desktop/src/pages/ProfilesPage.tsx
+@@ -1,7 +1,9 @@
+ import { useCallback, useEffect, useState } from "react";
+ import { convertFileSrc } from "@tauri-apps/api/core";
+ import { Eye, EyeOff, Pencil, Plus, Trash2, UserPlus, Users } from "lucide-react";
+-import { Avatar, Button, EmptyState, IconButton, PageHeader } from "@aethervault/ui-kit";
++import { Avatar, Button, EmptyState, IconButton } from "@aethervault/ui-kit";
++import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
++import { Users as UsersIcon } from "lucide-react";
+ import type { Profile } from "@aethervault/shared-types";
+ import { useActiveProfile } from "../profile/ActiveProfileContext";
+ import { ProfileFormModal } from "../features/profile/ProfileFormModal";
+@@ -215,7 +217,10 @@ export function ProfilesPage() {
+ 
+   return (
+     <div>
+-      <PageHeader
++      <ModernPageHeader
++        icon={<UsersIcon size={26} />}
++        tint={PAGE_TINTS.profiles}
++        kicker="Compte"
+         title="Profils & Amis"
+         description="Gérez vos profils locaux et votre liste d'amis pour partager des médias et voir ce qu'ils regardent."
+         actions={
+diff --git a/apps/desktop/src/pages/SettingsPage.tsx b/apps/desktop/src/pages/SettingsPage.tsx
+index 37d52b9..fbeb513 100644
+--- a/apps/desktop/src/pages/SettingsPage.tsx
++++ b/apps/desktop/src/pages/SettingsPage.tsx
+@@ -4,7 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
+ import { convertFileSrc } from "@tauri-apps/api/core";
+ import { open } from "@tauri-apps/plugin-dialog";
+ import type { AppStatus, VaultStatus } from "@aethervault/shared-types";
+-import { Button, IconButton, PageHeader, useTheme } from "@aethervault/ui-kit";
++import { Button, IconButton, useTheme } from "@aethervault/ui-kit";
++import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
++import { Settings as SettingsIcon } from "lucide-react";
+ import { useActiveProfile } from "../profile/ActiveProfileContext";
+ import { privacyApi } from "../features/privacy/api";
+ import "./pages.css";
+@@ -1216,7 +1218,10 @@ function HidePrivateSection() {
+ export function SettingsPage() {
+   return (
+     <div>
+-      <PageHeader
++      <ModernPageHeader
++        icon={<SettingsIcon size={26} />}
++        tint={PAGE_TINTS.settings}
++        kicker="Configuration"
+         title="Paramètres"
+         description="Apparence, sécurité du coffre privé et informations système."
+       />
+diff --git a/apps/desktop/src/pages/SharePage.tsx b/apps/desktop/src/pages/SharePage.tsx
+index e3b4d1b..8846fdf 100644
+--- a/apps/desktop/src/pages/SharePage.tsx
++++ b/apps/desktop/src/pages/SharePage.tsx
+@@ -1,6 +1,8 @@
+ import { useEffect, useState } from "react";
+ import { Copy, Download, StopCircle } from "lucide-react";
+-import { Button, PageHeader } from "@aethervault/ui-kit";
++import { Button } from "@aethervault/ui-kit";
++import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
++import { Share2 as ShareIcon } from "lucide-react";
+ import type { EpisodeSummary, TitleDetails, TitleSearchResult } from "@aethervault/shared-types";
+ import { titleApi } from "../features/title/api";
+ import { shareApi, type ShareOffer, type ShareProgress } from "../features/share/api";
+@@ -136,7 +138,10 @@ export function SharePage() {
+ 
+   return (
+     <div>
+-      <PageHeader
++      <ModernPageHeader
++        icon={<ShareIcon size={26} />}
++        tint={PAGE_TINTS.share}
++        kicker="Échange local"
+         title="Partage via code"
+         description="Envoyez un média à un ami AetherVault : P2P direct chiffré, aucun cloud, intégrité SHA-256."
+       />
+diff --git a/apps/desktop/src/pages/StatsPage.tsx b/apps/desktop/src/pages/StatsPage.tsx
+index 12a868a..77fefcc 100644
+--- a/apps/desktop/src/pages/StatsPage.tsx
++++ b/apps/desktop/src/pages/StatsPage.tsx
+@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
+ import { useNavigate } from "react-router-dom";
+ import { invoke } from "@tauri-apps/api/core";
+ import { BarChart3, Trash2 } from "lucide-react";
+-import { Button, EmptyState, PageHeader } from "@aethervault/ui-kit";
++import { Button, EmptyState } from "@aethervault/ui-kit";
++import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
++import { BarChart3 as StatsIcon } from "lucide-react";
+ import type { Category, TitleSummary } from "@aethervault/shared-types";
+ import { titleApi, type WatchSession, type WatchStats } from "../features/title/api";
+ import { categoryApi } from "../features/category/api";
+@@ -98,7 +100,10 @@ export function StatsPage() {
+ 
+   return (
+     <div>
+-      <PageHeader
++      <ModernPageHeader
++        icon={<StatsIcon size={26} />}
++        tint={PAGE_TINTS.stats}
++        kicker="Vos statistiques"
+         title="Time Capsule"
+         description="Vos statistiques de visionnage : heures regardées, genres préférés, titres les plus vus."
+         actions={

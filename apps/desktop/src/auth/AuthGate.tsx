@@ -125,13 +125,13 @@ function Intro({ onDone }: { onDone: () => void }) {
         transition={{ duration: 0.7, ease: "easeOut" }}
       />
       <motion.p
-        className="avm-intro__name"
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.35, duration: 0.6, ease: "easeOut" }}
-      >
-        AetherVault Media
-      </motion.p>
+  className="avm-intro__name avm-brand-app"
+  initial={{ opacity: 0, y: 8 }}
+  animate={{ opacity: 1, y: 0 }}
+  transition={{ delay: 0.35, duration: 0.6, ease: "easeOut" }}
+>
+  AetherVault <span style={{ color: "var(--color-accent-2, #2ec4b6)" }}>Media</span>
+</motion.p>
     </motion.div>
   );
 }

@@ -132,3 +132,16 @@
   font-weight: 800;
   letter-spacing: -0.02em;
 }
+
+/* 0.7.1 — Marque applicative : spécificité double pour battre
+   .avm-sidebar__brand / .avm-intro__name quel que soit l'ordre d'import. */
+.avm-sidebar__brand.avm-brand-app,
+.avm-intro__name.avm-brand-app {
+  font-family: "Major Mono Display", ui-monospace, monospace !important;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+  line-height: 1.2;
+  font-size: 15px;
+  text-transform: none;
+}
+

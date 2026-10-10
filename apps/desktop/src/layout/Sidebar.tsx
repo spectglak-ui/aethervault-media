@@ -69,7 +69,11 @@ export function Sidebar({ collapsed, canToggle, onToggleCollapsed }: SidebarProp
   return (
     <nav className="avm-sidebar" aria-label="Navigation principale">
       <div className="avm-sidebar__header">
-        {!collapsed && <span className="avm-sidebar__brand">AetherVault</span>}
+        {!collapsed && (
+  <span className="avm-sidebar__brand avm-brand-app">
+    AetherVault <span style={{ color: "var(--color-accent-2, #2ec4b6)" }}>Media</span>
+  </span>
+)}
         {canToggle && (
           <IconButton
             label={collapsed ? "Déplier la barre latérale" : "Réduire la barre latérale"}
