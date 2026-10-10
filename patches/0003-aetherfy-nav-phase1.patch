@@ -26,3 +26,182 @@
    const navigate = useNavigate();
    const { playQueue } = usePlayer();
  
+@@ -314,7 +328,7 @@
+   const [userPlaylists, setUserPlaylists] = useState<UserPlaylist[]>([]);
+   const [newUrl, setNewUrl] = useState("");
+   const [newPlaylist, setNewPlaylist] = useState("");
+-  const [newPlaylistMode, setNewPlaylistMode] = useState<PlaybackMode>("video");
++  const [newPlaylistMode, setNewPlaylistMode] = useState<PlaybackMode>(defaultMode ?? "video");
+   const [adding, setAdding] = useState(false);
+   const [error, setError] = useState<string | null>(null);
+   const [busyId, setBusyId] = useState<number | null>(null);
+@@ -333,6 +347,15 @@
+     vaultTubeApi.listUserPlaylists().then(setUserPlaylists).catch(() => setUserPlaylists([]));
+   }, []);
+ 
++  // FONCTIONNALITÉ (Phase 1) : pré-filtrage local sur `mode` — les
++  // données ne changent pas, seul l'affichage est restreint.
++  const visibleSubscriptions = defaultMode
++    ? subscriptions.filter((s) => s.mode === defaultMode)
++    : subscriptions;
++  const visibleUserPlaylists = defaultMode
++    ? userPlaylists.filter((p) => p.mode === defaultMode)
++    : userPlaylists;
++
+   useEffect(() => {
+     refresh();
+   }, [refresh]);
+@@ -494,7 +517,13 @@
+               boxShadow: "0 6px 18px rgba(0,0,0,.45)",
+             }}
+           >
+-            <Radio size={26} color="#fff" />
++            {defaultMode === "audio" ? (
++              <Music size={26} color="#fff" />
++            ) : defaultMode === "video" ? (
++              <Video size={26} color="#fff" />
++            ) : (
++              <Radio size={26} color="#fff" />
++            )}
+           </div>
+           <div>
+             <div
+@@ -505,9 +534,15 @@
+                 color: "var(--color-text-muted, #9a9aa3)",
+               }}
+             >
+-              Streaming multi-sources
++              {defaultMode === "audio"
++                ? "Vos playlists et chaînes musicales"
++                : defaultMode === "video"
++                  ? "Vos chaînes et playlists vidéo"
++                  : "Streaming multi-sources"}
++            </div>
++            <div style={{ fontSize: 30, fontWeight: 800, margin: 0 }}>
++              {defaultMode === "audio" ? "AetherFy Musique" : defaultMode === "video" ? "AetherFy Vidéo" : "AetherFy"}
+             </div>
+-            <div style={{ fontSize: 30, fontWeight: 800, margin: 0 }}>AetherFy</div>
+           </div>
+         </div>
+ 
+@@ -753,7 +788,7 @@
+         </Button>
+       </div>
+       <div style={gridStyle}>
+-        {userPlaylists.map((p) => (
++        {visibleUserPlaylists.map((p) => (
+           <AetherCard
+             key={p.id}
+             title={p.name}
+@@ -766,9 +801,11 @@
+             onRemove={() => void handleDeletePlaylistFromGrid(p.id, p.name)}
+           />
+         ))}
+-        {userPlaylists.length === 0 && (
++        {visibleUserPlaylists.length === 0 && (
+           <p style={{ fontSize: 13, color: "var(--color-text-muted, #9a9aa3)" }}>
+-            Aucune playlist locale — créez-en une ci-dessus.
++            {defaultMode
++              ? "Aucune playlist locale dans ce mode — créez-en une ci-dessus."
++              : "Aucune playlist locale — créez-en une ci-dessus."}
+           </p>
+         )}
+       </div>
+@@ -776,7 +813,7 @@
+       {/* Abonnements (chaînes + playlists suivies, toutes sources) */}
+       <div style={sectionTitle}>Abonnements</div>
+       <div style={gridStyle}>
+-        {subscriptions.map((sub) => (
++        {visibleSubscriptions.map((sub) => (
+           <AetherCard
+             key={sub.id}
+             title={sub.name}
+@@ -790,9 +827,11 @@
+             onRemove={() => void handleRemove(sub.id)}
+           />
+         ))}
+-        {subscriptions.length === 0 && (
++        {visibleSubscriptions.length === 0 && (
+           <p style={{ fontSize: 13, color: "var(--color-text-muted, #9a9aa3)" }}>
+-            Aucun abonnement — suivez une chaîne via la recherche ou l'URL ci-dessous.
++            {defaultMode
++              ? "Aucun abonnement dans ce mode — suivez une chaîne via la recherche ou l'URL ci-dessous."
++              : "Aucun abonnement — suivez une chaîne via la recherche ou l'URL ci-dessous."}
+           </p>
+         )}
+       </div>
+--- a/apps/desktop/src/router.tsx	2026-09-24 08:35:16.145095285 +0000
++++ b/apps/desktop/src/router.tsx	2026-09-24 08:35:16.165105794 +0000
+@@ -47,6 +47,14 @@
+       { path: "/private/videos/:id", element: <PrivateVideoLibraryPage /> },
+       { path: "/private/images/:id", element: <PrivateImageLibraryPage /> },
+       { path: "/vaulttube", element: <VaultTubePage /> },
++      // FONCTIONNALITÉ (refonte UI AetherFy, Phase 1) : deux entrées de
++      // navigation dédiées — voir layout/Sidebar.tsx et
++      // pages/VaultTubePage.tsx (prop `defaultMode`). Déclarées avant la
++      // route dynamique `/vaulttube/:id` par lisibilité (React Router
++      // classe de toute façon les segments statiques avant les
++      // dynamiques, quel que soit l'ordre).
++      { path: "/vaulttube/video", element: <VaultTubePage defaultMode="video" /> },
++      { path: "/vaulttube/music", element: <VaultTubePage defaultMode="audio" /> },
+       { path: "/vaulttube/:id", element: <VaultTubeVideosPage /> },
+ 	  { path: "/vaulttube/playlist/:playlistId", element: <VaultTubePlaylistPreviewPage /> },
+       { path: "/vaulttube/:id/playlists", element: <VaultTubePlaylistsPage /> },
+--- a/apps/desktop/src/layout/Sidebar.tsx	2026-09-24 08:35:16.157095286 +0000
++++ b/apps/desktop/src/layout/Sidebar.tsx	2026-09-24 08:35:16.166351229 +0000
+@@ -1,12 +1,23 @@
+ import { useCallback, useEffect, useState } from "react";
+ import { useLocation, useNavigate } from "react-router-dom";
+-import { Home, Compass, Layers, Users, Settings, Share2, BarChart3, PanelLeftClose, PanelLeft } from "lucide-react";
++import {
++  Home,
++  Compass,
++  Layers,
++  Users,
++  Settings,
++  Share2,
++  BarChart3,
++  PanelLeftClose,
++  PanelLeft,
++  Youtube,
++  Music,
++} from "lucide-react";
+ import { NavItem, IconButton } from "@aethervault/ui-kit";
+ import type { Category } from "@aethervault/shared-types";
+ import { categoryApi } from "../features/category/api";
+ import { categoryRoute } from "../lib/categoryRoute";
+ import { categoryIcon } from "../lib/categoryIcon";
+-import { Youtube } from "lucide-react";
+ 
+ const SECONDARY_NAV_ITEMS = [
+   { path: "/explore", label: "Explorer", icon: Compass },
+@@ -89,13 +100,26 @@
+             />
+           </li>
+         ))}
++        {/* FONCTIONNALITÉ (refonte UI AetherFy, Phase 1) : l'unique entrée
++            "AetherFy" (route générique `/vaulttube`, non filtrée, conservée
++            pour compatibilité) devient deux entrées dédiées — voir
++            router.tsx et pages/VaultTubePage.tsx. */}
+         <li>
+           <NavItem
+             icon={<Youtube size={18} />}
+-            label="AetherFy"
++            label="AetherFy Vidéo"
+             collapsed={collapsed}
+-            active={isActive("/vaulttube")}
+-            onClick={() => navigate("/vaulttube")}
++            active={isActive("/vaulttube/video")}
++            onClick={() => navigate("/vaulttube/video")}
++          />
++        </li>
++        <li>
++          <NavItem
++            icon={<Music size={18} />}
++            label="AetherFy Musique"
++            collapsed={collapsed}
++            active={isActive("/vaulttube/music")}
++            onClick={() => navigate("/vaulttube/music")}
+           />
+         </li>
+         {SECONDARY_NAV_ITEMS.map(({ path, label, icon: Icon }) => (

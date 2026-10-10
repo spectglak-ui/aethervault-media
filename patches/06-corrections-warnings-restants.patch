@@ -6,6 +6,140 @@
                      &sub.source,
 -                    detect_short(&video),
 +                    is_short,
-                  );
-                  count += 1;
-              }
+                 );
+                 count += 1;
+             }
+--- a/apps/desktop/src-tauri/src/commands/nas.rs	2026-10-08 23:02:24.466321497 +0000
++++ b/apps/desktop/src-tauri/src/commands/nas.rs	2026-10-08 23:02:24.538227825 +0000
+@@ -20,6 +20,8 @@
+ #[cfg(target_os = "windows")]
+ const CREATE_NO_WINDOW: u32 = 0x08000000;
+ 
++/// Utilisé uniquement par les chemins non-Windows (montage non supporté).
++#[cfg(not(target_os = "windows"))]
+ const UNSUPPORTED_MSG: &str = "Le montage NAS n'est pas supporté sur cet OS. \
+ Montez votre partage via votre gestionnaire de fichiers \
+ (/mnt/... ou /Volumes/...) puis ajoutez le chemin monté comme dossier \
+@@ -68,6 +70,9 @@
+ }
+ 
+ /// Démonte un partage NAS (best-effort).
++// Logique de démontage complète mais pas encore branchée sur une commande
++// Tauri (seuls `nas_test_connection` et `nas_connect` sont exposés).
++#[allow(dead_code)]
+ pub fn unmount(path: &str) -> Result<(), String> {
+     #[cfg(not(target_os = "windows"))]
+     {
+--- a/apps/desktop/src-tauri/src/db/repositories/episode_repository.rs	2026-10-08 23:02:24.472517019 +0000
++++ b/apps/desktop/src-tauri/src/db/repositories/episode_repository.rs	2026-10-08 23:02:24.538364608 +0000
+@@ -40,15 +40,6 @@
+     rows.collect()
+ }
+ 
+-pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<EpisodeRecord>> {
+-    conn.query_row(
+-        &format!("SELECT {COLUMNS} FROM episodes WHERE id = ?1"),
+-        rusqlite::params![id],
+-        map_row,
+-    )
+-    .optional()
+-}
+-
+ /// Recherche-ou-création par numéro d'épisode au sein d'une saison — même
+ /// logique que les autres `find_or_create` de ce module Étape 4.
+ pub fn find_or_create(
+--- a/apps/desktop/src-tauri/src/db/repositories/season_repository.rs	2026-10-08 23:02:24.478682953 +0000
++++ b/apps/desktop/src-tauri/src/db/repositories/season_repository.rs	2026-10-08 23:02:24.538488305 +0000
+@@ -32,15 +32,6 @@
+     rows.collect()
+ }
+ 
+-pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<SeasonRecord>> {
+-    conn.query_row(
+-        "SELECT id, title_id, season_number, name FROM seasons WHERE id = ?1",
+-        rusqlite::params![id],
+-        map_row,
+-    )
+-    .optional()
+-}
+-
+ /// Nombre d'épisodes d'une Saison — utilisé pour l'affichage (doc §6.3,
+ /// page Série) sans avoir à charger la liste complète des épisodes.
+ pub fn count_episodes(conn: &Connection, season_id: i64) -> rusqlite::Result<i64> {
+--- a/apps/desktop/src-tauri/src/services/metadata/mod.rs	2026-10-08 23:02:24.484769782 +0000
++++ b/apps/desktop/src-tauri/src/services/metadata/mod.rs	2026-10-08 23:02:24.538627619 +0000
+@@ -26,7 +26,11 @@
+ pub struct ParsedQuery {
+     pub title_guess: String,
+     pub year: Option<i32>,
++    // Champs du contrat commun des fournisseurs : renseignés par le service,
++    // pas encore lus par le fournisseur local (seul fournisseur actuel).
++    #[allow(dead_code)]
+     pub season_number: Option<i32>,
++    #[allow(dead_code)]
+     pub episode_number: Option<i32>,
+ }
+ 
+--- a/apps/desktop/src-tauri/src/services/metadata/tmdb.rs	2026-10-08 23:02:24.491202264 +0000
++++ b/apps/desktop/src-tauri/src/services/metadata/tmdb.rs	2026-10-08 23:02:24.538942790 +0000
+@@ -206,9 +206,7 @@
+ }
+ 
+ pub struct TmdbDetails {
+-    pub name: String,
+     pub description: Option<String>,
+-    pub year: Option<i32>,
+     pub rating: Option<f64>,
+     pub genres: Vec<String>,
+     pub studios: Vec<String>,
+@@ -375,24 +373,11 @@
+             "&append_to_response=credits,external_ids",
+             &self.lang,
+         ))?;
+-        let name = v
+-            .get("title")
+-            .or_else(|| v.get("name"))
+-            .and_then(|x| x.as_str())
+-            .unwrap_or_default()
+-            .to_string();
+         let mut overview = v
+             .get("overview")
+             .and_then(|x| x.as_str())
+             .unwrap_or_default()
+             .to_string();
+-        let date = v
+-            .get("release_date")
+-            .or_else(|| v.get("first_air_date"))
+-            .and_then(|x| x.as_str())
+-            .unwrap_or_default()
+-            .to_string();
+-        let year = date.get(0..4).and_then(|y| y.parse::<i32>().ok());
+         let rating = v.get("vote_average").and_then(|x| x.as_f64());
+         if overview.is_empty() && self.lang != "en-US" {
+             if let Some(en) = get_json(&self.url(&path, "", "en-US")) {
+@@ -469,13 +454,11 @@
+                 .map(|()| dest.to_string_lossy().to_string())
+         });
+         Some(TmdbDetails {
+-            name,
+             description: if overview.is_empty() {
+                 None
+             } else {
+                 Some(overview)
+             },
+-            year,
+             rating,
+             genres,
+             studios,
+--- a/apps/desktop/src-tauri/src/services/private_image_scanner.rs	2026-10-08 23:02:24.497570929 +0000
++++ b/apps/desktop/src-tauri/src/services/private_image_scanner.rs	2026-10-08 23:02:24.539110410 +0000
+@@ -252,6 +252,9 @@
+ /// persiste le résultat — unité réutilisable telle quelle par un futur
+ /// watcher (un événement = un appel ici), sans jamais avoir à reparcourir
+ /// tout un dossier ni à passer par le chemin parallélisé de `scan_library`.
++// Pas encore appelée : équivalent image de `private_video_scanner::upsert_one_file`,
++// conservée pour le futur watcher décrit ci-dessus.
++#[allow(dead_code)]
+ pub fn upsert_one_file(
+     conn: &Connection,
+     private_library_id: i64,

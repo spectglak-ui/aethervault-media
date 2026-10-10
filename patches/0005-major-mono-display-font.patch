@@ -40,3 +40,118 @@
  /* --- Variables globales + fallbacks système --- */
  :root {
    --font-display: "Panchang", "Space Grotesk", system-ui, sans-serif;
+--- a/apps/desktop/src/features/settings/TypographySettings.tsx	2026-09-25 21:00:57.773666651 +0000
++++ b/apps/desktop/src/features/settings/TypographySettings.tsx	2026-09-25 21:00:57.781622350 +0000
+@@ -6,6 +6,10 @@
+ const FONT_OPTIONS = [
+   "Panchang",
+   "Space Grotesk",
++  // FONCTIONNALITÉ : police ajoutée à la bibliothèque (embarquée
++  // localement, voir styles/fonts.css) — géométrique/mono, plutôt
++  // pensée pour un titre ou un accent que pour du corps de texte.
++  "Major Mono Display",
+   "Manrope",
+   "Inter",
+   "Roboto",
+--- a/apps/desktop/src/pages/HomePage.tsx	2026-09-25 21:00:57.789666652 +0000
++++ b/apps/desktop/src/pages/HomePage.tsx	2026-09-25 21:00:57.794451656 +0000
+@@ -129,11 +129,11 @@
+           justifyContent: "center",
+         }}
+       >
++        {/* FONCTIONNALITÉ : identité "AetherFy" en Major Mono Display. */}
+         <span
++          className="avm-brand-aetherfy"
+           style={{
+-            fontSize: 26,
+-            fontWeight: 800,
+-            letterSpacing: 1,
++            fontSize: 22,
+             color: "#fff",
+             textShadow: "0 2px 14px rgba(0,0,0,.5)",
+           }}
+--- a/packages/ui-kit/src/components/NavItem.tsx	2026-09-25 21:00:57.909666659 +0000
++++ b/packages/ui-kit/src/components/NavItem.tsx	2026-09-25 21:00:57.915157640 +0000
+@@ -3,7 +3,17 @@
+ 
+ interface NavItemProps {
+   icon: ReactNode;
+-  label: string;
++  /** FONCTIONNALITÉ : élargi de `string` à `ReactNode` pour permettre un
++   * libellé partiellement stylisé (ex. un mot dans une police dédiée),
++   * en restant rétrocompatible — une simple chaîne reste un `ReactNode`
++   * valide, tous les usages existants continuent de fonctionner tels
++   * quels. */
++  label: ReactNode;
++  /** Texte pour l'infobulle en mode réduit, utile quand `label` n'est
++   * pas une simple chaîne (l'attribut HTML `title` n'accepte pas de
++   * JSX). Si omis et que `label` est une chaîne, celle-ci est réutilisée
++   * automatiquement — aucun changement pour les usages existants. */
++  titleText?: string;
+   active?: boolean;
+   /** Masque visuellement le libellé (barre latérale réduite) sans le
+    * retirer du DOM, pour rester accessible aux lecteurs d'écran. */
+@@ -22,7 +32,8 @@
+  * disparaître/réapparaître, un détail "premium" à moindre coût car partagé
+  * par tous les usages de `NavItem`.
+  */
+-export function NavItem({ icon, label, active, collapsed, onClick }: NavItemProps) {
++export function NavItem({ icon, label, titleText, active, collapsed, onClick }: NavItemProps) {
++  const resolvedTitle = titleText ?? (typeof label === "string" ? label : undefined);
+   return (
+     <button
+       type="button"
+@@ -31,7 +42,7 @@
+         .join(" ")}
+       onClick={onClick}
+       aria-current={active ? "page" : undefined}
+-      title={collapsed ? label : undefined}
++      title={collapsed ? resolvedTitle : undefined}
+     >
+       {active && (
+         <motion.span
+--- a/apps/desktop/src/pages/VaultTubePage.tsx	2026-09-25 21:00:57.916993978 +0000
++++ b/apps/desktop/src/pages/VaultTubePage.tsx	2026-09-25 21:00:57.918215266 +0000
+@@ -541,7 +541,11 @@
+                   : "Streaming multi-sources"}
+             </div>
+             <div style={{ fontSize: 30, fontWeight: 800, margin: 0 }}>
+-              {defaultMode === "audio" ? "AetherFy Musique" : defaultMode === "video" ? "AetherFy Vidéo" : "AetherFy"}
++              {/* FONCTIONNALITÉ : identité "AetherFy" en Major Mono
++                  Display — seul ce mot change de police, "Vidéo"/
++                  "Musique" restent dans la police de titres habituelle. */}
++              <span className="avm-brand-aetherfy">AetherFy</span>
++              {defaultMode === "audio" ? " Musique" : defaultMode === "video" ? " Vidéo" : ""}
+             </div>
+           </div>
+         </div>
+--- a/apps/desktop/src/layout/Sidebar.tsx	2026-09-25 21:00:57.919393643 +0000
++++ b/apps/desktop/src/layout/Sidebar.tsx	2026-09-25 21:00:57.920529673 +0000
+@@ -107,7 +107,12 @@
+         <li>
+           <NavItem
+             icon={<Youtube size={18} />}
+-            label="AetherFy Vidéo"
++            label={
++              <>
++                <span className="avm-brand-aetherfy">AetherFy</span> Vidéo
++              </>
++            }
++            titleText="AetherFy Vidéo"
+             collapsed={collapsed}
+             active={isActive("/vaulttube/video")}
+             onClick={() => navigate("/vaulttube/video")}
+@@ -116,7 +121,12 @@
+         <li>
+           <NavItem
+             icon={<Music size={18} />}
+-            label="AetherFy Musique"
++            label={
++              <>
++                <span className="avm-brand-aetherfy">AetherFy</span> Musique
++              </>
++            }
++            titleText="AetherFy Musique"
+             collapsed={collapsed}
+             active={isActive("/vaulttube/music")}
+             onClick={() => navigate("/vaulttube/music")}

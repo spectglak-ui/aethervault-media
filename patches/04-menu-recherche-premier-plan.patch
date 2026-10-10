@@ -7,3 +7,82 @@
  import { useLocation, useNavigate } from "react-router-dom";
  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
  import { Film } from "lucide-react";
+@@ -46,6 +47,30 @@
+   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+   const rootRef = useRef<HTMLDivElement>(null);
+   const requestIdRef = useRef(0);
++  // Menu de suggestions rendu dans <body> (portail) : la barre du haut
++  // forme son propre contexte d'empilement (z-index 100), donc un menu
++  // enfant — même à z-index 1200 — restait sous le reste de l'interface.
++  const dropdownRef = useRef<HTMLDivElement>(null);
++  const [anchor, setAnchor] = useState<{ top: number; left: number; width: number } | null>(null);
++  const [dropdownFont, setDropdownFont] = useState<string | null>(null);
++  const showDropdown = open && suggestions.length > 0;
++
++  useLayoutEffect(() => {
++    if (!showDropdown) return;
++    const place = () => {
++      const root = rootRef.current;
++      if (!root) return;
++      const r = root.getBoundingClientRect();
++      setAnchor({ top: r.bottom + 6, left: r.left, width: r.width });
++    };
++    place();
++    // Le portail vit hors de l'en-tête : on reprend sa police explicitement
++    // (même approche qu'AetherFyQuickMenu).
++    const host = rootRef.current?.closest("header");
++    if (host) setDropdownFont(window.getComputedStyle(host).fontFamily);
++    window.addEventListener("resize", place);
++    return () => window.removeEventListener("resize", place);
++  }, [showDropdown]);
+ 
+   useEffect(() => {
+     if (!activeProfile) return;
+@@ -97,9 +122,11 @@
+   // 0.4.0 : fermeture au clic hors du dropdown.
+   useEffect(() => {
+     const onDown = (e: MouseEvent) => {
+-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+-        setOpen(false);
+-      }
++      const target = e.target as Node;
++      // Le menu est dans un portail (hors de rootRef) : un mousedown sur une
++      // suggestion ne doit PAS le fermer avant que le clic ne soit traité.
++      if (rootRef.current?.contains(target) || dropdownRef.current?.contains(target)) return;
++      setOpen(false);
+     };
+     document.addEventListener("mousedown", onDown);
+     return () => document.removeEventListener("mousedown", onDown);
+@@ -153,14 +180,16 @@
+             }
+           }}
+         />
+-        {open && suggestions.length > 0 && (
++        {showDropdown && anchor && createPortal(
+           <div
++            ref={dropdownRef}
+             style={{
+-              position: "absolute",
+-              top: "calc(100% + 6px)",
+-              left: 0,
+-              right: 0,
+-              zIndex: 1200,
++              position: "fixed",
++              top: anchor.top,
++              left: anchor.left,
++              width: anchor.width,
++              zIndex: 2147483000,
++              fontFamily: dropdownFont ?? "inherit",
+               background: "var(--color-surface, #1b1b21)",
+               border: "1px solid var(--color-border, #2c2c33)",
+               borderRadius: 10,
+@@ -249,7 +278,8 @@
+                 </button>
+               );
+             })}
+-          </div>
++          </div>,
++          document.body
+         )}
+       </div>
+ 

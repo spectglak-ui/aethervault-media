@@ -10,3 +10,307 @@ index a1982c1..e854b55 100644
 +  title: ReactNode;
    description?: ReactNode;
    actions?: ReactNode;
+   /** Icône de l'emblème (lucide, ~26 px). */
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyShell.tsx b/apps/desktop/src/features/aetherfy/AetherFyShell.tsx
+index 9d80aee..edc8699 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFyShell.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFyShell.tsx
+@@ -2,6 +2,7 @@ import { type ReactNode } from "react";
+ import { Outlet } from "react-router-dom";
+ import { AetherFySidebar } from "./AetherFySidebar";
+ import { AetherFyTopbar } from "./AetherFyTopbar";
++import "./aetherfy-modern.css";
+ 
+ /**
+  * Layout dédié AetherFy : sidebar + topbar + zone de contenu.
+diff --git a/apps/desktop/src/features/aetherfy/aetherfy-modern.css b/apps/desktop/src/features/aetherfy/aetherfy-modern.css
+new file mode 100644
+index 0000000..57a1912
+--- /dev/null
++++ b/apps/desktop/src/features/aetherfy/aetherfy-modern.css
+@@ -0,0 +1,182 @@
++/* ==========================================================================
++   AetherFy (Vidéo + Musique) — même langage visuel que l'accueil : verre
++   sombre, lueurs, survols qui soulèvent, titres accentués. Propriétés de
++   PEINTURE uniquement (fond, bordure, rayon, ombre, transitions) : aucune
++   mise en page n'est modifiée. Les états de départ des animations sont
++   l'état final visible (si `prefers-reduced-motion` les coupe, rien ne
++   reste caché).
++   ========================================================================== */
++
++/* ---------- Coque AetherFy Vidéo ---------- */
++
++.afy-sidebar {
++  background:
++    linear-gradient(180deg, rgba(124, 92, 255, 0.12) 0%, transparent 45%),
++    color-mix(in srgb, var(--afy-surface-1) 82%, transparent);
++  -webkit-backdrop-filter: blur(16px);
++  backdrop-filter: blur(16px);
++  border-right: 1px solid rgba(255, 255, 255, 0.08);
++}
++.afy-topbar {
++  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
++  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
++}
++
++/* ---------- En-têtes de pages (Tendances, Abonnements, Bibliothèque…) ---------- */
++
++.afy-page-head {
++  position: relative;
++  isolation: isolate;
++  padding-top: 18px;
++  margin-bottom: 6px;
++  animation: afy-m-rise 0.55s cubic-bezier(0.2, 0.8, 0.2, 1) both;
++}
++.afy-page-head::before {
++  content: "";
++  position: absolute;
++  inset: -1.5rem 0 -0.5rem;
++  z-index: -1;
++  pointer-events: none;
++  background: radial-gradient(40% 90% at 6% 40%, rgba(255, 46, 99, 0.18), transparent 72%);
++}
++#root .afy-page-head h1 {
++  font-family: var(--font-display);
++  font-size: clamp(1.4rem, 2.4vw, 1.9rem);
++  background: linear-gradient(90deg, var(--afy-text), #ffb4c6 85%);
++  -webkit-background-clip: text;
++  background-clip: text;
++  color: transparent;
++}
++/* L'icône d'en-tête devient un emblème (même idée que ModernPageHeader) */
++.afy-page-head h1 > svg:first-child {
++  box-sizing: content-box;
++  width: 22px;
++  height: 22px;
++  padding: 11px;
++  border-radius: 14px;
++  color: #fff !important;
++  background: linear-gradient(135deg, #ff2e63, #ff9f1c);
++  box-shadow: 0 8px 24px rgba(255, 46, 99, 0.35);
++}
++
++/* ---------- Titres de rangées ---------- */
++
++.afy-row__title::before {
++  content: "";
++  display: inline-block;
++  width: 4px;
++  height: 1em;
++  margin-right: 10px;
++  border-radius: 2px;
++  vertical-align: -0.12em;
++  background: linear-gradient(180deg, #ff2e63, #ff9f1c);
++}
++
++/* ---------- Vignettes vidéo ---------- */
++
++.afy-card {
++  transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
++}
++.afy-card:hover {
++  transform: translateY(-5px);
++}
++.afy-card__thumb-wrap {
++  border-radius: 18px;
++  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
++  transition: box-shadow 0.35s ease;
++}
++.afy-card:hover .afy-card__thumb-wrap {
++  box-shadow:
++    0 18px 38px rgba(0, 0, 0, 0.45),
++    0 0 0 1px rgba(255, 46, 99, 0.45),
++    0 0 38px rgba(255, 46, 99, 0.2);
++}
++
++/* ---------- Cartes d'abonnement / chaînes ---------- */
++
++.afy-sub-card {
++  border-radius: 20px;
++  background:
++    linear-gradient(165deg, rgba(124, 92, 255, 0.12) 0%, transparent 55%),
++    color-mix(in srgb, var(--afy-surface-2) 88%, transparent);
++  border-color: rgba(255, 255, 255, 0.1);
++  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
++  transition:
++    transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
++    border-color 0.3s ease,
++    box-shadow 0.35s ease;
++}
++.afy-sub-card:hover {
++  transform: translateY(-4px);
++  border-color: rgba(124, 92, 255, 0.65);
++  box-shadow:
++    0 18px 38px rgba(0, 0, 0, 0.36),
++    0 0 0 1px rgba(124, 92, 255, 0.3),
++    0 0 36px rgba(124, 92, 255, 0.18);
++}
++
++/* ---------- Puces, boutons, états vides ---------- */
++
++.afy-chip {
++  transition:
++    background 0.25s ease,
++    border-color 0.25s ease,
++    transform 0.25s ease,
++    box-shadow 0.25s ease;
++}
++.afy-chip:hover {
++  transform: translateY(-1px);
++  border-color: rgba(255, 46, 99, 0.55);
++}
++.afy-chip--active {
++  background: linear-gradient(135deg, #ff2e63, #ff9f1c);
++  box-shadow: 0 6px 20px rgba(255, 46, 99, 0.35);
++}
++.afy-btn-secondary {
++  transition:
++    background 0.25s ease,
++    border-color 0.25s ease,
++    transform 0.25s ease;
++}
++.afy-btn-secondary:hover {
++  transform: translateY(-1px);
++  border-color: rgba(124, 92, 255, 0.6);
++}
++.afy-empty {
++  margin: 16px 24px;
++  border-radius: 22px;
++  border: 1px dashed rgba(255, 255, 255, 0.16);
++  background: color-mix(in srgb, var(--afy-surface-1) 60%, transparent);
++}
++
++/* ---------- AetherFy Musique / Vidéo (VaultTubePage) ---------- */
++
++/* Champ de recherche : styles inline d'origine → !important nécessaire */
++.avm-hxp-search input {
++  border-radius: 14px !important;
++  border: 1px solid rgba(255, 255, 255, 0.14) !important;
++  background: rgba(10, 10, 16, 0.55) !important;
++  transition:
++    border-color 0.25s ease,
++    box-shadow 0.25s ease;
++}
++.avm-hxp-search input:focus {
++  border-color: rgba(124, 92, 255, 0.8) !important;
++  box-shadow: 0 0 0 3px rgba(124, 92, 255, 0.22);
++}
++.avm-af-card {
++  transition:
++    transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
++    filter 0.35s ease;
++}
++.avm-af-card:hover {
++  transform: translateY(-5px);
++  filter: drop-shadow(0 16px 26px rgba(0, 0, 0, 0.45)) drop-shadow(0 0 22px rgba(124, 92, 255, 0.3));
++}
++
++@keyframes afy-m-rise {
++  from {
++    opacity: 0;
++    transform: translateY(12px);
++  }
++}
+diff --git a/apps/desktop/src/pages/VaultTubePage.tsx b/apps/desktop/src/pages/VaultTubePage.tsx
+index b514680..55dccad 100644
+--- a/apps/desktop/src/pages/VaultTubePage.tsx
++++ b/apps/desktop/src/pages/VaultTubePage.tsx
+@@ -24,6 +24,8 @@ import { usePlayer } from "../player/PlayerContext";
+ import { formatDuration } from "./VaultTubeVideoGrid";
+ import { VaultTubePlaylistPicker, type PickableVideo } from "../components/VaultTubePlaylistPicker";
+ import "./pages.css";
++import { ModernPageHeader } from "../components/ModernPageHeader";
++import "../features/aetherfy/aetherfy-modern.css";
+ 
+ const inputStyle: CSSProperties = {
+   flex: 1,
+@@ -496,60 +498,35 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+ 
+   return (
+     <div>
+-      {/* Header dégradé façon Spotify */}
+-      <div
+-        style={{
+-          margin: "-20px -20px 0",
+-          padding: "30px 26px 26px",
+-          background: "linear-gradient(180deg, rgba(124,92,255,.30), rgba(124,92,255,0) 95%)",
+-        }}
+-      >
+-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+-          <div
+-            style={{
+-              width: 58,
+-              height: 58,
+-              borderRadius: 12,
+-              background: "linear-gradient(135deg, #7c5cff, #4c3a99)",
+-              display: "flex",
+-              alignItems: "center",
+-              justifyContent: "center",
+-              boxShadow: "0 6px 18px rgba(0,0,0,.45)",
+-            }}
+-          >
+-            {defaultMode === "audio" ? (
+-              <Music size={26} color="#fff" />
+-            ) : defaultMode === "video" ? (
+-              <Video size={26} color="#fff" />
+-            ) : (
+-              <Radio size={26} color="#fff" />
+-            )}
+-          </div>
+-          <div>
+-            <div
+-              style={{
+-                fontSize: 11,
+-                textTransform: "uppercase",
+-                letterSpacing: 1.2,
+-                color: "var(--color-text-muted, #9a9aa3)",
+-              }}
+-            >
+-              {defaultMode === "audio"
+-                ? "Vos playlists et chaînes musicales"
+-                : defaultMode === "video"
+-                  ? "Vos chaînes et playlists vidéo"
+-                  : "Streaming multi-sources"}
+-            </div>
+-            <div style={{ fontSize: 30, fontWeight: 800, margin: 0 }}>
+-              {/* FONCTIONNALITÉ : identité "AetherFy" en Major Mono
+-                  Display — seul ce mot change de police, "Vidéo"/
+-                  "Musique" restent dans la police de titres habituelle. */}
+-              <span className="avm-brand-aetherfy">AetherFy</span>
+-              {defaultMode === "audio" ? " Musique" : defaultMode === "video" ? " Vidéo" : ""}
+-            </div>
+-          </div>
+-        </div>
+-
++      {/* En-tête moderne (même langage que l'accueil). Le mot-symbole
++          « AetherFy » garde la police Major Mono Display ; « Vidéo » /
++          « Musique » restent dans la police de titres. */}
++      <ModernPageHeader
++        icon={
++          defaultMode === "audio" ? (
++            <Music size={26} />
++          ) : defaultMode === "video" ? (
++            <Video size={26} />
++          ) : (
++            <Radio size={26} />
++          )
++        }
++        tint={defaultMode === "audio" ? "29, 185, 84" : defaultMode === "video" ? "255, 46, 99" : "124, 92, 255"}
++        kicker={
++          defaultMode === "audio"
++            ? "Vos playlists et chaînes musicales"
++            : defaultMode === "video"
++              ? "Vos chaînes et playlists vidéo"
++              : "Streaming multi-sources"
++        }
++        title={
++          <>
++            <span className="avm-brand-aetherfy">AetherFy</span>
++            {defaultMode === "audio" ? " Musique" : defaultMode === "video" ? " Vidéo" : ""}
++          </>
++        }
++      />
++      <div className="avm-hxp-search">
+         {/* Recherche + sélecteur de source */}
+         <div style={{ display: "flex", gap: 8, marginTop: 20, alignItems: "center" }}>
+           <div style={{ position: "relative", flex: 1 }}>

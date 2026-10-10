@@ -9,3 +9,102 @@
  use std::sync::{Arc, Mutex};
  use std::time::{Duration, Instant};
  use tauri::ipc::{Channel, InvokeResponseBody};
+@@ -176,6 +176,11 @@
+     pot_cache: Mutex<Option<(String, String, Instant)>>,
+     /// 0.5.3 : start gate (buffer 30 % → lecture).
+     gate: Arc<StartGate>,
++    /// Génération d'« arrêt » : incrémentée par `stop()`. Le rechargement
++    /// correctif différé d'`attach_surface` (300 ms) mémorise la valeur au
++    /// moment de son lancement et s'annule si elle a changé — sinon il
++    /// relançait le flux (et le son) APRÈS le stop, sans image visible.
++    stop_epoch: Arc<AtomicU64>,
+ }
+ 
+ pub enum PlaybackEngineState {
+@@ -311,6 +316,7 @@
+             preferred_quality: Mutex::new(None),
+             pot_cache: Mutex::new(None),
+             gate: gate.clone(),
++            stop_epoch: Arc::new(AtomicU64::new(0)),
+         });
+         std::thread::spawn(move || run_event_thread(functions, mpv, app_handle, gate));
+         log::info!(
+@@ -900,18 +906,31 @@
+     /// 3) Détachement du thread de rendu (arrête sw_render).
+     /// 4) Désarmement de la start gate.
+     pub fn stop(&self) -> Result<(), String> {
++        let t0 = Instant::now();
++        // 0. Invalide tout rechargement correctif différé (attach_surface)
++        //    et oublie la source : sans cela, un `attach_surface` tardif
++        //    (ou déjà en attente) rechargeait `last_source` 300 ms plus
++        //    tard et relançait l'audio après le stop.
++        self.stop_epoch.fetch_add(1, Ordering::SeqCst);
++        *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) = None;
+         // 1. Pause immédiate : coupe l'audio avant même que le stop
+-        //    n'ait fini de démonter le démuxeur. Indispensable pour
+-        //    les flux HLS dont le cache met plusieurs secondes à se
+-        //    vider après un simple stop.
+-		let _ = self.set_property_flag("pause", true);
++        //    n'ait fini de démonter le démuxeur.
+         let _ = self.set_property_flag("pause", true);
++        let t_pause = t0.elapsed();
+         // 2. Stop : arrête la lecture et libère les ressources.
+         let result = self.command(&["stop"]);
++        let t_stop = t0.elapsed();
+         // 3. Détache la surface (arrête le thread sw_render).
+         self.detach_internal();
++        let t_detach = t0.elapsed();
+         // 4. Désarme la start gate (un load suivant repart propre).
+         self.gate.disarm();
++        log::info!(
++            "[playback] stop() : pause {} ms, stop {} ms, détachement {} ms (cumulés)",
++            t_pause.as_millis(),
++            t_stop.as_millis(),
++            t_detach.as_millis()
++        );
+         result
+     }
+ 
+@@ -978,11 +997,21 @@
+         let functions_for_reload = self.functions.clone();
+         let mpv_addr = self.mpv.0 as usize;
+         let gate = self.gate.clone();
++        let stop_epoch = self.stop_epoch.clone();
++        let epoch_at_attach = stop_epoch.load(Ordering::SeqCst);
+         std::thread::spawn(move || {
+             std::thread::sleep(std::time::Duration::from_millis(300));
+             let Some((video, audio)) = source else {
+                 return;
+             };
++            // Un stop() est intervenu pendant les 300 ms d'attente : ne
++            // surtout pas relancer le flux (audio fantôme sans image).
++            if stop_epoch.load(Ordering::SeqCst) != epoch_at_attach {
++                log::info!(
++                    "[playback] rechargement correctif annulé : stop() intervenu depuis attach_surface"
++                );
++                return;
++            }
+             let mpv_ptr = mpv_addr as *mut c_void;
+             // Reprend la position courante pour que le rechargement
+             // correctif ne remette PAS la lecture à zéro.
+@@ -1041,6 +1070,20 @@
+                     (functions_for_reload.command)(mpv_ptr, sptrs.as_ptr());
+                 }
+             }
++            // Filet de sécurité : un stop() a pu s'intercaler entre le
++            // contrôle ci-dessus et le loadfile (fenêtre de quelques µs).
++            // Dans ce cas on coupe immédiatement ce qu'on vient de relancer.
++            if stop_epoch.load(Ordering::SeqCst) != epoch_at_attach {
++                log::warn!(
++                    "[playback] rechargement correctif : stop() intervenu pendant le reload — arrêt immédiat"
++                );
++                let c_stop = vec![CString::new("stop").unwrap_or_default()];
++                let mut stptrs: Vec<*const c_char> = c_stop.iter().map(|a| a.as_ptr()).collect();
++                stptrs.push(std::ptr::null());
++                unsafe {
++                    (functions_for_reload.command)(mpv_ptr, stptrs.as_ptr());
++                }
++            }
+         });
+         Ok(())
+     }

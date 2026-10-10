@@ -1177,6 +1177,7 @@
 .avm-collections__create {
   display: flex;
   gap: 0.5rem;
+  align-items: stretch;
 }
 .avm-collections__input {
   flex: 1;
