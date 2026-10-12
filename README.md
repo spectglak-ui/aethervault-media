@@ -30,8 +30,6 @@
 
 **Version actuelle** : 0.7.0 « Orbite »
 ---
-https://spectglak-ui.github.io/aethervault-website/#/
----
 
 ## ✨ Caractéristiques
 
