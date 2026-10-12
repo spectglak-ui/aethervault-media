@@ -19,7 +19,7 @@
 
 ## À propos
 
-**AetherVault Media** est une application de bureau moderne combinant la puissance d'un lecteur vidéo professionnel avec l'expérience d'une médiathèque contemporaine. Gérez votre bibliothèque locale, profitez d'une lecture immersive, et gardez le contrôle total de vos contenus, sans dépendre d'un cloud externe ni d'un compte tiers.
+**AetherVault Media** est une application de bureau moderne combinant la puissance d'un lecteur vidéo professionnel avec l'expérience d'une médiathèque contemporaine. Gérez votre bibliothèque locale de films, séries, anime, manga et bien plus — totalement hors ligne, chiffrée et sous votre contrôle.
 
 - **Local-First** : Aucun compte, aucun cloud, aucune dépendance réseau
 - **Chiffrement intégral** : Section privée protégée en AES-256-GCM
@@ -29,6 +29,10 @@
 - **Open Source** : MIT License
 
 **Version actuelle** : 0.7.0 « Orbite »
+
+### 🌐 Site web
+Découvrez le projet en détail : **[aethervault-website](https://spectglak-ui.github.io/aethervault-website/#/)**
+
 ---
 
 ## ✨ Caractéristiques
