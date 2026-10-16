@@ -4,6 +4,7 @@ import {
   Home,
   Compass,
   Layers,
+  Bookmark,
   Users,
   Settings,
   Share2,
@@ -23,6 +24,7 @@ import { categoryIcon } from "../lib/categoryIcon";
 const SECONDARY_NAV_ITEMS = [
   { path: "/explore", label: "Explorer", icon: Compass },
   { path: "/collections", label: "Collections", icon: Layers },
+  { path: "/watchlist", label: "Watchlist", icon: Bookmark },
   { path: "/share", label: "Partage", icon: Share2 },
   { path: "/stats", label: "Time Capsule", icon: BarChart3 },
   { path: "/profiles", label: "Profils", icon: Users },

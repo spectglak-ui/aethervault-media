@@ -1,0 +1,863 @@
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyChannelPlaylistPage.tsx b/apps/desktop/src/features/aetherfy/AetherFyChannelPlaylistPage.tsx
+new file mode 100644
+index 0000000..dee0521
+--- /dev/null
++++ b/apps/desktop/src/features/aetherfy/AetherFyChannelPlaylistPage.tsx
+@@ -0,0 +1,125 @@
++import { useCallback, useEffect, useState } from "react";
++import { useLocation, useNavigate, useParams } from "react-router-dom";
++import { ArrowLeft, ListVideo, Play } from "lucide-react";
++import type { VaultTubeVideo } from "../vaulttube/api";
++import { vaultTubeApi } from "../vaulttube/api";
++import { AetherFyVideoCard } from "./AetherFyVideoCard";
++
++const PAGE = 48;
++
++/**
++ * Contenu d'une playlist PUBLIQUE d'une chaîne (ouverte depuis l'onglet
++ * « Playlists » de la page de chaîne). Les vidéos sont lues en direct sur
++ * YouTube (`previewVideos`) : le chargement peut prendre quelques secondes.
++ */
++export function AetherFyChannelPlaylistPage() {
++  const { ytId } = useParams<{ ytId: string }>();
++  const navigate = useNavigate();
++  const state = (useLocation().state as {
++    title?: string;
++    channel?: string | null;
++    count?: number | null;
++  } | null) ?? null;
++
++  const [videos, setVideos] = useState<VaultTubeVideo[] | null>(null);
++  const [error, setError] = useState<string | null>(null);
++  const [shown, setShown] = useState(PAGE);
++
++  const load = useCallback(async () => {
++    if (!ytId) return;
++    setVideos(null);
++    setError(null);
++    setShown(PAGE);
++    try {
++      setVideos(await vaultTubeApi.previewVideos(`https://www.youtube.com/playlist?list=${ytId}`));
++    } catch (err) {
++      setError(err instanceof Error ? err.message : String(err));
++      setVideos([]);
++    }
++  }, [ytId]);
++
++  useEffect(() => {
++    void load();
++  }, [load]);
++
++  const withChannel = (v: VaultTubeVideo) => ({
++    ...v,
++    channel: state?.channel ?? v.channel ?? null,
++  });
++
++  const playAll = () => {
++    const first = videos?.[0];
++    if (first) navigate(`/aetherfy/watch/${first.youtube_id}`, { state: { video: withChannel(first) } });
++  };
++
++  return (
++    <div>
++      <header className="afy-sub-head">
++        <button
++          type="button"
++          className="afy-topbar__back"
++          onClick={() => navigate(-1)}
++          title="Retour"
++          aria-label="Retour"
++        >
++          <ArrowLeft size={20} />
++        </button>
++        <div className="afy-sub-head__info">
++          <h1 className="afy-sub-head__name">{state?.title ?? "Playlist"}</h1>
++          <div className="afy-sub-head__meta">
++            <ListVideo size={13} />
++            {videos === null
++              ? "Chargement de la playlist…"
++              : `${videos.length} vidéo(s)${state?.channel ? ` • ${state.channel}` : ""}`}
++          </div>
++        </div>
++        <button
++          type="button"
++          className="afy-btn-secondary"
++          onClick={playAll}
++          disabled={!videos || videos.length === 0}
++        >
++          <Play size={14} /> Tout lire
++        </button>
++      </header>
++
++      {videos === null && <div className="afy-loader">Chargement de la playlist…</div>}
++
++      {error && (
++        <div className="afy-empty">
++          <div className="afy-empty__title">{error}</div>
++          <button type="button" className="afy-btn-secondary" onClick={() => void load()}>
++            Réessayer
++          </button>
++        </div>
++      )}
++
++      {videos !== null && videos.length === 0 && !error && (
++        <div className="afy-empty">
++          <div className="afy-empty__title">Cette playlist est vide</div>
++        </div>
++      )}
++
++      {videos !== null && videos.length > 0 && (
++        <section className="afy-row">
++          <div className="afy-grid">
++            {videos.slice(0, shown).map((v) => (
++              <AetherFyVideoCard key={`${v.source}-${v.youtube_id}`} video={withChannel(v)} />
++            ))}
++          </div>
++          {shown < videos.length && (
++            <div className="afy-more">
++              <button
++                type="button"
++                className="afy-btn-secondary"
++                onClick={() => setShown((n) => n + PAGE)}
++              >
++                Afficher plus ({videos.length - shown} restantes)
++              </button>
++            </div>
++          )}
++        </section>
++      )}
++    </div>
++  );
++}
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyPages.tsx b/apps/desktop/src/features/aetherfy/AetherFyPages.tsx
+index 05233e8..ef13e33 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFyPages.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFyPages.tsx
+@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+ import { useNavigate, useParams } from "react-router-dom";
+ import {
+   Flame, Users, Library as LibraryIcon, History as HistoryIcon, Clock, Heart,
+-  Music, Gamepad2, Radio, Plus, Trash2, RefreshCw, X, ListVideo, Link2,
++  Music, Radio, Plus, Trash2, RefreshCw, X, ListVideo, Link2,
+ } from "lucide-react";
+ import type { VaultTubeVideo, VaultTubeSubscription, SearchResult } from "../vaulttube/api";
+ import { vaultTubeApi } from "../vaulttube/api";
+@@ -171,23 +171,6 @@ export function AetherFyLivePage() {
+   );
+ }
+ 
+-/* ---------- Jeux oniriques (inchangé : recherche globale gameplay) ---------- */
+-
+-export function AetherFyGamingPage() {
+-  const feed = useFeed(async () => {
+-    const r = await vaultTubeApi.search("jeux indépendants gameplay fr");
+-    return r.filter((x) => x.kind === "video").map(fromSearch);
+-  });
+-  return (
+-    <AfyGridPage
+-      title="Jeux oniriques"
+-      icon={<Gamepad2 size={20} style={{ color: "#2ec4b6" }} />}
+-      {...feed}
+-      empty="Aucune vidéo gaming trouvée."
+-    />
+-  );
+-}
+-
+ /* ---------- Musique ---------- */
+ 
+ export function AetherFyMusicPage() {
+diff --git a/apps/desktop/src/features/aetherfy/AetherFySidebar.tsx b/apps/desktop/src/features/aetherfy/AetherFySidebar.tsx
+index 1b2041e..0c88ba3 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFySidebar.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFySidebar.tsx
+@@ -8,7 +8,6 @@ import {
+   Clock,
+   Heart,
+   Music,
+-  Gamepad2,
+   Radio,
+   Sparkles,
+ } from "lucide-react";
+@@ -34,7 +33,6 @@ const SECONDARY_NAV: NavEntry[] = [
+ 
+ const EXPLORE_NAV: NavEntry[] = [
+   { path: "/aetherfy/music", label: "Musique", icon: Music },
+-  { path: "/aetherfy/gaming", label: "Jeux oniriques", icon: Gamepad2 },
+   { path: "/aetherfy/live", label: "Directs", icon: Radio },
+ ];
+ 
+diff --git a/apps/desktop/src/features/aetherfy/AetherFySubscriptionPage.tsx b/apps/desktop/src/features/aetherfy/AetherFySubscriptionPage.tsx
+index bdc9e98..6181264 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFySubscriptionPage.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFySubscriptionPage.tsx
+@@ -1,18 +1,58 @@
+-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+-import { useParams } from "react-router-dom";
+-import { CheckCircle2, RefreshCw, Users } from "lucide-react";
+-import type { VaultTubeSubscription, VaultTubeVideo } from "../vaulttube/api";
++import { useCallback, useEffect, useMemo, useState } from "react";
++import { useNavigate, useParams } from "react-router-dom";
++import { CheckCircle2, ListVideo, RefreshCw, Users } from "lucide-react";
++import type {
++  VaultTubePlaylist,
++  VaultTubeSubscription,
++  VaultTubeVideo,
++} from "../vaulttube/api";
+ import { vaultTubeApi } from "../vaulttube/api";
+ import { AetherFyVideoCard } from "./AetherFyVideoCard";
+-import { isShortByMeta } from "./shorts";
+ 
+ /**
+- * 0.7.2 (Phase 2) â€” page chaÃ®ne/abonnement : en-tÃªte profil (avatar rÃ©el,
+- * compteurs), bouton de synchronisation manuelle, grille des vidÃ©os
+- * normales + rangÃ©e Shorts sÃ©parÃ©e (mÃªme rÃ¨gle de dÃ©tection que l'accueil).
++ * Page chaîne / abonnement, rangée en trois parties comme une chaîne YouTube :
++ *  - « Vidéos »    : format horizontal (hors Shorts), triables ;
++ *  - « Shorts »    : format vertical ;
++ *  - « Playlists » : playlists publiques de la chaîne (chargées à la demande).
++ *
++ * Les Shorts suivent la même règle que l'accueil : le drapeau `is_short`
++ * calculé par le backend (et non plus une heuristique de durée côté page).
++ * Un seul onglet est rendu à la fois, par tranches (« Afficher plus ») : une
++ * chaîne peut compter des milliers de vidéos.
+  */
++
++type Tab = "videos" | "shorts" | "playlists";
++type SortKey = "recent" | "oldest" | "popular";
++
++const VIDEOS_PAGE = 36;
++const SHORTS_PAGE = 48;
++
++const SORT_LABELS: Record<SortKey, string> = {
++  recent: "Plus récentes",
++  oldest: "Plus anciennes",
++  popular: "Plus populaires",
++};
++
++/** Date de référence d'une vidéo (secondes) : publication, sinon ajout. */
++function dateOf(v: VaultTubeVideo): number {
++  return v.published_at ?? v.added_at ?? 0;
++}
++
++function sortVideos(list: VaultTubeVideo[], key: SortKey): VaultTubeVideo[] {
++  const copy = [...list];
++  switch (key) {
++    case "oldest":
++      return copy.sort((a, b) => dateOf(a) - dateOf(b));
++    case "popular":
++      return copy.sort((a, b) => (b.views ?? 0) - (a.views ?? 0) || dateOf(b) - dateOf(a));
++    default:
++      return copy.sort((a, b) => dateOf(b) - dateOf(a));
++  }
++}
++
+ export function AetherFySubscriptionPage() {
+   const { id } = useParams<{ id: string }>();
++  const navigate = useNavigate();
+   const subId = Number(id);
+ 
+   const [subscription, setSubscription] = useState<VaultTubeSubscription | null>(null);
+@@ -21,6 +61,16 @@ export function AetherFySubscriptionPage() {
+   const [syncing, setSyncing] = useState(false);
+   const [error, setError] = useState<string | null>(null);
+ 
++  const [tab, setTab] = useState<Tab>("videos");
++  const [sort, setSort] = useState<SortKey>("recent");
++  const [videosShown, setVideosShown] = useState(VIDEOS_PAGE);
++  const [shortsShown, setShortsShown] = useState(SHORTS_PAGE);
++
++  // `null` = pas encore demandé (chargé à la première ouverture de l'onglet).
++  const [playlists, setPlaylists] = useState<VaultTubePlaylist[] | null>(null);
++  const [playlistsLoading, setPlaylistsLoading] = useState(false);
++  const [playlistsError, setPlaylistsError] = useState<string | null>(null);
++
+   const load = useCallback(async () => {
+     setLoading(true);
+     setError(null);
+@@ -38,16 +88,49 @@ export function AetherFySubscriptionPage() {
+     }
+   }, [subId]);
+ 
++  // Nouvelle chaîne : on repart d'un état neuf.
+   useEffect(() => {
++    setTab("videos");
++    setSort("recent");
++    setVideosShown(VIDEOS_PAGE);
++    setShortsShown(SHORTS_PAGE);
++    setPlaylists(null);
++    setPlaylistsError(null);
+     void load();
+   }, [load]);
+ 
++  const loadPlaylists = useCallback(
++    async (forceSync: boolean) => {
++      setPlaylistsLoading(true);
++      setPlaylistsError(null);
++      try {
++        let list = await vaultTubeApi.listPlaylists(subId);
++        if (list.length === 0 || forceSync) {
++          // Aucune playlist en base (ou actualisation demandée) : on interroge la chaîne.
++          await vaultTubeApi.syncPlaylists(subId).catch(() => 0);
++          list = await vaultTubeApi.listPlaylists(subId);
++        }
++        setPlaylists(list);
++      } catch (err) {
++        setPlaylistsError(err instanceof Error ? err.message : String(err));
++        setPlaylists([]);
++      } finally {
++        setPlaylistsLoading(false);
++      }
++    },
++    [subId]
++  );
++
++  useEffect(() => {
++    if (tab === "playlists" && playlists === null && !playlistsLoading) {
++      void loadPlaylists(false);
++    }
++  }, [tab, playlists, playlistsLoading, loadPlaylists]);
++
+   const handleSync = async () => {
+     setSyncing(true);
+     setError(null);
+     try {
+-      // Nom de mÃ©thode Ã  aligner sur features/vaulttube/api.ts si besoin
+-      // (refreshSubscription / refresh / syncSubscription).
+       await vaultTubeApi.refreshSubscription(subId);
+       await load();
+     } catch (err) {
+@@ -57,20 +140,41 @@ export function AetherFySubscriptionPage() {
+     }
+   };
+ 
++  const horizontal = useMemo(
++    () => sortVideos(videos.filter((v) => !v.is_short), sort),
++    [videos, sort]
++  );
+   const shorts = useMemo(
+-  () => videos.filter(isShortByMeta),
+-  [videos]
+-);
++    () => sortVideos(videos.filter((v) => v.is_short), "recent"),
++    [videos]
++  );
+ 
+-const normals = useMemo(
+-  () => videos.filter((v) => !isShortByMeta(v)),
+-  [videos]
+-);
++  // Changer le tri ramène la liste à sa première tranche.
++  const changeSort = (next: SortKey) => {
++    setSort(next);
++    setVideosShown(VIDEOS_PAGE);
++  };
++
++  const withChannel = (v: VaultTubeVideo) => ({
++    ...v,
++    channel: subscription?.name ?? null,
++    channelAvatar: subscription?.thumbnail_url ?? null,
++  });
+ 
+   if (loading && videos.length === 0) {
+-    return <div className="afy-loader">Chargement de la chaÃ®neâ€¦</div>;
++    return <div className="afy-loader">Chargement de la chaîne…</div>;
+   }
+ 
++  const tabs: { key: Tab; label: string; count: string }[] = [
++    { key: "videos", label: "Vidéos", count: String(horizontal.length) },
++    { key: "shorts", label: "Shorts", count: String(shorts.length) },
++    {
++      key: "playlists",
++      label: "Playlists",
++      count: playlists === null ? "" : String(playlists.length),
++    },
++  ];
++
+   return (
+     <div>
+       {subscription && (
+@@ -88,12 +192,18 @@ const normals = useMemo(
+               <CheckCircle2 size={16} className="afy-sub-head__verified" />
+             </h1>
+             <div className="afy-sub-head__meta">
+-              <Users size={13} /> {videos.length} vidÃ©o(s) â€¢ {shorts.length} short(s)
++              <Users size={13} /> {horizontal.length} vidéo(s) • {shorts.length} short(s)
++              {playlists !== null && <> • {playlists.length} playlist(s)</>}
+             </div>
+           </div>
+-          <button type="button" className="afy-btn-secondary" onClick={handleSync} disabled={syncing}>
++          <button
++            type="button"
++            className="afy-btn-secondary"
++            onClick={handleSync}
++            disabled={syncing}
++          >
+             <RefreshCw size={14} className={syncing ? "afy-spin" : undefined} />
+-            {syncing ? "Synchronisationâ€¦" : "Synchroniser"}
++            {syncing ? "Synchronisation…" : "Synchroniser"}
+           </button>
+         </header>
+       )}
+@@ -104,47 +214,185 @@ const normals = useMemo(
+         </div>
+       )}
+ 
+-      {normals.length > 0 && (
+-        <section className="afy-row">
+-          <h2 className="afy-row__title">VidÃ©os</h2>
+-          <div className="afy-grid">
+-            {normals.map((v) => (
+-              <AetherFyVideoCard
+-                key={`${v.source}-${v.youtube_id}`}
+-                video={{
+-                  ...v,
+-                  channel: subscription?.name ?? null,
+-                  channelAvatar: subscription?.thumbnail_url ?? null,
+-                }}
+-              />
+-            ))}
+-          </div>
+-        </section>
++      <div className="afy-tabs" role="tablist" aria-label="Contenu de la chaîne">
++        {tabs.map((t) => (
++          <button
++            key={t.key}
++            type="button"
++            role="tab"
++            aria-selected={tab === t.key}
++            className={`afy-tab${tab === t.key ? " afy-tab--active" : ""}`}
++            onClick={() => setTab(t.key)}
++          >
++            {t.label}
++            {t.count !== "" && <span className="afy-tab__count">{t.count}</span>}
++          </button>
++        ))}
++      </div>
++
++      {/* ---------------- Vidéos (format horizontal) ---------------- */}
++      {tab === "videos" && (
++        <div role="tabpanel">
++          {horizontal.length > 0 ? (
++            <>
++              <div className="afy-toolbar">
++                <label className="afy-toolbar__label">
++                  Trier par
++                  <select
++                    className="afy-select"
++                    value={sort}
++                    onChange={(e) => changeSort(e.target.value as SortKey)}
++                  >
++                    {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
++                      <option key={k} value={k}>
++                        {SORT_LABELS[k]}
++                      </option>
++                    ))}
++                  </select>
++                </label>
++              </div>
++              <section className="afy-row">
++                <div className="afy-grid">
++                  {horizontal.slice(0, videosShown).map((v) => (
++                    <AetherFyVideoCard
++                      key={`${v.source}-${v.youtube_id}`}
++                      video={withChannel(v)}
++                    />
++                  ))}
++                </div>
++                {videosShown < horizontal.length && (
++                  <div className="afy-more">
++                    <button
++                      type="button"
++                      className="afy-btn-secondary"
++                      onClick={() => setVideosShown((n) => n + VIDEOS_PAGE)}
++                    >
++                      Afficher plus ({horizontal.length - videosShown} restantes)
++                    </button>
++                  </div>
++                )}
++              </section>
++            </>
++          ) : (
++            !loading &&
++            !error && (
++              <div className="afy-empty">
++                <div className="afy-empty__title">
++                  {videos.length === 0 ? "Aucune vidéo synchronisée" : "Aucune vidéo horizontale"}
++                </div>
++                {videos.length === 0 && (
++                  <div>
++                    Lancez une synchronisation pour récupérer les dernières vidéos de la chaîne.
++                  </div>
++                )}
++              </div>
++            )
++          )}
++        </div>
+       )}
+ 
+-      {shorts.length > 0 && (
+-        <section className="afy-row">
+-          <h2 className="afy-row__title">Shorts</h2>
+-          <div className="afy-shorts-shelf">
+-            {shorts.map((v) => (
+-              <AetherFyVideoCard
+-                key={`s-${v.source}-${v.youtube_id}`}
+-                video={{
+-                  ...v,
+-                  channel: subscription?.name ?? null,
+-                  channelAvatar: subscription?.thumbnail_url ?? null,
+-                }}
+-                variant="short"
+-              />
+-            ))}
+-          </div>
+-        </section>
++      {/* ---------------- Shorts (format vertical) ---------------- */}
++      {tab === "shorts" && (
++        <div role="tabpanel">
++          {shorts.length > 0 ? (
++            <section className="afy-row">
++              <div className="afy-grid afy-grid--shorts">
++                {shorts.slice(0, shortsShown).map((v) => (
++                  <AetherFyVideoCard
++                    key={`s-${v.source}-${v.youtube_id}`}
++                    video={withChannel(v)}
++                    variant="short"
++                  />
++                ))}
++              </div>
++              {shortsShown < shorts.length && (
++                <div className="afy-more">
++                  <button
++                    type="button"
++                    className="afy-btn-secondary"
++                    onClick={() => setShortsShown((n) => n + SHORTS_PAGE)}
++                  >
++                    Afficher plus ({shorts.length - shortsShown} restants)
++                  </button>
++                </div>
++              )}
++            </section>
++          ) : (
++            <div className="afy-empty">
++              <div className="afy-empty__title">Aucun short pour cette chaîne</div>
++            </div>
++          )}
++        </div>
+       )}
+ 
+-      {videos.length === 0 && !loading && !error && (
+-        <div className="afy-empty">
+-          <div className="afy-empty__title">Aucune vidÃ©o synchronisÃ©e</div>
+-          <div>Lancez une synchronisation pour rÃ©cupÃ©rer les derniÃ¨res vidÃ©os de la chaÃ®ne.</div>
++      {/* ---------------- Playlists ---------------- */}
++      {tab === "playlists" && (
++        <div role="tabpanel">
++          <div className="afy-toolbar">
++            <span className="afy-toolbar__label">Playlists publiques de la chaîne</span>
++            <button
++              type="button"
++              className="afy-btn-secondary"
++              onClick={() => void loadPlaylists(true)}
++              disabled={playlistsLoading}
++            >
++              <RefreshCw size={14} className={playlistsLoading ? "afy-spin" : undefined} />
++              Actualiser
++            </button>
++          </div>
++
++          {playlistsLoading && playlists === null && (
++            <div className="afy-loader">Synchronisation des playlists…</div>
++          )}
++          {playlistsError && (
++            <div className="afy-empty">
++              <div className="afy-empty__title">{playlistsError}</div>
++            </div>
++          )}
++          {playlists !== null && playlists.length === 0 && !playlistsLoading && !playlistsError && (
++            <div className="afy-empty">
++              <div className="afy-empty__title">Aucune playlist publique trouvée</div>
++            </div>
++          )}
++          {playlists !== null && playlists.length > 0 && (
++            <section className="afy-row">
++              <div className="afy-grid">
++                {playlists.map((pl) => (
++                  <button
++                    key={pl.id}
++                    type="button"
++                    className="afy-pl-card"
++                    onClick={() =>
++                      navigate(`/aetherfy/yt-playlist/${pl.youtube_id}`, {
++                        state: {
++                          title: pl.title,
++                          channel: subscription?.name ?? null,
++                          count: pl.video_count,
++                        },
++                      })
++                    }
++                  >
++                    <div className="afy-pl-card__thumb">
++                      {pl.thumbnail_url ? (
++                        <img src={pl.thumbnail_url} alt="" loading="lazy" />
++                      ) : (
++                        <ListVideo size={36} />
++                      )}
++                      {pl.video_count != null && (
++                        <span className="afy-pl-card__badge">
++                          <ListVideo size={13} /> {pl.video_count}
++                        </span>
++                      )}
++                    </div>
++                    <div className="afy-pl-card__title">{pl.title}</div>
++                    <div className="afy-pl-card__meta">
++                      {pl.video_count != null ? `${pl.video_count} vidéos` : "Playlist"}
++                    </div>
++                  </button>
++                ))}
++              </div>
++            </section>
++          )}
+         </div>
+       )}
+     </div>
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyTopbar.tsx b/apps/desktop/src/features/aetherfy/AetherFyTopbar.tsx
+index f88b648..5bfa4ab 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFyTopbar.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFyTopbar.tsx
+@@ -1,6 +1,6 @@
+ import { useEffect, useState } from "react";
+ import { useNavigate } from "react-router-dom";
+-import { ArrowLeft, Menu, Mic, Search, Bell, Plus } from "lucide-react";
++import { ArrowLeft, Mic, Search, Bell } from "lucide-react";
+ import { AetherFyNotifications } from "./AetherFyNotifications";
+ import { AetherFyAccountMenu, getAfyAccount } from "./AetherFyAccountMenu";
+ 
+@@ -37,14 +37,10 @@ export function AetherFyTopbar({ showBack = false }: { showBack?: boolean }) {
+ 
+   return (
+     <header className="afy-topbar">
+-      {showBack ? (
++      {showBack && (
+         <button type="button" className="afy-topbar__back" onClick={() => navigate(-1)}>
+           <ArrowLeft size={20} />
+         </button>
+-      ) : (
+-        <button type="button" className="afy-topbar__icon-btn" title="Menu">
+-          <Menu size={18} />
+-        </button>
+       )}
+ 
+       <form className="afy-topbar__search" onSubmit={handleSearch}>
+@@ -64,9 +60,6 @@ export function AetherFyTopbar({ showBack = false }: { showBack?: boolean }) {
+       </form>
+ 
+       <div className="afy-topbar__actions">
+-        <button type="button" className="afy-topbar__icon-btn" title="Créer">
+-          <Plus size={18} />
+-        </button>
+         <button
+           type="button"
+           className="afy-topbar__icon-btn"
+diff --git a/apps/desktop/src/features/aetherfy/aetherfy-modern.css b/apps/desktop/src/features/aetherfy/aetherfy-modern.css
+index 57a1912..c1dabb4 100644
+--- a/apps/desktop/src/features/aetherfy/aetherfy-modern.css
++++ b/apps/desktop/src/features/aetherfy/aetherfy-modern.css
+@@ -180,3 +180,137 @@
+     transform: translateY(12px);
+   }
+ }
++
++/* ---------- Page de chaîne : onglets, tri, playlists ---------- */
++
++.afy-tabs {
++  display: flex;
++  gap: 4px;
++  margin: 4px 24px 0;
++  border-bottom: 1px solid var(--afy-border);
++}
++.afy-tab {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  padding: 12px 18px;
++  background: none;
++  border: 0;
++  border-bottom: 2px solid transparent;
++  margin-bottom: -1px;
++  color: var(--afy-text-muted);
++  font-size: 14px;
++  font-weight: 600;
++  cursor: pointer;
++  transition: color 0.2s ease, border-color 0.2s ease;
++}
++.afy-tab:hover {
++  color: var(--afy-text);
++}
++.afy-tab--active {
++  color: var(--afy-text);
++  border-bottom-color: var(--afy-accent-start);
++}
++.afy-tab__count {
++  font-size: 12px;
++  font-weight: 500;
++  padding: 1px 7px;
++  border-radius: 999px;
++  background: var(--afy-surface-2);
++  color: var(--afy-text-muted);
++}
++
++.afy-toolbar {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 12px;
++  margin: 16px 24px 0;
++}
++.afy-toolbar__label {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  color: var(--afy-text-muted);
++  font-size: 13px;
++}
++.afy-select {
++  background: var(--afy-surface-2);
++  color: var(--afy-text);
++  border: 1px solid var(--afy-border-strong);
++  border-radius: 8px;
++  padding: 6px 10px;
++  font-size: 13px;
++}
++.afy-select option {
++  background: #12181d;
++  color: var(--afy-text);
++}
++.afy-more {
++  display: flex;
++  justify-content: center;
++  margin-top: 24px;
++}
++
++/* Carte de playlist de chaîne */
++.afy-pl-card {
++  display: flex;
++  flex-direction: column;
++  gap: 8px;
++  padding: 0;
++  background: none;
++  border: 0;
++  color: inherit;
++  text-align: left;
++  cursor: pointer;
++}
++.afy-pl-card__thumb {
++  position: relative;
++  aspect-ratio: 16 / 9;
++  border-radius: 12px;
++  overflow: hidden;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  background: linear-gradient(135deg, #1b2a30, #0d1317);
++  color: var(--afy-text-dim);
++  border: 1px solid var(--afy-border);
++  transition: transform 0.2s ease, border-color 0.2s ease;
++}
++.afy-pl-card:hover .afy-pl-card__thumb {
++  transform: translateY(-2px);
++  border-color: var(--afy-border-strong);
++}
++.afy-pl-card__thumb img {
++  width: 100%;
++  height: 100%;
++  object-fit: cover;
++  display: block;
++}
++.afy-pl-card__badge {
++  position: absolute;
++  right: 8px;
++  bottom: 8px;
++  display: flex;
++  align-items: center;
++  gap: 4px;
++  padding: 2px 8px;
++  border-radius: 6px;
++  background: rgba(0, 0, 0, 0.78);
++  color: #fff;
++  font-size: 12px;
++  font-weight: 600;
++}
++.afy-pl-card__title {
++  font-size: 14px;
++  font-weight: 600;
++  color: var(--afy-text);
++  display: -webkit-box;
++  -webkit-line-clamp: 2;
++  -webkit-box-orient: vertical;
++  overflow: hidden;
++}
++.afy-pl-card__meta {
++  font-size: 12px;
++  color: var(--afy-text-muted);
++}
+diff --git a/apps/desktop/src/features/aetherfy/shorts.ts b/apps/desktop/src/features/aetherfy/shorts.ts
+deleted file mode 100644
+index 84d2826..0000000
+--- a/apps/desktop/src/features/aetherfy/shorts.ts
++++ /dev/null
+@@ -1,21 +0,0 @@
+-﻿import type { VaultTubeVideo } from "../vaulttube/api";
+-
+-export function isShortByMeta(video: VaultTubeVideo): boolean {
+-  if (
+-    typeof video.duration_seconds === "number" &&
+-    video.duration_seconds > 0 &&
+-    video.duration_seconds <= 60
+-  ) {
+-    return true;
+-  }
+-
+-  const text = [
+-    video.title,
+-    video.description,
+-  ]
+-    .filter(Boolean)
+-    .join(" ")
+-    .toLowerCase();
+-
+-  return text.includes("#shorts");
+-}
+diff --git a/apps/desktop/src/router.tsx b/apps/desktop/src/router.tsx
+index 75ead1d..930aedb 100644
+--- a/apps/desktop/src/router.tsx
++++ b/apps/desktop/src/router.tsx
+@@ -33,11 +33,11 @@ import { AetherFyShell } from "./features/aetherfy/AetherFyShell";
+ import { AetherFyHomePage } from "./features/aetherfy/AetherFyHomePage";
+ import { AetherFyWatchPage } from "./features/aetherfy/AetherFyWatchPage";
+ import { AetherFySubscriptionPage } from "./features/aetherfy/AetherFySubscriptionPage";
++import { AetherFyChannelPlaylistPage } from "./features/aetherfy/AetherFyChannelPlaylistPage";
+ import { AetherFySearchPage } from "./features/aetherfy/AetherFySearchPage";
+ import {
+   AetherFyTrendingPage,
+   AetherFyLivePage,
+-  AetherFyGamingPage,
+   AetherFyMusicPage,
+   AetherFySubscriptionsPage,
+   AetherFyLibraryPage,
+@@ -114,6 +114,7 @@ export const router = createHashRouter([
+           { index: true, element: <AetherFyHomePage /> },
+           { path: "watch/:videoId", element: <AetherFyWatchPage /> },
+           { path: "subscription/:id", element: <AetherFySubscriptionPage /> },
++          { path: "yt-playlist/:ytId", element: <AetherFyChannelPlaylistPage /> },
+           { path: "trending", element: <AetherFyTrendingPage /> },
+           { path: "subscriptions", element: <AetherFySubscriptionsPage /> },
+           { path: "library", element: <AetherFyLibraryPage /> },
+@@ -122,7 +123,6 @@ export const router = createHashRouter([
+           { path: "watch-later", element: <AetherFyWatchLaterPage /> },
+           { path: "liked", element: <AetherFyLikedPage /> },
+           { path: "music", element: <AetherFyMusicPage /> },
+-          { path: "gaming", element: <AetherFyGamingPage /> },
+           { path: "live", element: <AetherFyLivePage /> },
+           { path: "search", element: <AetherFySearchPage /> },
+         ],

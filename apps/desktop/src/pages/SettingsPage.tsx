@@ -20,8 +20,13 @@ import { useActiveProfile } from "../profile/ActiveProfileContext";
 import { privacyApi } from "../features/privacy/api";
 import "./pages.css";
 import { metadataApi } from "../features/settings/api";
-import { playerApi } from "../features/player/api";
-import { readPersistedTheme, writePersistedTheme } from "../theme/persistedCustomTheme";
+import { playerApi, type CinemaLevel, type SpatialLevel } from "../features/player/api";
+import { usePlayer } from "../player/PlayerContext";
+import {
+  readPersistedTheme,
+  writePersistedTheme,
+  TRANSPARENT_THEME_VARS,
+} from "../theme/persistedCustomTheme";
 import { RenderQualitySection } from "./RenderQualitySection";
 import { readCategoryBackdropHidden, CATEGORY_BACKDROP_EVENT } from "../hooks/useCategoryBackdropHidden";
 
@@ -76,25 +81,7 @@ const THEME_PRESETS: Record<string, Record<string, string>> = {
     "--radius-md": "10px",
     "--radius-lg": "16px",
   },
-  transparent: {
-    "--color-bg": "rgba(20, 22, 26, 0.75)",
-    "--color-surface": "rgba(29, 32, 38, 0.65)",
-    "--color-surface-hover": "rgba(36, 40, 48, 0.75)",
-    "--color-border": "rgba(42, 46, 55, 0.5)",
-    "--color-accent": "#7c5cff",
-    "--color-accent-hover": "#6a4de0",
-    "--color-text": "#eef0f3",
-    "--color-text-muted": "#9aa0ab",
-    "--color-sidebar": "rgba(16, 18, 22, 0.60)",
-    "--color-card": "rgba(29, 32, 38, 0.55)",
-    "--color-danger": "#f28b82",
-    "--color-success": "#6ee7a8",
-    "--color-warning": "#f5c04e",
-    "--sidebar-width": "260px",
-    "--radius-sm": "6px",
-    "--radius-md": "10px",
-    "--radius-lg": "16px",
-  },
+  transparent: TRANSPARENT_THEME_VARS,
   ocean: {
     "--color-bg": "#0a1628",
     "--color-surface": "#0f2035",
@@ -841,62 +828,234 @@ function SystemInfoSection() {
   );
 }
 
+interface LevelOption {
+  key: SpatialLevel;
+  label: string;
+  hint: string;
+}
+
+const SPATIAL_LEVELS: LevelOption[] = [
+  { key: "off", label: "Désactivée", hint: "Stéréo d'origine." },
+  {
+    key: "light",
+    label: "Légère",
+    hint: "Adoucit la séparation gauche/droite (crossfeed) : très naturel, sans coloration.",
+  },
+  {
+    key: "medium",
+    label: "Moyenne",
+    hint: "Élargit un peu la scène, puis mélange naturellement les canaux.",
+  },
+  {
+    key: "strong",
+    label: "Forte",
+    hint: "Scène large, effet le plus marqué — à essayer sur vos morceaux.",
+  },
+];
+
+const CINEMA_LEVELS: LevelOption[] = [
+  { key: "off", label: "Désactivée", hint: "Son d'origine." },
+  {
+    key: "light",
+    label: "Légère",
+    hint: "Graves un peu plus profonds et discrète réverbération de salle.",
+  },
+  {
+    key: "medium",
+    label: "Moyenne",
+    hint: "Graves marqués, clarté des voix et réverbération de salle perceptible.",
+  },
+  {
+    key: "strong",
+    label: "Forte",
+    hint: "Grande salle : graves puissants et réverbération prononcée.",
+  },
+];
+
+function isLevel(value: string): value is SpatialLevel {
+  return value === "off" || value === "light" || value === "medium" || value === "strong";
+}
+
+/** Durée de chaque phase (A puis B) de la comparaison. */
+const AB_PHASE_MS = 3000;
+
 /**
- * FONCTIONNALITÉ (amélioration audio) : élargissement stéréo /
- * virtualisation casque via le filtre FFmpeg `earwax`, déjà lié par mpv
- * — pas de dépendance supplémentaire, pas de fichier de données externe
- * (contrairement à un vrai rendu binaural HRTF type "sofalizer", qui
- * demanderait d'embarquer un fichier SOFA de plusieurs Mo). Réglage
- * global, réappliqué automatiquement à chaque nouveau média (voir
- * commands::playback::player_load côté Rust) — l'utilisateur ne
- * l'active qu'une fois.
+ * Effets audio : spatialisation (virtualisation casque) et ambiance cinéma —
+ * deux réglages globaux à quatre niveaux, combinables. Le moteur (Rust)
+ * applique la combinaison avant CHAQUE chargement, quel que soit le chemin de
+ * lecture (fichier, AetherFy, TV) et dès le démarrage ; ici on enregistre les
+ * choix et on propose une comparaison A/B (sans effet ↔ réglages actuels) sur
+ * le média en cours.
  */
 function AudioSection() {
-  const [spatialization, setSpatialization] = useState(false);
+  const { isPlaying } = usePlayer();
+  const [spatial, setSpatial] = useState<SpatialLevel>("off");
+  const [cinema, setCinema] = useState<CinemaLevel>("off");
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [abPhase, setAbPhase] = useState<"A" | "B" | null>(null);
+  // Niveaux ENREGISTRÉS (identiques à l'état : on enregistre à chaque choix).
+  const spatialRef = useRef<SpatialLevel>("off");
+  const cinemaRef = useRef<CinemaLevel>("off");
+  spatialRef.current = spatial;
+  cinemaRef.current = cinema;
+  // `true` tant qu'un aperçu A/B a pu modifier le moteur sans être enregistré :
+  // on ne restaure les niveaux enregistrés QUE dans ce cas (jamais à un simple
+  // montage/démontage — notamment avant que les réglages aient été chargés).
+  const previewDirtyRef = useRef(false);
 
   useEffect(() => {
-    invoke<boolean>("get_audio_spatialization_enabled")
-      .then((value) => {
-        setSpatialization(value);
+    Promise.all([
+      invoke<string>("get_audio_spatialization_level"),
+      invoke<string>("get_audio_cinema_level"),
+    ])
+      .then(([sp, ci]) => {
+        if (isLevel(sp)) setSpatial(sp);
+        if (isLevel(ci)) setCinema(ci);
         setLoaded(true);
       })
       .catch(() => setLoaded(true));
   }, []);
 
-  const toggle = async (value: boolean) => {
+  const restoreSaved = () => {
+    if (!previewDirtyRef.current) return;
+    previewDirtyRef.current = false;
+    void playerApi.previewAudioEffects(spatialRef.current, cinemaRef.current).catch(() => {});
+  };
+
+  // Comparaison A/B : alterne « sans effet » (A) et réglages actuels (B).
+  useEffect(() => {
+    if (abPhase === null) return;
+    previewDirtyRef.current = true;
+    void playerApi
+      .previewAudioEffects(
+        abPhase === "A" ? "off" : spatialRef.current,
+        abPhase === "A" ? "off" : cinemaRef.current
+      )
+      .catch(() => {});
+    const timer = window.setTimeout(
+      () => setAbPhase((p) => (p === "A" ? "B" : "A")),
+      AB_PHASE_MS
+    );
+    return () => window.clearTimeout(timer);
+  }, [abPhase]);
+
+  // Plus de lecture → on arrête la comparaison ; en quittant la page, on
+  // restaure toujours les réglages enregistrés.
+  useEffect(() => {
+    if (!isPlaying && abPhase !== null) {
+      setAbPhase(null);
+      restoreSaved();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying]);
+  useEffect(() => restoreSaved, []);
+
+  const stopAb = () => {
+    setAbPhase(null);
+    restoreSaved();
+  };
+
+  const choose = async (kind: "spatial" | "cinema", next: SpatialLevel) => {
+    if (abPhase !== null) stopAb();
     setBusy(true);
     setError(null);
     try {
-      await invoke("set_audio_spatialization_enabled", { enabled: value });
-      setSpatialization(value);
-      // Effet immédiat si un média est déjà en cours de lecture, sans
-      // attendre le prochain chargement.
-      await playerApi.setAudioSpatialization(value).catch(() => {});
+      // Enregistre ET applique immédiatement au média en cours (côté Rust).
+      if (kind === "spatial") {
+        await invoke("set_audio_spatialization_level", { level: next });
+        setSpatial(next);
+        spatialRef.current = next;
+      } else {
+        await invoke("set_audio_cinema_level", { level: next });
+        setCinema(next);
+        cinemaRef.current = next;
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Impossible d'enregistrer ce réglage.");
+      setError(
+        typeof err === "string"
+          ? err
+          : err instanceof Error
+            ? err.message
+            : "Impossible d'enregistrer ce réglage."
+      );
     } finally {
       setBusy(false);
     }
   };
 
+  const describeCurrent = [
+    spatial !== "off" &&
+      `spatialisation ${SPATIAL_LEVELS.find((l) => l.key === spatial)?.label.toLowerCase()}`,
+    cinema !== "off" &&
+      `ambiance cinéma ${CINEMA_LEVELS.find((l) => l.key === cinema)?.label.toLowerCase()}`,
+  ]
+    .filter(Boolean)
+    .join(" + ");
+  const anyEffect = spatial !== "off" || cinema !== "off";
+  const canCompare = loaded && !busy && anyEffect && isPlaying;
+
+  const renderGroup = (
+    kind: "spatial" | "cinema",
+    legend: string,
+    options: LevelOption[],
+    value: SpatialLevel
+  ) => (
+    <fieldset
+      style={{ border: "none", padding: 0, margin: "0 0 12px 0" }}
+      disabled={!loaded || busy}
+    >
+      <legend>{legend}</legend>
+      {options.map((l) => (
+        <label
+          key={l.key}
+          style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "4px 0" }}
+        >
+          <input
+            type="radio"
+            name={`avm-audio-${kind}`}
+            checked={value === l.key}
+            onChange={() => void choose(kind, l.key)}
+          />
+          <span>
+            {l.label}
+            <span className="avm-settings-muted" style={{ display: "block" }}>
+              {l.hint}
+            </span>
+          </span>
+        </label>
+      ))}
+    </fieldset>
+  );
+
   return (
     <section className="avm-settings-section">
       <h2>Audio</h2>
-      <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <input
-          type="checkbox"
-          checked={spatialization}
-          disabled={!loaded || busy}
-          onChange={(e) => void toggle(e.target.checked)}
-        />
-        Spatialisation audio (virtualisation casque)
-      </label>
+      {renderGroup("spatial", "Spatialisation audio (virtualisation casque)", SPATIAL_LEVELS, spatial)}
+      {renderGroup("cinema", "Ambiance cinéma (son de salle)", CINEMA_LEVELS, cinema)}
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 8 }}>
+        {abPhase === null ? (
+          <Button variant="secondary" disabled={!canCompare} onClick={() => setAbPhase("A")}>
+            Comparer (A/B)
+          </Button>
+        ) : (
+          <Button variant="secondary" onClick={stopAb}>
+            Arrêter la comparaison
+          </Button>
+        )}
+        <span role="status" aria-live="polite" className="avm-settings-muted">
+          {abPhase === "A" && "A — sans effet"}
+          {abPhase === "B" && `B — ${describeCurrent}`}
+          {abPhase === null && !canCompare && anyEffect && "Lancez une lecture pour comparer."}
+        </span>
+      </div>
       <p className="avm-settings-muted">
-        Élargit le rendu stéréo pour une écoute au casque plus enveloppante.
-        S'applique à toute nouvelle lecture ; effet immédiat si un média est déjà en cours.
+        S'applique à toute lecture (fichiers, AetherFy, TV) ; effet immédiat sur le média en
+        cours. La comparaison alterne toutes les {AB_PHASE_MS / 1000} s entre « sans effet » et
+        vos réglages ; un léger saut sonore au changement est normal. L'ambiance cinéma simule
+        une salle (graves, voix, réverbération) : elle se règle à l'oreille, et le niveau
+        « Légère » est le plus prudent.
       </p>
       {error && <p className="avm-settings-error">{error}</p>}
     </section>

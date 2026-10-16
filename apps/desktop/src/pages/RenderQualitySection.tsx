@@ -2,8 +2,8 @@ import { useState } from "react";
 import { getRenderQuality, setRenderQuality, type RenderQuality } from "../player/renderQuality";
 
 /**
- * 0.5.6 — Paramètres → Qualité de rendu : propose les deux méthodes de
- * lecture (720p upscalé = fluidité garantie / 1080p natif = mode test).
+ * Paramètres → Qualité de rendu : propose les deux méthodes de lecture
+ * (1080p natif = qualité maximale, stable / 720p upscalé = plus léger).
  */
 export function RenderQualitySection() {
   const [quality, setQuality] = useState<RenderQuality>(() => getRenderQuality());
@@ -27,11 +27,11 @@ export function RenderQualitySection() {
             onChange={() => choose("fluid")}
           />
           <span>
-            <strong>720p upscalé — fluidité garantie (recommandé)</strong>
+            <strong>720p upscalé — économe</strong>
             <br />
             <span className="avm-settings-muted">
-              Rendu interne ≈720p puis upscale GPU vers l'écran : aucune saccade
-              sur toutes les machines testées.
+              Rendu interne ≈720p puis upscale GPU vers l'écran : charge processeur
+              réduite, utile sur une machine modeste ou pour de la 4K.
             </span>
           </span>
         </label>
@@ -43,11 +43,11 @@ export function RenderQualitySection() {
             onChange={() => choose("native")}
           />
           <span>
-            <strong>1080p natif — mode test</strong>
+            <strong>1080p natif — qualité maximale</strong>
             <br />
             <span className="avm-settings-muted">
-              Rendu interne 1080p (qualité maximale) ; peut présenter des
-              micro-saccades selon la machine (repli automatique si trop lent).
+              Rendu interne 1080p : image la plus nette, lecture stable. Si la machine
+              ne suit pas, l'application baisse automatiquement la résolution de rendu.
             </span>
           </span>
         </label>

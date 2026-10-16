@@ -28,7 +28,7 @@
 - **Bibliothèque universelle** : films, séries, anime, documentaires, manga, webtoons, bandes dessinées et romans
 - **Open Source** : MIT License
 
-**Version actuelle** : 0.7.0 « Orbite »
+**Version actuelle** : 0.7.5 « Orbite »
 
 ### 🌐 Site web
 Découvrez le projet en détail : **[aethervault-website](https://spectglak-ui.github.io/aethervault-website/#/)**
@@ -170,7 +170,7 @@ Produit selon la plateforme :
 
 **Windows** :
 ```
-apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.7.0_x64-setup.exe
+apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.7.5_x64-setup.exe
 ```
 - ✅ Sélection de langue (FR/EN)
 - ✅ Installation par utilisateur (sans UAC)
@@ -180,7 +180,7 @@ apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.7.0_x64-se
 
 **macOS** :
 ```
-apps/desktop/src-tauri/target/release/bundle/dmg/AetherVault Media_0.7.0_x64.dmg
+apps/desktop/src-tauri/target/release/bundle/dmg/AetherVault Media_0.7.5_x64.dmg
 ```
 - ✅ Drag & drop vers /Applications
 - ✅ Intégration Dock
@@ -188,10 +188,10 @@ apps/desktop/src-tauri/target/release/bundle/dmg/AetherVault Media_0.7.0_x64.dmg
 **Linux** :
 ```
 # Debian/Ubuntu
-apps/desktop/src-tauri/target/release/bundle/deb/aethervault-media_0.7.0_amd64.deb
+apps/desktop/src-tauri/target/release/bundle/deb/aethervault-media_0.7.5_amd64.deb
 
 # AppImage
-apps/desktop/src-tauri/target/release/bundle/appimage/AetherVault Media_0.7.0_amd64.AppImage
+apps/desktop/src-tauri/target/release/bundle/appimage/AetherVault Media_0.7.5_amd64.AppImage
 ```
 - ✅ Installation via `dpkg -i` (DEB)
 - ✅ Exécution directe (AppImage)

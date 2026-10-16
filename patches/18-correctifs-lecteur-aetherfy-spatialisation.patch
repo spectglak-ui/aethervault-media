@@ -1,0 +1,1204 @@
+diff --git a/apps/desktop/src-tauri/src/commands/playback.rs b/apps/desktop/src-tauri/src/commands/playback.rs
+index 51def66..b6b7527 100644
+--- a/apps/desktop/src-tauri/src/commands/playback.rs
++++ b/apps/desktop/src-tauri/src/commands/playback.rs
+@@ -61,25 +61,9 @@ pub fn save_playback_progress(
+ #[tauri::command]
+ pub fn player_load(state: tauri::State<AppState>, path: String) -> Result<(), String> {
+     let handle = state.playback_engine.handle()?;
+-    handle.load(&path)?;
+-    // FONCTIONNALITÉ (amélioration audio — spatialisation) : réappliquée
+-    // automatiquement à chaque nouveau média à partir de la préférence
+-    // persistée, pour que l'utilisateur n'ait à l'activer qu'une seule
+-    // fois (voir commands::settings::get_audio_spatialization_enabled).
+-    // Best-effort : une erreur ici (ex. connexion DB momentanément
+-    // indisponible) ne doit jamais empêcher la lecture de démarrer.
+-    if let Ok(conn) = state.get_conn() {
+-        let enabled = crate::db::repositories::settings_repository::get(
+-            &conn,
+-            "audio_spatialization_enabled",
+-        )
+-        .ok()
+-        .flatten()
+-        .as_deref()
+-            == Some("1");
+-        let _ = handle.set_audio_spatialization(enabled);
+-    }
+-    Ok(())
++    // La spatialisation audio est ré-appliquée par le moteur lui-même, avant
++    // chaque loadfile (voir `PlaybackEngineHandle::apply_spatial_filter`).
++    handle.load(&path)
+ }
+ 
+ #[tauri::command]
+@@ -110,18 +94,18 @@ pub fn player_set_rate(state: tauri::State<AppState>, rate: f64) -> Result<(), S
+     state.playback_engine.handle()?.set_rate(rate)
+ }
+ 
+-/// FONCTIONNALITÉ (amélioration audio — spatialisation) : application
+-/// immédiate sur le média en cours de lecture (voir Paramètres → Audio).
+-/// La préférence elle-même est enregistrée séparément par
+-/// `commands::settings::set_audio_spatialization_enabled`, qui est ce
+-/// que le frontend appelle réellement au moment du clic — celle-ci n'est
+-/// là que pour éviter d'attendre le prochain chargement de média.
++/// Spatialisation audio — APERÇU : applique un niveau (`off` | `light` |
++/// `medium` | `strong`) au moteur SANS le persister. Sert à la comparaison
++/// A/B de Paramètres → Audio ; le réglage réel est enregistré par
++/// `commands::settings::set_audio_spatialization_level`.
+ #[tauri::command]
+-pub fn player_set_audio_spatialization(
++pub fn player_preview_audio_spatialization(
+     state: tauri::State<AppState>,
+-    enabled: bool,
++    level: String,
+ ) -> Result<(), String> {
+-    state.playback_engine.handle()?.set_audio_spatialization(enabled)
++    let level = crate::services::playback_engine::SpatialLevel::parse(&level)
++        .ok_or_else(|| format!("Niveau de spatialisation inconnu : {level}"))?;
++    state.playback_engine.handle()?.set_spatial_level(level)
+ }
+ 
+ /// Liste les pistes audio et sous-titres du fichier actuellement chargé
+@@ -491,17 +475,5 @@ pub fn player_load_mode(
+     mode: String,
+ ) -> Result<(), String> {
+     let handle = state.playback_engine.handle()?;
+-    handle.load_with_mode(&path, Some(&mode))?;
+-    if let Ok(conn) = state.get_conn() {
+-        let enabled = crate::db::repositories::settings_repository::get(
+-            &conn,
+-            "audio_spatialization_enabled",
+-        )
+-        .ok()
+-        .flatten()
+-        .as_deref()
+-            == Some("1");
+-        let _ = handle.set_audio_spatialization(enabled);
+-    }
+-    Ok(())
++    handle.load_with_mode(&path, Some(&mode))
+ }
+\ No newline at end of file
+diff --git a/apps/desktop/src-tauri/src/commands/settings.rs b/apps/desktop/src-tauri/src/commands/settings.rs
+index f2692de..5249aeb 100644
+--- a/apps/desktop/src-tauri/src/commands/settings.rs
++++ b/apps/desktop/src-tauri/src/commands/settings.rs
+@@ -1,6 +1,7 @@
+ //! Commandes des paramètres applicatifs (Étape 7) : wrapper autour de
+ //! `services::metadata::tmdb` pour la section « Métadonnées en ligne ».
+ use crate::services::metadata::tmdb::{self, MetadataSettings};
++use crate::services::playback_engine::SpatialLevel;
+ use crate::state::AppState;
+ 
+ #[tauri::command]
+@@ -20,36 +21,66 @@ pub fn save_metadata_settings(
+ 
+ // ---- Amélioration audio — spatialisation (FONCTIONNALITÉ) ----------
+ //
+-// Réglage global, stocké dans `app_settings` comme l'Accès rapide
+-// ci-dessous. L'application effective au moteur mpv se fait dans
+-// `commands::playback::player_load` (à chaque nouveau média) et
+-// `commands::playback::player_set_audio_spatialization` (immédiat, sur
+-// le média en cours) — voir `services::playback_engine::set_audio_spatialization`.
+-const AUDIO_SPATIALIZATION_KEY: &str = "audio_spatialization_enabled";
++// Réglage global, stocké dans `app_settings`. Quatre niveaux : off, light,
++// medium, strong (voir `services::playback_engine::SpatialLevel`). L'effet
++// est porté par le moteur : `set_audio_spatialization_level` l'applique tout
++// de suite, puis le moteur le ré-applique avant chaque chargement ; au
++// démarrage, `lib.rs` pousse le niveau persisté dans le moteur.
++const AUDIO_SPATIALIZATION_LEVEL_KEY: &str = "audio_spatialization_level";
++/// Ancien interrupteur on/off (avant les niveaux) — lu seulement pour migrer :
++/// « 1 » correspondait au crossfeed par défaut, donc au niveau « light ».
++const AUDIO_SPATIALIZATION_LEGACY_KEY: &str = "audio_spatialization_enabled";
++
++/// Niveau persisté (avec migration de l'ancien réglage booléen).
++pub fn read_audio_spatialization_level(conn: &rusqlite::Connection) -> SpatialLevel {
++    use crate::db::repositories::settings_repository as settings;
++    if let Some(level) = settings::get(conn, AUDIO_SPATIALIZATION_LEVEL_KEY)
++        .ok()
++        .flatten()
++        .as_deref()
++        .and_then(SpatialLevel::parse)
++    {
++        return level;
++    }
++    let legacy_on = settings::get(conn, AUDIO_SPATIALIZATION_LEGACY_KEY)
++        .ok()
++        .flatten()
++        .as_deref()
++        == Some("1");
++    if legacy_on {
++        SpatialLevel::Light
++    } else {
++        SpatialLevel::Off
++    }
++}
+ 
+ #[tauri::command]
+-pub fn get_audio_spatialization_enabled(state: tauri::State<AppState>) -> Result<bool, String> {
++pub fn get_audio_spatialization_level(state: tauri::State<AppState>) -> Result<String, String> {
+     let conn = state.get_conn()?;
+-    Ok(
+-        crate::db::repositories::settings_repository::get(&conn, AUDIO_SPATIALIZATION_KEY)
+-            .map_err(|e| e.to_string())?
+-            .as_deref()
+-            == Some("1"),
+-    )
++    Ok(read_audio_spatialization_level(&conn).key().to_string())
+ }
+ 
+ #[tauri::command]
+-pub fn set_audio_spatialization_enabled(
++pub fn set_audio_spatialization_level(
+     state: tauri::State<AppState>,
+-    enabled: bool,
++    level: String,
+ ) -> Result<(), String> {
+-    let conn = state.get_conn()?;
+-    crate::db::repositories::settings_repository::set(
+-        &conn,
+-        AUDIO_SPATIALIZATION_KEY,
+-        if enabled { "1" } else { "0" },
+-    )
+-    .map_err(|e| e.to_string())
++    let parsed = SpatialLevel::parse(&level)
++        .ok_or_else(|| format!("Niveau de spatialisation inconnu : {level}"))?;
++    {
++        let conn = state.get_conn()?;
++        crate::db::repositories::settings_repository::set(
++            &conn,
++            AUDIO_SPATIALIZATION_LEVEL_KEY,
++            parsed.key(),
++        )
++        .map_err(|e| e.to_string())?;
++    }
++    // Moteur indisponible (libmpv absente) : le réglage reste enregistré.
++    match state.playback_engine.handle() {
++        Ok(engine) => engine.set_spatial_level(parsed),
++        Err(_) => Ok(()),
++    }
+ }
+ 
+ // ---- Accès rapide (FONCTIONNALITÉ) --------------------------------
+diff --git a/apps/desktop/src-tauri/src/lib.rs b/apps/desktop/src-tauri/src/lib.rs
+index ca9ca26..defd7d0 100644
+--- a/apps/desktop/src-tauri/src/lib.rs
++++ b/apps/desktop/src-tauri/src/lib.rs
+@@ -155,6 +155,18 @@ pub fn run() {
+                 auto_sync_handle: std::sync::Mutex::new(None),
+             });
+ 
++            // Spatialisation audio : le niveau persisté est poussé dans le moteur
++            // dès le démarrage (puis ré-appliqué par le moteur à chaque chargement).
++            {
++                let state = app.state::<AppState>();
++                if let (Ok(engine), Ok(conn)) = (state.playback_engine.handle(), state.get_conn()) {
++                    let level = commands::settings::read_audio_spatialization_level(&conn);
++                    if let Err(err) = engine.set_spatial_level(level) {
++                        log::warn!("Spatialisation audio : niveau initial non appliqué : {err}");
++                    }
++                }
++            }
++
+                         // 0.6.1 : lance la synchronisation automatique VaultTube (toutes les 6h)
+             {
+                 let state = app.state::<AppState>();
+@@ -236,8 +248,8 @@ pub fn run() {
+             commands::settings::save_metadata_settings,
+             commands::settings::get_quick_access_enabled,
+             commands::settings::set_quick_access_enabled,
+-            commands::settings::get_audio_spatialization_enabled,
+-            commands::settings::set_audio_spatialization_enabled,
++            commands::settings::get_audio_spatialization_level,
++            commands::settings::set_audio_spatialization_level,
+             commands::security::get_vault_status,
+             commands::security::setup_vault,
+             commands::security::unlock_vault,
+@@ -345,7 +357,7 @@ pub fn run() {
+             commands::playback::player_set_volume,
+             commands::playback::player_set_muted,
+             commands::playback::player_set_rate,
+-            commands::playback::player_set_audio_spatialization,
++            commands::playback::player_preview_audio_spatialization,
+             commands::playback::player_stop,
+             commands::playback::player_attach_surface,
+             commands::playback::player_resize_surface,
+diff --git a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+index da574ab..1eaec83 100644
+--- a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
++++ b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+@@ -14,8 +14,8 @@ pub use mpv_ffi::MpvFunctions;
+ use std::ffi::{c_void, CStr, CString};
+ use std::os::raw::{c_char, c_int};
+ use std::path::{Path, PathBuf};
+-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+-use std::sync::{Arc, Mutex};
++use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicU8, Ordering};
++use std::sync::{Arc, Mutex, OnceLock};
+ use std::time::{Duration, Instant};
+ use tauri::ipc::{Channel, InvokeResponseBody};
+ use tauri::{AppHandle, Emitter};
+@@ -75,12 +75,50 @@ struct SurfaceState {
+ }
+ 
+ /// 0.5.3 : « start gate » — pour les flux réseau, la lecture reste en
+-/// pause jusqu'à ce que la barre verte atteigne 30 % de la durée
+-/// (bornée à [5 s, 240 s]), ou 45 s d'attente max (timeout de sécurité).
++/// pause jusqu'à ce que le tampon ait `gate_target_secs()` secondes
++/// d'AVANCE sur la tête de lecture (`demuxer-cache-duration`), ou
++/// `gate_timeout()` d'attente max (timeout de sécurité).
++///
++/// Avant 0.9.x la cible était 30 % de la durée (jusqu'à 240 s de tampon,
++/// timeout 45 s) et comparée à `demuxer-cache-time`, qui est un TIMESTAMP
++/// ABSOLU (fin du tampon) et non une avance : une vidéo de 10 min devait
++/// charger 3 min avant de démarrer, et une reprise à t = 20 min levait la
++/// gate instantanément. Le cache mpv (`cache-pause`) absorbe ensuite les
++/// à-coups réseau.
++/// Avance de tampon (secondes) à atteindre avant de lancer la lecture.
++/// Surchargeable SANS recompiler, pour les essais : variable d'environnement
++/// `AVM_GATE_SECS` (0 = démarrage immédiat).
++const GATE_DEFAULT_TARGET_SECS: f64 = 8.0;
++/// Attente maximale avant de lancer la lecture quoi qu'il arrive.
++/// Surchargeable : `AVM_GATE_TIMEOUT_SECS`.
++const GATE_DEFAULT_TIMEOUT_SECS: u64 = 20;
++
++fn gate_target_secs() -> f64 {
++    static V: OnceLock<f64> = OnceLock::new();
++    *V.get_or_init(|| {
++        std::env::var("AVM_GATE_SECS")
++            .ok()
++            .and_then(|s| s.trim().parse::<f64>().ok())
++            .filter(|v| v.is_finite() && *v >= 0.0)
++            .unwrap_or(GATE_DEFAULT_TARGET_SECS)
++    })
++}
++
++fn gate_timeout() -> Duration {
++    static V: OnceLock<u64> = OnceLock::new();
++    Duration::from_secs(*V.get_or_init(|| {
++        std::env::var("AVM_GATE_TIMEOUT_SECS")
++            .ok()
++            .and_then(|s| s.trim().parse::<u64>().ok())
++            .filter(|v| *v > 0)
++            .unwrap_or(GATE_DEFAULT_TIMEOUT_SECS)
++    }))
++}
++
+ struct StartGate {
+     armed: AtomicBool,
+     armed_at: Mutex<Instant>,
+-    /// (durée_seconds, buffered_seconds) — dernières valeurs observées.
++    /// (durée_seconds, avance_de_tampon_seconds) — dernières valeurs observées.
+     latest: Mutex<(f64, f64)>,
+ }
+ 
+@@ -102,8 +140,10 @@ impl StartGate {
+     }
+ }
+ 
+-/// Depuis le thread d'événements mpv : libère la gate quand le buffer
+-/// atteint 30 % de la durée (ou timeout 45 s) → `set pause no`.
++/// Depuis le thread d'événements mpv : libère la gate quand l'avance de
++/// tampon atteint `gate_target_secs()` (ou timeout) → `set pause no`.
++/// `buffered` = `demuxer-cache-duration` (secondes d'avance), PAS
++/// `demuxer-cache-time` (timestamp absolu).
+ fn maybe_release_gate(
+     gate: &StartGate,
+     functions: &MpvFunctions,
+@@ -124,13 +164,13 @@ fn maybe_release_gate(
+         }
+     }
+     let (dur, cache) = *gate.latest.lock().unwrap_or_else(|p| p.into_inner());
+-    let target = if dur > 1.0 {
+-        (dur * 0.30).clamp(5.0, 240.0)
+-    } else {
+-        10.0
+-    };
+-    let timed_out = gate.armed_at.lock().unwrap_or_else(|p| p.into_inner()).elapsed()
+-        > Duration::from_secs(45);
++    let mut target = gate_target_secs();
++    if dur > 1.0 {
++        // Média très court : ne pas exiger plus de la moitié de sa durée.
++        target = target.min(dur * 0.5);
++    }
++    let waited = gate.armed_at.lock().unwrap_or_else(|p| p.into_inner()).elapsed();
++    let timed_out = waited > gate_timeout();
+     if cache >= target || timed_out {
+         gate.disarm();
+         let c_args = vec![
+@@ -144,14 +184,84 @@ fn maybe_release_gate(
+             (functions.command)(mpv.0, ptrs.as_ptr());
+         }
+         log::info!(
+-            "[playback] start gate : lecture lancée (buffer {:.0}s / cible {:.0}s{})",
++            "[playback] start gate : lecture lancée après {} ms (avance {:.1}s / cible {:.1}s{})",
++            waited.as_millis(),
+             cache,
+             target,
+-            if timed_out { ", timeout 45s" } else { "" }
++            if timed_out { ", TIMEOUT" } else { "" }
+         );
+     }
+ }
+ 
++/// Niveau de spatialisation audio (virtualisation casque) — réglage global.
++///
++/// Les filtres ont été mesurés dans mpv 0.37 (signal décorrélé gauche/droite,
++/// source S/M = −5,0 dB) : « léger » = crossfeed seul, plus étroit que la
++/// source (S/M −8,6 dB) mais naturel ; « moyen » élargit un peu avant le
++/// crossfeed (S/M −6,8 dB) ; « fort » élargit franchement (S/M −4,2 dB).
++/// Réponse centrée plate à ±0,5 dB (pas de creux dans les médiums, contrairement
++/// à `earwax` : −13 à −18 dB sur les voix centrées). `alimiter … level=disabled`
++/// = simple limiteur de crêtes (sans normalisation de volume).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum SpatialLevel {
++    Off,
++    Light,
++    Medium,
++    Strong,
++}
++
++/// Valeur « inconnue » de `spatial_applied` : force la prochaine application.
++const SPATIAL_UNKNOWN: u8 = u8::MAX;
++
++impl SpatialLevel {
++    /// Clé stockée en base et échangée avec le frontend.
++    pub fn key(self) -> &'static str {
++        match self {
++            SpatialLevel::Off => "off",
++            SpatialLevel::Light => "light",
++            SpatialLevel::Medium => "medium",
++            SpatialLevel::Strong => "strong",
++        }
++    }
++
++    pub fn parse(key: &str) -> Option<Self> {
++        match key.trim() {
++            "off" => Some(SpatialLevel::Off),
++            "light" => Some(SpatialLevel::Light),
++            "medium" => Some(SpatialLevel::Medium),
++            "strong" => Some(SpatialLevel::Strong),
++            _ => None,
++        }
++    }
++
++    fn as_u8(self) -> u8 {
++        self as u8
++    }
++
++    fn from_u8(v: u8) -> Self {
++        match v {
++            1 => SpatialLevel::Light,
++            2 => SpatialLevel::Medium,
++            3 => SpatialLevel::Strong,
++            _ => SpatialLevel::Off,
++        }
++    }
++
++    /// Valeur de la propriété mpv `af` (chaîne vide = aucun filtre).
++    fn mpv_filter(self) -> &'static str {
++        match self {
++            SpatialLevel::Off => "",
++            SpatialLevel::Light => "lavfi=[crossfeed=strength=0.20:range=0.50]",
++            SpatialLevel::Medium => {
++                "lavfi=[extrastereo=m=1.4,crossfeed=strength=0.30:range=0.60,alimiter=limit=0.97:level=disabled]"
++            }
++            SpatialLevel::Strong => {
++                "lavfi=[extrastereo=m=2.0,crossfeed=strength=0.40:range=0.70,alimiter=limit=0.97:level=disabled]"
++            }
++        }
++    }
++}
++
+ pub struct PlaybackEngineHandle {
+     functions: Arc<MpvFunctions>,
+     mpv: MpvHandlePtr,
+@@ -177,6 +287,13 @@ pub struct PlaybackEngineHandle {
+     /// moment de son lancement et s'annule si elle a changé — sinon il
+     /// relançait le flux (et le son) APRÈS le stop, sans image visible.
+     stop_epoch: Arc<AtomicU64>,
++    /// Niveau de spatialisation VOULU (`SpatialLevel as u8`) — source de
++    /// vérité côté moteur : appliqué avant CHAQUE `loadfile`, quel que soit
++    /// le chemin de chargement (fichier, AetherFy, TV, changement de qualité).
++    spatial_level: AtomicU8,
++    /// Niveau réellement présent dans la chaîne mpv (`SPATIAL_UNKNOWN` si
++    /// inconnu) : évite de reconstruire la chaîne audio à chaque morceau.
++    spatial_applied: AtomicU8,
+ }
+ 
+ pub enum PlaybackEngineState {
+@@ -274,7 +391,9 @@ impl PlaybackEngineHandle {
+         let _ = set_option(&functions, mpv, "cache", "yes");
+         let _ = set_option(&functions, mpv, "demuxer-max-bytes", "512MiB");
+         let _ = set_option(&functions, mpv, "demuxer-max-back-bytes", "256MiB");
+-        let _ = set_option(&functions, mpv, "network-timeout", "60");
++        // 20 s (et non 60) : une connexion googlevideo muette depuis 20 s est
++        // morte ; 60 s figeait l'UI en « chargement » pendant une minute.
++        let _ = set_option(&functions, mpv, "network-timeout", "20");
+         let _ = set_option(&functions, mpv, "hr-seek", "yes");
+         // 0.5.3 : horloge AUDIO maître (`display-resample` dérivait sur
+         // notre rendu logiciel sans vsync fiable).
+@@ -301,6 +420,8 @@ impl PlaybackEngineHandle {
+         observe(&functions, mpv, "duration", MpvFormat::Double);
+         observe(&functions, mpv, "pause", MpvFormat::Flag);
+         observe(&functions, mpv, "demuxer-cache-time", MpvFormat::Double);
++        // Avance de tampon en secondes : pilote la start gate.
++        observe(&functions, mpv, "demuxer-cache-duration", MpvFormat::Double);
+         let gate = Arc::new(StartGate::new());
+         let handle = Arc::new(Self {
+             functions: functions.clone(),
+@@ -313,8 +434,11 @@ impl PlaybackEngineHandle {
+             pot_cache: Mutex::new(None),
+             gate: gate.clone(),
+             stop_epoch: Arc::new(AtomicU64::new(0)),
++            spatial_level: AtomicU8::new(SpatialLevel::Off.as_u8()),
++            spatial_applied: AtomicU8::new(SPATIAL_UNKNOWN),
+         });
+         std::thread::spawn(move || run_event_thread(functions, mpv, app_handle, gate));
++        spawn_pot_prewarm(handle.clone());
+         log::info!(
+             "Playback Engine Bridge démarré (libmpv chargée depuis {})",
+             library_path.display()
+@@ -350,6 +474,8 @@ impl PlaybackEngineHandle {
+     }
+ 
+     fn load_direct(&self, path: &str) -> Result<(), String> {
++        // Spatialisation : chaîne audio dans l'état voulu AVANT le loadfile.
++        self.apply_spatial_filter();
+         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
+             Some((path.to_string(), None));
+         // 0.6.0 (visualiseur) : pour un fichier local, l'origine = le chemin lui-même.
+@@ -383,6 +509,18 @@ impl PlaybackEngineHandle {
+     /// 2. yt-dlp web + POT (si sidecar dispo) — 1080p/4K VP9 non-throtté
+     /// 3. yt-dlp cascade tv/android/ios (fallback) — 720p H.264
+     pub fn load_url_quality(&self, url: &str, height: Option<i64>) -> Result<(), String> {
++        let t0 = Instant::now();
++        let res = self.load_url_quality_inner(url, height);
++        log::info!(
++            "[playback] load_url_quality terminé en {} ms (ok={}, thread={:?})",
++            t0.elapsed().as_millis(),
++            res.is_ok(),
++            std::thread::current().name()
++        );
++        res
++    }
++
++    fn load_url_quality_inner(&self, url: &str, height: Option<i64>) -> Result<(), String> {
+         // 0.9.2 — flux direct (HLS/HTTP) : mpv lit l'URL telle quelle,
+         // sans Cobalt ni yt-dlp (démarrage immédiat, aucun échec d'extraction).
+         if is_direct_stream(url) {
+@@ -497,6 +635,9 @@ impl PlaybackEngineHandle {
+     /// 0.5.3 : arme la start gate (pause jusqu'à 30 % de buffer) —
+     /// 0.6.1 : SAUF en session audio explicite (lecture immédiate).
+     fn load_split(&self, video: &str, audio: Option<&str>) -> Result<(), String> {
++        // Spatialisation : chaîne audio dans l'état voulu AVANT le loadfile
++        // (couvre AetherFy, TV/HLS, changement de qualité…).
++        self.apply_spatial_filter();
+         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
+             Some((video.to_string(), audio.map(|s| s.to_string())));
+         // 0.6.0 (visualiseur) : on NE touche PLUS à `audio_origin` ici.
+@@ -509,7 +650,10 @@ impl PlaybackEngineHandle {
+         }
+         match audio {
+             Some(a) => {
+-                let opts = format!("audio-file={a}");
++                // Syntaxe mpv « %longueur%valeur » : sans elle, une virgule dans
++                // l'URL coupe la valeur et loadfile échoue (« invalid parameter »,
++                // vérifié sur mpv 0.37) → repli silencieux en vidéo SANS son.
++                let opts = format!("audio-file=%{}%{}", a.len(), a);
+                 if self
+                     .command(&["loadfile", video, "replace", "0", &opts])
+                     .is_err()
+@@ -560,6 +704,7 @@ impl PlaybackEngineHandle {
+             Some(url.to_string());
+         // Flux audio = petit débit → démarrage immédiat, pas de gate.
+         self.gate.disarm();
++        self.apply_spatial_filter();
+         self.command(&["loadfile", &audio_url, "replace"])?;
+         self.set_paused(false)
+     }
+@@ -733,17 +878,26 @@ impl PlaybackEngineHandle {
+         ]
+     }
+ 
+-    /// 0.5.2 : récupère un PO Token (cache 30 min, refresh à 20 min), ou None si sidecar absent/échec.
++    /// 0.5.2 : récupère un PO Token (cache `CACHE_TTL_SECS`), ou None si sidecar absent/échec.
++    /// Le token est pré-généré au démarrage et rafraîchi en tâche de fond
++    /// (voir `spawn_pot_prewarm`) : un clic sur une vidéo ne paie normalement
++    /// plus la génération (processus sidecar, plusieurs secondes à froid).
+     fn fetch_pot_token(&self) -> Option<(String, String)> {
+-        const CACHE_TTL_SECS: u64 = 20 * 60;
+         {
+             let guard = self.pot_cache.lock().unwrap_or_else(|p| p.into_inner());
+             if let Some((v, t, instant)) = guard.as_ref() {
+-                if instant.elapsed() < Duration::from_secs(CACHE_TTL_SECS) {
++                if instant.elapsed() < Duration::from_secs(POT_CACHE_TTL_SECS) {
+                     return Some((v.clone(), t.clone()));
+                 }
+             }
+         }
++        self.generate_pot_token()
++    }
++
++    /// Lance le sidecar bgutil-pot et met le résultat en cache (sans
++    /// consulter le cache — utilisé par le rafraîchissement anticipé).
++    fn generate_pot_token(&self) -> Option<(String, String)> {
++        let t_pot = Instant::now();
+         let pot_bin = locate_bgutil_pot()?;
+         let mut cmd = std::process::Command::new(&pot_bin);
+         #[cfg(windows)]
+@@ -777,7 +931,8 @@ impl PlaybackEngineHandle {
+             return None;
+         }
+         log::info!(
+-            "[playback] PO Token généré (visitor={}…, token={}…)",
++            "[playback] PO Token généré en {} ms (visitor={}…, token={}…)",
++            t_pot.elapsed().as_millis(),
+             &visitor[..visitor.len().min(20)],
+             &token[..token.len().min(20)]
+         );
+@@ -846,13 +1001,31 @@ impl PlaybackEngineHandle {
+         self.command(&["set", "aid", &track_id.to_string()])
+     }
+ 
+-    /// FONCTIONNALITÉ (amélioration audio — spatialisation) : élargissement
+-    /// stéréo / crossfeed casque, via le filtre `crossfeed` de FFmpeg
+-    /// (algorithme Bauer stereophonic-to-binaural — bs2b) — déjà lié par
+-    /// mpv, donc aucune dépendance supplémentaire.
+-    pub fn set_audio_spatialization(&self, enabled: bool) -> Result<(), String> {
+-        let filter = if enabled { "lavfi=[crossfeed]" } else { "" };
+-        self.command(&["set", "af", filter])
++    /// Spatialisation audio : fixe le niveau voulu et l'applique tout de suite
++    /// au média en cours. Le niveau reste mémorisé dans le moteur et est
++    /// ré-appliqué avant chaque chargement (`apply_spatial_filter`).
++    pub fn set_spatial_level(&self, level: SpatialLevel) -> Result<(), String> {
++        self.spatial_level.store(level.as_u8(), Ordering::Relaxed);
++        self.try_apply_spatial_filter()
++    }
++
++    /// Place la chaîne `af` de mpv dans l'état voulu si elle ne l'y est pas déjà.
++    fn try_apply_spatial_filter(&self) -> Result<(), String> {
++        let wanted = self.spatial_level.load(Ordering::Relaxed);
++        if self.spatial_applied.load(Ordering::Relaxed) == wanted {
++            return Ok(());
++        }
++        let level = SpatialLevel::from_u8(wanted);
++        self.command(&["set", "af", level.mpv_filter()])?;
++        self.spatial_applied.store(wanted, Ordering::Relaxed);
++        Ok(())
++    }
++
++    /// Variante « au chargement » : ne doit JAMAIS empêcher la lecture.
++    fn apply_spatial_filter(&self) {
++        if let Err(err) = self.try_apply_spatial_filter() {
++            log::warn!("[playback] spatialisation audio non appliquée : {err}");
++        }
+     }
+ 
+     pub fn set_subtitle_track(&self, track_id: Option<i64>) -> Result<(), String> {
+@@ -1276,6 +1449,27 @@ fn error_string(functions: &MpvFunctions, code: c_int) -> String {
+     }
+ }
+ 
++/// Durée de validité d'un PO Token en cache.
++const POT_CACHE_TTL_SECS: u64 = 20 * 60;
++/// Rafraîchissement anticipé (strictement < TTL) : le cache ne tombe donc
++/// jamais « à froid » sous les yeux de l'utilisateur.
++const POT_REFRESH_EVERY_SECS: u64 = 15 * 60;
++
++/// Pré-chauffe le PO Token au démarrage puis le renouvelle en tâche de fond.
++/// Sans sidecar (`locate_bgutil_pot()` vide) : aucun thread n'est créé.
++fn spawn_pot_prewarm(handle: Arc<PlaybackEngineHandle>) {
++    if locate_bgutil_pot().is_none() {
++        return;
++    }
++    std::thread::spawn(move || {
++        let _ = handle.generate_pot_token();
++        loop {
++            std::thread::sleep(Duration::from_secs(POT_REFRESH_EVERY_SECS));
++            let _ = handle.generate_pot_token();
++        }
++    });
++}
++
+ /// 0.5.0 : extraction via Cobalt (API self-host ou publique) — flux muxés
+ /// (vidéo+audio) NON throttés, en une seule requête HTTP.
+ fn cobalt_extract(url: &str, height: Option<i64>) -> Option<String> {
+@@ -1301,10 +1495,11 @@ fn cobalt_extract(url: &str, height: Option<i64>) -> Option<String> {
+             "downloadMode": "auto",
+             "filenameStyle": "basic",
+         });
++        let t_cobalt = Instant::now();
+         let res = ureq::post(&format!("{base}/"))
+             .set("Accept", "application/json")
+             .set("Content-Type", "application/json")
+-            .timeout(std::time::Duration::from_secs(10))
++            .timeout(std::time::Duration::from_secs(6))
+             .send_json(body);
+         match res {
+             Ok(resp) => {
+@@ -1322,7 +1517,10 @@ fn cobalt_extract(url: &str, height: Option<i64>) -> Option<String> {
+                     log::warn!("[playback] cobalt {base} : réponse sans URL");
+                 }
+             }
+-            Err(e) => log::warn!("[playback] cobalt {base} en échec : {e}"),
++            Err(e) => log::warn!(
++                "[playback] cobalt {base} en échec après {} ms : {e}",
++                t_cobalt.elapsed().as_millis()
++            ),
+         }
+     }
+     None
+@@ -1535,21 +1733,23 @@ fn run_event_thread(
+                     "duration" if prop.format == MpvFormat::Double as c_int => {
+                         payload.duration_seconds = Some(unsafe { *(prop.data as *const f64) });
+                     }
++                    "demuxer-cache-duration" if prop.format == MpvFormat::Double as c_int => {
++                        // Avance de tampon : ne sert qu'à la start gate (la
++                        // barre verte de l'UI reste pilotée par
++                        // `demuxer-cache-time`) — aucun événement UI ici.
++                        let ahead = unsafe { *(prop.data as *const f64) };
++                        maybe_release_gate(&gate, &functions, mpv, None, Some(ahead));
++                        continue;
++                    }
+                     "pause" if prop.format == MpvFormat::Flag as c_int => {
+                         let flag = unsafe { *(prop.data as *const c_int) };
+                         payload.playing = Some(flag == 0);
+                     }
+                     _ => continue,
+                 }
+-                // 0.5.3 : start gate — libère la lecture à 30 % de buffer
+-                // (ou timeout 45 s).
+-                maybe_release_gate(
+-                    &gate,
+-                    &functions,
+-                    mpv,
+-                    payload.duration_seconds,
+-                    payload.buffered_seconds,
+-                );
++                // 0.5.3 : start gate — libère la lecture dès que la durée est
++                // connue et que l'avance de tampon suffit (voir plus haut).
++                maybe_release_gate(&gate, &functions, mpv, payload.duration_seconds, None);
+                 let _ = app_handle.emit("player-state", payload);
+             }
+             id if id == mpv_ffi::event_id::END_FILE => {
+@@ -1570,11 +1770,18 @@ fn run_event_thread(
+                     }
+                     _ => None,
+                 };
++                // `playing: Some(false)` UNIQUEMENT pour une vraie fin (EOF /
++                // erreur). Un END_FILE de raison STOP/REDIRECT est émis par
++                // mpv à chaque `loadfile … replace` (morceau suivant, changement
++                // de qualité) ; or, en lecture audio (pas de start gate), la
++                // propriété `pause` ne change alors pas → aucun événement
++                // `pause` ne venait corriger le `false` : le bouton Lecture
++                // restait « inactif » alors que le son jouait.
+                 let _ = app_handle.emit(
+                     "player-state",
+                     PlayerStateEvent {
+                         ended: is_real_end,
+-                        playing: Some(false),
++                        playing: if is_real_end { Some(false) } else { None },
+                         error,
+                         ..Default::default()
+                     },
+@@ -1668,7 +1875,11 @@ pub fn player_set_preferred_quality(
+     Ok(())
+ }
+ 
+-#[tauri::command]
++// `(async)` : exécutée dans le thread pool de Tauri et non sur le thread
++// principal (une commande synchrone `#[tauri::command]` y tourne en ligne et
++// bloquerait fenêtre + autres commandes pendant tout le yt-dlp). Lecture
++// seule : aucun risque de course avec un chargement en cours.
++#[tauri::command(async)]
+ pub fn player_extract_media(
+     state: tauri::State<'_, crate::state::AppState>,
+     url: String,
+@@ -1684,7 +1895,8 @@ pub fn player_unload(
+ }
+ 
+ /// 0.5.0 : résolutions disponibles pour une URL AetherFy.
+-#[tauri::command]
++/// `(async)` : voir `player_extract_media` (yt-dlp -J hors du thread principal).
++#[tauri::command(async)]
+ pub fn player_list_qualities(
+     state: tauri::State<'_, crate::state::AppState>,
+     url: String,
+@@ -1702,3 +1914,42 @@ pub fn player_load_url_quality(
+ ) -> Result<(), String> {
+     state.playback_engine.handle()?.load_url_quality(&url, height)
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::SpatialLevel;
++
++    const ALL: [SpatialLevel; 4] = [
++        SpatialLevel::Off,
++        SpatialLevel::Light,
++        SpatialLevel::Medium,
++        SpatialLevel::Strong,
++    ];
++
++    #[test]
++    fn spatial_level_keys_round_trip() {
++        for level in ALL {
++            assert_eq!(SpatialLevel::parse(level.key()), Some(level));
++            assert_eq!(SpatialLevel::from_u8(level.as_u8()), level);
++        }
++        assert_eq!(SpatialLevel::parse("  medium "), Some(SpatialLevel::Medium));
++        assert_eq!(SpatialLevel::parse("earwax"), None);
++        assert_eq!(SpatialLevel::parse(""), None);
++    }
++
++    #[test]
++    fn spatial_filters_are_well_formed() {
++        // « off » = chaîne `af` vide ; les autres = un graphe lavfi entre crochets.
++        assert_eq!(SpatialLevel::Off.mpv_filter(), "");
++        for level in [SpatialLevel::Light, SpatialLevel::Medium, SpatialLevel::Strong] {
++            let f = level.mpv_filter();
++            assert!(f.starts_with("lavfi=[") && f.ends_with(']'), "{f}");
++            assert!(f.contains("crossfeed="), "{f}");
++        }
++        // Les niveaux qui élargissent la scène doivent être protégés par un
++        // limiteur de crêtes SANS normalisation de volume (`level=disabled`).
++        for level in [SpatialLevel::Medium, SpatialLevel::Strong] {
++            assert!(level.mpv_filter().contains("alimiter=limit=0.97:level=disabled"));
++        }
++    }
++}
+diff --git a/apps/desktop/src/features/player/api.ts b/apps/desktop/src/features/player/api.ts
+index febe7a9..4500231 100644
+--- a/apps/desktop/src/features/player/api.ts
++++ b/apps/desktop/src/features/player/api.ts
+@@ -2,6 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
+ import { Channel } from "@tauri-apps/api/core";
+ import type { PlayerTrack } from "@aethervault/shared-types";
+ 
++/** Niveaux de spatialisation audio (miroir de `SpatialLevel::key()` côté Rust). */
++export type SpatialLevel = "off" | "light" | "medium" | "strong";
++
+ export interface ExtractedMedia {
+   kind: "merged" | "split";
+   url: string;
+@@ -50,9 +53,9 @@ export const playerApi = {
+   getPostShader: () => invoke<string>("get_post_shader"),
+     setPostShader: (preset: string) => invoke<void>("set_post_shader", { preset }),
+ 	setRenderScale: (percent: number) => invoke<void>("player_set_render_scale", { percent }),
+-  // FONCTIONNALITÉ (amélioration audio — spatialisation) : application
+-  // immédiate sur le média en cours — la préférence elle-même se règle
+-  // via settingsApi (Paramètres → Audio), voir features/settings/api.ts.
+-  setAudioSpatialization: (enabled: boolean) =>
+-    invoke<void>("player_set_audio_spatialization", { enabled }),
++  // Spatialisation audio — APERÇU (comparaison A/B de Paramètres → Audio) :
++  // applique un niveau au moteur SANS l'enregistrer. Le réglage réel passe
++  // par `set_audio_spatialization_level` (commands::settings).
++  previewAudioSpatialization: (level: SpatialLevel) =>
++    invoke<void>("player_preview_audio_spatialization", { level }),
+ };
+\ No newline at end of file
+diff --git a/apps/desktop/src/pages/SettingsPage.tsx b/apps/desktop/src/pages/SettingsPage.tsx
+index 9d36d34..a2c13af 100644
+--- a/apps/desktop/src/pages/SettingsPage.tsx
++++ b/apps/desktop/src/pages/SettingsPage.tsx
+@@ -20,7 +20,8 @@ import { useActiveProfile } from "../profile/ActiveProfileContext";
+ import { privacyApi } from "../features/privacy/api";
+ import "./pages.css";
+ import { metadataApi } from "../features/settings/api";
+-import { playerApi } from "../features/player/api";
++import { playerApi, type SpatialLevel } from "../features/player/api";
++import { usePlayer } from "../player/PlayerContext";
+ import { readPersistedTheme, writePersistedTheme } from "../theme/persistedCustomTheme";
+ import { RenderQualitySection } from "./RenderQualitySection";
+ import { readCategoryBackdropHidden, CATEGORY_BACKDROP_EVENT } from "../hooks/useCategoryBackdropHidden";
+@@ -841,62 +842,173 @@ function SystemInfoSection() {
+   );
+ }
+ 
++const SPATIAL_LEVELS: { key: SpatialLevel; label: string; hint: string }[] = [
++  { key: "off", label: "Désactivée", hint: "Stéréo d'origine." },
++  {
++    key: "light",
++    label: "Légère",
++    hint: "Adoucit la séparation gauche/droite (crossfeed) : très naturel, sans coloration.",
++  },
++  {
++    key: "medium",
++    label: "Moyenne",
++    hint: "Élargit un peu la scène, puis mélange naturellement les canaux.",
++  },
++  {
++    key: "strong",
++    label: "Forte",
++    hint: "Scène large, effet le plus marqué — à essayer sur vos morceaux.",
++  },
++];
++
++/** Durée de chaque phase (A puis B) de la comparaison. */
++const AB_PHASE_MS = 3000;
++
+ /**
+- * FONCTIONNALITÉ (amélioration audio) : élargissement stéréo /
+- * virtualisation casque via le filtre FFmpeg `earwax`, déjà lié par mpv
+- * — pas de dépendance supplémentaire, pas de fichier de données externe
+- * (contrairement à un vrai rendu binaural HRTF type "sofalizer", qui
+- * demanderait d'embarquer un fichier SOFA de plusieurs Mo). Réglage
+- * global, réappliqué automatiquement à chaque nouveau média (voir
+- * commands::playback::player_load côté Rust) — l'utilisateur ne
+- * l'active qu'une fois.
++ * Spatialisation audio (virtualisation casque) — quatre niveaux, réglage
++ * global. Le moteur (Rust) applique le niveau avant CHAQUE chargement, quel
++ * que soit le chemin de lecture (fichier, AetherFy, TV) et dès le démarrage
++ * de l'application ; ici on ne fait que l'enregistrer et proposer une
++ * comparaison A/B (sans effet ↔ niveau choisi) sur le média en cours.
+  */
+ function AudioSection() {
+-  const [spatialization, setSpatialization] = useState(false);
++  const { isPlaying } = usePlayer();
++  const [level, setLevel] = useState<SpatialLevel>("off");
+   const [loaded, setLoaded] = useState(false);
+   const [busy, setBusy] = useState(false);
+   const [error, setError] = useState<string | null>(null);
++  const [abPhase, setAbPhase] = useState<"A" | "B" | null>(null);
++  // Niveau ENREGISTRÉ (identique à `level` : on l'enregistre à chaque choix).
++  const levelRef = useRef<SpatialLevel>("off");
++  levelRef.current = level;
++  // `true` tant qu'un aperçu A/B a pu modifier le moteur sans être enregistré :
++  // on ne restaure le niveau enregistré QUE dans ce cas (jamais à un simple
++  // montage/démontage — notamment avant que le réglage ait été chargé).
++  const previewDirtyRef = useRef(false);
+ 
+   useEffect(() => {
+-    invoke<boolean>("get_audio_spatialization_enabled")
++    invoke<string>("get_audio_spatialization_level")
+       .then((value) => {
+-        setSpatialization(value);
++        if (value === "off" || value === "light" || value === "medium" || value === "strong") {
++          setLevel(value);
++        }
+         setLoaded(true);
+       })
+       .catch(() => setLoaded(true));
+   }, []);
+ 
+-  const toggle = async (value: boolean) => {
++  const restoreSavedLevel = () => {
++    if (!previewDirtyRef.current) return;
++    previewDirtyRef.current = false;
++    void playerApi.previewAudioSpatialization(levelRef.current).catch(() => {});
++  };
++
++  // Comparaison A/B : alterne « sans effet » (A) et niveau choisi (B).
++  useEffect(() => {
++    if (abPhase === null) return;
++    previewDirtyRef.current = true;
++    void playerApi
++      .previewAudioSpatialization(abPhase === "A" ? "off" : levelRef.current)
++      .catch(() => {});
++    const timer = window.setTimeout(
++      () => setAbPhase((p) => (p === "A" ? "B" : "A")),
++      AB_PHASE_MS
++    );
++    return () => window.clearTimeout(timer);
++  }, [abPhase]);
++
++  // Plus de lecture → on arrête la comparaison ; en quittant la page, on
++  // restaure toujours le réglage enregistré.
++  useEffect(() => {
++    if (!isPlaying && abPhase !== null) {
++      setAbPhase(null);
++      restoreSavedLevel();
++    }
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [isPlaying]);
++  useEffect(() => restoreSavedLevel, []);
++
++  const stopAb = () => {
++    setAbPhase(null);
++    restoreSavedLevel();
++  };
++
++  const choose = async (next: SpatialLevel) => {
++    if (abPhase !== null) stopAb();
+     setBusy(true);
+     setError(null);
+     try {
+-      await invoke("set_audio_spatialization_enabled", { enabled: value });
+-      setSpatialization(value);
+-      // Effet immédiat si un média est déjà en cours de lecture, sans
+-      // attendre le prochain chargement.
+-      await playerApi.setAudioSpatialization(value).catch(() => {});
++      // Enregistre ET applique immédiatement au média en cours (côté Rust).
++      await invoke("set_audio_spatialization_level", { level: next });
++      setLevel(next);
++      levelRef.current = next;
+     } catch (err) {
+-      setError(err instanceof Error ? err.message : "Impossible d'enregistrer ce réglage.");
++      setError(
++        typeof err === "string"
++          ? err
++          : err instanceof Error
++            ? err.message
++            : "Impossible d'enregistrer ce réglage."
++      );
+     } finally {
+       setBusy(false);
+     }
+   };
+ 
++  const levelLabel = SPATIAL_LEVELS.find((l) => l.key === level)?.label ?? "";
++  const canCompare = loaded && !busy && level !== "off" && isPlaying;
++
+   return (
+     <section className="avm-settings-section">
+       <h2>Audio</h2>
+-      <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+-        <input
+-          type="checkbox"
+-          checked={spatialization}
+-          disabled={!loaded || busy}
+-          onChange={(e) => void toggle(e.target.checked)}
+-        />
+-        Spatialisation audio (virtualisation casque)
+-      </label>
++      <fieldset
++        style={{ border: "none", padding: 0, margin: 0 }}
++        disabled={!loaded || busy}
++      >
++        <legend>Spatialisation audio (virtualisation casque)</legend>
++        {SPATIAL_LEVELS.map((l) => (
++          <label
++            key={l.key}
++            style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "4px 0" }}
++          >
++            <input
++              type="radio"
++              name="avm-spatialization"
++              checked={level === l.key}
++              onChange={() => void choose(l.key)}
++            />
++            <span>
++              {l.label}
++              <span className="avm-settings-muted" style={{ display: "block" }}>
++                {l.hint}
++              </span>
++            </span>
++          </label>
++        ))}
++      </fieldset>
++      <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 8 }}>
++        {abPhase === null ? (
++          <Button variant="secondary" disabled={!canCompare} onClick={() => setAbPhase("A")}>
++            Comparer (A/B)
++          </Button>
++        ) : (
++          <Button variant="secondary" onClick={stopAb}>
++            Arrêter la comparaison
++          </Button>
++        )}
++        <span role="status" aria-live="polite" className="avm-settings-muted">
++          {abPhase === "A" && "A — sans effet"}
++          {abPhase === "B" && `B — ${levelLabel}`}
++          {abPhase === null &&
++            !canCompare &&
++            level !== "off" &&
++            "Lancez une lecture pour comparer."}
++        </span>
++      </div>
+       <p className="avm-settings-muted">
+-        Élargit le rendu stéréo pour une écoute au casque plus enveloppante.
+-        S'applique à toute nouvelle lecture ; effet immédiat si un média est déjà en cours.
++        S'applique à toute lecture (fichiers, AetherFy, TV) ; effet immédiat sur le média en
++        cours. La comparaison alterne toutes les {AB_PHASE_MS / 1000} s entre « sans effet » et
++        le niveau choisi ; un léger saut sonore au changement est normal.
+       </p>
+       {error && <p className="avm-settings-error">{error}</p>}
+     </section>
+diff --git a/apps/desktop/src/player/PlayerContext.tsx b/apps/desktop/src/player/PlayerContext.tsx
+index 4b083b5..9f17ed1 100644
+--- a/apps/desktop/src/player/PlayerContext.tsx
++++ b/apps/desktop/src/player/PlayerContext.tsx
+@@ -97,6 +97,16 @@ function loadMedia(media: PlayableMedia): Promise<void> {
+     : playerApi.load(media.path);
+ }
+ 
++/** Média en ligne (YouTube, Dailymotion, flux HLS…) : son `id` n'est PAS un
++    `media_files.id`. La progression locale (`playback_progress`, clé étrangère
++    vers `media_files`) et `watch_history` ne doivent jamais être lues ni
++    écrites pour lui — sinon un id AetherFy qui coïncide avec un fichier
++    local lirait/écraserait la progression de CE fichier, et ferait sauter la
++    lecture à une position sans rapport (re-buffering à l'ouverture). */
++function isOnlineMedia(media: PlayableMedia): boolean {
++  return /^https?:\/\//i.test(media.path);
++}
++
+ function loadAndBroadcast(items: PlayableMedia[], index: number, background = false): void {
+   const media = items[index];
+   // 0.9.3 — anti-fuite TV (double sécurité ; le verrou réel est dans loadMedia)
+@@ -111,8 +121,9 @@ function loadAndBroadcast(items: PlayableMedia[], index: number, background = fa
+   } as unknown as PlaybackQueueState);
+ 
+   // 0.9.1 : médias TV (ids négatifs) absents de la base → pas de
+-  // recherche de progression, chargement direct.
+-  if (media.id < 0) {
++  // recherche de progression, chargement direct. Idem pour tout média en
++  // ligne (AetherFy) : voir isOnlineMedia.
++  if (media.id < 0 || isOnlineMedia(media)) {
+     void loadMedia(media);
+     return;
+   }
+@@ -262,8 +273,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
+     }
+     endedHandledRef.current = media.id;
+ 
+-    // 0.9.1 : médias TV absents de la base → pas d'historique.
+-    if (media.id >= 0 && positionRef.current >= 30 && durationRef.current > 0) {
++    // 0.9.1 : médias TV absents de la base → pas d'historique (idem en ligne).
++    if (
++      media.id >= 0 &&
++      !isOnlineMedia(media) &&
++      positionRef.current >= 30 &&
++      durationRef.current > 0
++    ) {
+       void titleApi
+         .recordWatch(media.id, positionRef.current, durationRef.current)
+         .catch(() => {});
+@@ -284,7 +300,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
+         } else if (currentIndex < items.length - 1) {
+           nextIndex = currentIndex + 1;
+         }
+-        if (nextIndex !== null) loadAndBroadcast(items, nextIndex);
++        // `background = true` : l'enchaînement automatique ne doit JAMAIS
++        // rouvrir la vue immersive (sinon un lecteur musique réduit en
++        // mini-barre se réaffiche à chaque morceau). Si la vue est déjà
++        // ouverte elle le reste : le drapeau n'empêche que l'ouverture.
++        if (nextIndex !== null) loadAndBroadcast(items, nextIndex, true);
+       }
+     }
+   };
+@@ -315,10 +335,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
+     const media = currentMediaRef.current;
+     // 0.9.1 : médias TV absents de la base → pas de progression.
+     if (media && durationRef.current > 0 && media.id >= 0) {
+-      const saveProgress = media.isPrivate
+-        ? playerApi.savePrivateProgress
+-        : playerApi.saveProgress;
+-      saveProgress(media.id, positionRef.current, durationRef.current).catch(() => {});
++      if (!isOnlineMedia(media)) {
++        const saveProgress = media.isPrivate
++          ? playerApi.savePrivateProgress
++          : playerApi.saveProgress;
++        saveProgress(media.id, positionRef.current, durationRef.current).catch(() => {});
++      }
+       publishActivity();
+     }
+   };
+@@ -520,11 +542,11 @@ useEffect(() => {
+           while (n === currentIndex) {
+             n = Math.floor(Math.random() * items.length);
+           }
+-          loadAndBroadcast(items, n);
++          loadAndBroadcast(items, n, true);
+           return;
+         }
+         if (currentIndex >= items.length - 1) return;
+-        loadAndBroadcast(items, currentIndex + 1);
++        loadAndBroadcast(items, currentIndex + 1, true);
+       },
+       playPrevious: () => {
+         const { items, currentIndex } = queueRef.current;
+@@ -537,7 +559,7 @@ useEffect(() => {
+           void playerApi.seek(0);
+           return;
+         }
+-        loadAndBroadcast(items, currentIndex - 1);
++        loadAndBroadcast(items, currentIndex - 1, true);
+       },
+       togglePlay: () => {
+         const next = !isPlaying;
+@@ -643,6 +665,7 @@ useEffect(() => {
+         if (
+           media &&
+           media.id >= 0 &&
++          !isOnlineMedia(media) &&
+           endedHandledRef.current !== media.id &&
+           durationRef.current > 0 &&
+           positionRef.current >= 30
+diff --git a/apps/desktop/src/player/VideoWatchLayout.tsx b/apps/desktop/src/player/VideoWatchLayout.tsx
+index 48b2fb3..e67cefd 100644
+--- a/apps/desktop/src/player/VideoWatchLayout.tsx
++++ b/apps/desktop/src/player/VideoWatchLayout.tsx
+@@ -61,7 +61,11 @@ const menuItemStyle = (active: boolean): CSSProperties => ({
+  */
+ function QualitySelector({ url }: { url: string }) {
+   const [qualities, setQualities] = useState<QualityOption[]>([]);
++  const [loadingQualities, setLoadingQualities] = useState(false);
+   const [open, setOpen] = useState(false);
++  // URL pour laquelle la liste a été demandée (null = jamais). Sert à ne
++  // l'interroger qu'UNE fois par vidéo ET à ignorer une réponse périmée.
++  const requestedUrlRef = useRef<string | null>(null);
+   const [selected, setSelected] = useState<number | null>(() => {
+     try {
+       const v = localStorage.getItem(QUALITY_STORAGE_KEY);
+@@ -73,14 +77,10 @@ function QualitySelector({ url }: { url: string }) {
+   const rootRef = useRef<HTMLDivElement>(null);
+ 
+   useEffect(() => {
+-    let alive = true;
+-    invoke<QualityOption[]>("player_list_qualities", { url })
+-      .then((q) => {
+-        if (alive) setQualities(q);
+-      })
+-      .catch(() => {
+-        if (alive) setQualities([]);
+-      });
++    // Nouvelle vidéo : on oublie la liste de la précédente.
++    requestedUrlRef.current = null;
++    setQualities([]);
++    setLoadingQualities(false);
+     let saved: number | null = null;
+     try {
+       const v = localStorage.getItem(QUALITY_STORAGE_KEY);
+@@ -89,11 +89,29 @@ function QualitySelector({ url }: { url: string }) {
+       saved = null;
+     }
+     invoke("player_set_preferred_quality", { height: saved }).catch(() => {});
+-    return () => {
+-      alive = false;
+-    };
+   }, [url]);
+ 
++  // La liste des résolutions lance une SECONDE extraction yt-dlp complète
++  // de la vidéo. Elle n'est donc demandée qu'à la première ouverture du
++  // menu (et plus au montage, où elle concurrençait — et sérialisait,
++  // les commandes synchrones tournant sur le thread principal — la
++  // vraie extraction de lecture).
++  useEffect(() => {
++    if (!open || requestedUrlRef.current === url) return;
++    requestedUrlRef.current = url;
++    setLoadingQualities(true);
++    invoke<QualityOption[]>("player_list_qualities", { url })
++      .then((q) => {
++        if (requestedUrlRef.current === url) setQualities(q);
++      })
++      .catch(() => {
++        if (requestedUrlRef.current === url) setQualities([]);
++      })
++      .finally(() => {
++        if (requestedUrlRef.current === url) setLoadingQualities(false);
++      });
++  }, [open, url]);
++
+   useEffect(() => {
+     if (!open) return;
+     const onDown = (e: MouseEvent) => {
+@@ -170,7 +188,7 @@ function QualitySelector({ url }: { url: string }) {
+           ))}
+           {qualities.length === 0 && (
+             <div style={{ padding: "6px 10px", fontSize: 11, color: "#9a9aa3" }}>
+-              Résolutions indisponibles
++              {loadingQualities ? "Chargement des résolutions…" : "Résolutions indisponibles"}
+             </div>
+           )}
+         </div>

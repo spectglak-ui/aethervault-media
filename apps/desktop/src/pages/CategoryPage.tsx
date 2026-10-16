@@ -26,6 +26,8 @@ import { ScanProgressBar } from "../components/ScanProgressBar";
 import { TitleRoulette } from "../components/TitleRoulette";
 import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
+import { TitleUserBadges } from "../features/userlists/TitleUserBadges";
+import { useTitleUserStates } from "../features/userlists/useTitleUserStates";
 import { useAnimatedBackdropActive } from "../hooks/useAnimatedBackdropActive";
 import "./pages.css";
 
@@ -63,6 +65,8 @@ export function CategoryPage() {
   const hideCategoryBackdrop = useCategoryBackdropHidden();
   const [category, setCategory] = useState<Category | null | undefined>(undefined);
   const [titles, setTitles] = useState<TitleSummary[] | null>(null);
+  // Notes personnelles et watchlist du profil actif, en une requête pour toute la grille.
+  const userStates = useTitleUserStates(titles ? titles.map((t) => t.id) : null);
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<TitleSummary | null>(null);
@@ -357,7 +361,9 @@ export function CategoryPage() {
                       }
                 }
                 deleteLabel={`Supprimer « ${title.name} »`}
-              />
+              >
+                <TitleUserBadges state={userStates[title.id]} />
+              </Card>
             ))}
           </div>
         )}

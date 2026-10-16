@@ -1519,3 +1519,88 @@ opacity: 1 !important;
 .avm-cast-card img, .avm-cast-card__fallback { width: 110px; height: 150px; object-fit: cover; border-radius: 10px; }
 .avm-cast-card__fallback { display: flex; align-items: center; justify-content: center; font-size: 40px; background: var(--color-surface-hover, #26262d); color: var(--color-text-muted, #9a9aa5); }
 .avm-cast-card__name { font-size: 12px; font-weight: 600; }
+/* ---- Notes personnelles et Watchlist (par profil) --------------------- */
+.avm-user-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 0.6rem 0;
+}
+.avm-user-panel__row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.avm-user-panel__label {
+  min-width: 5.5rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+.avm-user-panel__select {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.5rem;
+  font: inherit;
+}
+.avm-user-panel__select option {
+  background: #14161a;
+  color: var(--color-text);
+}
+
+.avm-watchlist__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  margin: 0 0 1rem;
+}
+.avm-watchlist__tabs {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+}
+.avm-watchlist__tab {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-muted);
+  padding: 0.35rem 0.9rem;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.avm-watchlist__tab:hover {
+  color: var(--color-text);
+}
+.avm-watchlist__tab--active {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+.avm-watchlist__count {
+  opacity: 0.7;
+  font-weight: 500;
+  margin-left: 0.2rem;
+}
+.avm-watchlist__filters {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+.avm-watchlist__card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.avm-watchlist__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0 0.1rem;
+}

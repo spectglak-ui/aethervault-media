@@ -2,6 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { Channel } from "@tauri-apps/api/core";
 import type { PlayerTrack } from "@aethervault/shared-types";
 
+/** Niveaux de spatialisation audio (miroir de `SpatialLevel::key()` côté Rust). */
+export type SpatialLevel = "off" | "light" | "medium" | "strong";
+/** Niveaux d'ambiance cinéma (mêmes clés que `CinemaLevel::key()` côté Rust). */
+export type CinemaLevel = SpatialLevel;
+
 export interface ExtractedMedia {
   kind: "merged" | "split";
   url: string;
@@ -50,9 +55,10 @@ export const playerApi = {
   getPostShader: () => invoke<string>("get_post_shader"),
     setPostShader: (preset: string) => invoke<void>("set_post_shader", { preset }),
 	setRenderScale: (percent: number) => invoke<void>("player_set_render_scale", { percent }),
-  // FONCTIONNALITÉ (amélioration audio — spatialisation) : application
-  // immédiate sur le média en cours — la préférence elle-même se règle
-  // via settingsApi (Paramètres → Audio), voir features/settings/api.ts.
-  setAudioSpatialization: (enabled: boolean) =>
-    invoke<void>("player_set_audio_spatialization", { enabled }),
+  // Effets audio — APERÇU (comparaison A/B de Paramètres → Audio) : applique
+  // une combinaison spatialisation + ambiance cinéma au moteur SANS l'enregistrer.
+  // Les réglages réels passent par `set_audio_spatialization_level` et
+  // `set_audio_cinema_level` (commands::settings).
+  previewAudioEffects: (spatial: SpatialLevel, cinema: CinemaLevel) =>
+    invoke<void>("player_preview_audio_effects", { spatial, cinema }),
 };

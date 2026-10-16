@@ -41,7 +41,15 @@ interface ParsedFrame {
  * - filet anti-écran-noir 500 ms inclus dans tous les chemins.
  */
 export function PlayerSurface({ className }: PlayerSurfaceProps) {
-  const { currentMedia, displayMode, isPlaying, buffered, position, duration } = usePlayer();
+  const { currentMedia, displayMode, isPlaying, buffered, position, duration, isBuffering } =
+    usePlayer();
+  // Clé STABLE du média courant. L'effet d'attache ci-dessous en dépend (et non
+  // de l'identité de l'objet `currentMedia`) : chaque événement
+  // `player-queue-changed` — ajout à la file, réordonnancement, enrichissement
+  // de la playlist… — fabrique de nouveaux objets, et une simple identité
+  // différente ré-attachait la surface, ce qui côté Rust recharge TOUTE la
+  // source (cache perdu → « mise en mémoire tampon » + saccade).
+  const mediaKey = currentMedia ? `${currentMedia.id}|${currentMedia.path}` : null;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const shaderModeRef = useRef(0);
   const playingRef = useRef(isPlaying);
@@ -87,7 +95,7 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
   }, [displayMode]);
 
   useEffect(() => {
-    if (!currentMedia) return;
+    if (!mediaKey) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     canvas.style.width = "100%";
@@ -558,12 +566,18 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
       gl.deleteShader(vertexShader);
       gl.deleteShader(fragmentShader);
     };
-  }, [currentMedia]);
+  }, [mediaKey]);
 
   // 0.4.0 : indicateur de mise en mémoire tampon — PUREMENT VISUEL,
   // ne bloque JAMAIS la lecture (mpv gère lui-même la reprise).
+  // Vrai tampon vide (`paused-for-cache` de mpv), OU démarrage : tout début de
+  // média encore sous le seuil de la start gate. L'ancien critère seul
+  // (« moins de 5 s d'avance ») assombrissait l'image et affichait le spinner
+  // alors que mpv lisait normalement.
   const needsBuffering =
-    isPlaying && duration > 0 && buffered > 0 && buffered - position < 5;
+    isPlaying &&
+    (isBuffering ||
+      (duration > 0 && position < 0.5 && buffered > 0 && buffered - position < 5));
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <style>{`@keyframes avm-spin { to { transform: rotate(360deg); } }`}</style>

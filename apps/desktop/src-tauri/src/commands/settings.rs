@@ -1,6 +1,7 @@
 //! Commandes des paramètres applicatifs (Étape 7) : wrapper autour de
 //! `services::metadata::tmdb` pour la section « Métadonnées en ligne ».
 use crate::services::metadata::tmdb::{self, MetadataSettings};
+use crate::services::playback_engine::{CinemaLevel, SpatialLevel};
 use crate::state::AppState;
 
 #[tauri::command]
@@ -20,36 +21,109 @@ pub fn save_metadata_settings(
 
 // ---- Amélioration audio — spatialisation (FONCTIONNALITÉ) ----------
 //
-// Réglage global, stocké dans `app_settings` comme l'Accès rapide
-// ci-dessous. L'application effective au moteur mpv se fait dans
-// `commands::playback::player_load` (à chaque nouveau média) et
-// `commands::playback::player_set_audio_spatialization` (immédiat, sur
-// le média en cours) — voir `services::playback_engine::set_audio_spatialization`.
-const AUDIO_SPATIALIZATION_KEY: &str = "audio_spatialization_enabled";
+// Réglage global, stocké dans `app_settings`. Quatre niveaux : off, light,
+// medium, strong (voir `services::playback_engine::SpatialLevel`). L'effet
+// est porté par le moteur : `set_audio_spatialization_level` l'applique tout
+// de suite, puis le moteur le ré-applique avant chaque chargement ; au
+// démarrage, `lib.rs` pousse le niveau persisté dans le moteur.
+const AUDIO_SPATIALIZATION_LEVEL_KEY: &str = "audio_spatialization_level";
+/// Ancien interrupteur on/off (avant les niveaux) — lu seulement pour migrer :
+/// « 1 » correspondait au crossfeed par défaut, donc au niveau « light ».
+const AUDIO_SPATIALIZATION_LEGACY_KEY: &str = "audio_spatialization_enabled";
 
-#[tauri::command]
-pub fn get_audio_spatialization_enabled(state: tauri::State<AppState>) -> Result<bool, String> {
-    let conn = state.get_conn()?;
-    Ok(
-        crate::db::repositories::settings_repository::get(&conn, AUDIO_SPATIALIZATION_KEY)
-            .map_err(|e| e.to_string())?
-            .as_deref()
-            == Some("1"),
-    )
+/// Niveau persisté (avec migration de l'ancien réglage booléen).
+pub fn read_audio_spatialization_level(conn: &rusqlite::Connection) -> SpatialLevel {
+    use crate::db::repositories::settings_repository as settings;
+    if let Some(level) = settings::get(conn, AUDIO_SPATIALIZATION_LEVEL_KEY)
+        .ok()
+        .flatten()
+        .as_deref()
+        .and_then(SpatialLevel::parse)
+    {
+        return level;
+    }
+    let legacy_on = settings::get(conn, AUDIO_SPATIALIZATION_LEGACY_KEY)
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some("1");
+    if legacy_on {
+        SpatialLevel::Light
+    } else {
+        SpatialLevel::Off
+    }
 }
 
 #[tauri::command]
-pub fn set_audio_spatialization_enabled(
-    state: tauri::State<AppState>,
-    enabled: bool,
-) -> Result<(), String> {
+pub fn get_audio_spatialization_level(state: tauri::State<AppState>) -> Result<String, String> {
     let conn = state.get_conn()?;
-    crate::db::repositories::settings_repository::set(
-        &conn,
-        AUDIO_SPATIALIZATION_KEY,
-        if enabled { "1" } else { "0" },
-    )
-    .map_err(|e| e.to_string())
+    Ok(read_audio_spatialization_level(&conn).key().to_string())
+}
+
+#[tauri::command]
+pub fn set_audio_spatialization_level(
+    state: tauri::State<AppState>,
+    level: String,
+) -> Result<(), String> {
+    let parsed = SpatialLevel::parse(&level)
+        .ok_or_else(|| format!("Niveau de spatialisation inconnu : {level}"))?;
+    {
+        let conn = state.get_conn()?;
+        crate::db::repositories::settings_repository::set(
+            &conn,
+            AUDIO_SPATIALIZATION_LEVEL_KEY,
+            parsed.key(),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    // Moteur indisponible (libmpv absente) : le réglage reste enregistré.
+    match state.playback_engine.handle() {
+        Ok(engine) => engine.set_spatial_level(parsed),
+        Err(_) => Ok(()),
+    }
+}
+
+// ---- Amélioration audio — ambiance cinéma (FONCTIONNALITÉ) ----------
+//
+// Même principe que la spatialisation : réglage global à quatre niveaux
+// (off, light, medium, strong), porté par le moteur (une seule chaîne `af`
+// combine spatialisation et cinéma) et poussé dans le moteur au démarrage.
+const AUDIO_CINEMA_LEVEL_KEY: &str = "audio_cinema_level";
+
+/// Niveau d'ambiance cinéma persisté (« off » par défaut).
+pub fn read_audio_cinema_level(conn: &rusqlite::Connection) -> CinemaLevel {
+    crate::db::repositories::settings_repository::get(conn, AUDIO_CINEMA_LEVEL_KEY)
+        .ok()
+        .flatten()
+        .as_deref()
+        .and_then(CinemaLevel::parse)
+        .unwrap_or(CinemaLevel::Off)
+}
+
+#[tauri::command]
+pub fn get_audio_cinema_level(state: tauri::State<AppState>) -> Result<String, String> {
+    let conn = state.get_conn()?;
+    Ok(read_audio_cinema_level(&conn).key().to_string())
+}
+
+#[tauri::command]
+pub fn set_audio_cinema_level(state: tauri::State<AppState>, level: String) -> Result<(), String> {
+    let parsed = CinemaLevel::parse(&level)
+        .ok_or_else(|| format!("Niveau d'ambiance cinéma inconnu : {level}"))?;
+    {
+        let conn = state.get_conn()?;
+        crate::db::repositories::settings_repository::set(
+            &conn,
+            AUDIO_CINEMA_LEVEL_KEY,
+            parsed.key(),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    // Moteur indisponible (libmpv absente) : le réglage reste enregistré.
+    match state.playback_engine.handle() {
+        Ok(engine) => engine.set_cinema_level(parsed),
+        Err(_) => Ok(()),
+    }
 }
 
 // ---- Accès rapide (FONCTIONNALITÉ) --------------------------------
@@ -280,6 +354,9 @@ pub fn clear_home_backdrop_video(
 /// fond par défaut du logiciel tant qu'il est activé). Un futur réglage
 /// pourra affiner, page par page, lequel des deux s'applique — pas
 /// nécessaire pour cette première version.
+///
+/// ACTIVÉ PAR DÉFAUT : seul un « 0 » explicitement enregistré (case décochée
+/// par l'utilisateur) le désactive ; absence de valeur = activé.
 #[tauri::command]
 pub fn get_backdrop_video_enabled(state: tauri::State<AppState>) -> Result<bool, String> {
     let conn = state.get_conn()?;
@@ -287,7 +364,7 @@ pub fn get_backdrop_video_enabled(state: tauri::State<AppState>) -> Result<bool,
         crate::db::repositories::settings_repository::get(&conn, "backdrop_video_enabled")
             .map_err(|e| e.to_string())?
             .as_deref()
-            == Some("1"),
+            != Some("0"),
     )
 }
 

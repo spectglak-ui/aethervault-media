@@ -155,6 +155,19 @@ pub fn run() {
                 auto_sync_handle: std::sync::Mutex::new(None),
             });
 
+            // Spatialisation audio : le niveau persisté est poussé dans le moteur
+            // dès le démarrage (puis ré-appliqué par le moteur à chaque chargement).
+            {
+                let state = app.state::<AppState>();
+                if let (Ok(engine), Ok(conn)) = (state.playback_engine.handle(), state.get_conn()) {
+                    let spatial = commands::settings::read_audio_spatialization_level(&conn);
+                    let cinema = commands::settings::read_audio_cinema_level(&conn);
+                    if let Err(err) = engine.set_audio_effects(spatial, cinema) {
+                        log::warn!("Effets audio : niveaux initiaux non appliqués : {err}");
+                    }
+                }
+            }
+
                         // 0.6.1 : lance la synchronisation automatique VaultTube (toutes les 6h)
             {
                 let state = app.state::<AppState>();
@@ -236,8 +249,17 @@ pub fn run() {
             commands::settings::save_metadata_settings,
             commands::settings::get_quick_access_enabled,
             commands::settings::set_quick_access_enabled,
-            commands::settings::get_audio_spatialization_enabled,
-            commands::settings::set_audio_spatialization_enabled,
+            commands::settings::get_audio_spatialization_level,
+            commands::settings::set_audio_spatialization_level,
+            commands::user_lists::set_title_rating,
+            commands::user_lists::get_title_user_state,
+            commands::user_lists::list_title_user_states,
+            commands::user_lists::watchlist_add,
+            commands::user_lists::watchlist_remove,
+            commands::user_lists::watchlist_set_status,
+            commands::user_lists::watchlist_list,
+            commands::settings::get_audio_cinema_level,
+            commands::settings::set_audio_cinema_level,
             commands::security::get_vault_status,
             commands::security::setup_vault,
             commands::security::unlock_vault,
@@ -345,7 +367,7 @@ pub fn run() {
             commands::playback::player_set_volume,
             commands::playback::player_set_muted,
             commands::playback::player_set_rate,
-            commands::playback::player_set_audio_spatialization,
+            commands::playback::player_preview_audio_effects,
             commands::playback::player_stop,
             commands::playback::player_attach_surface,
             commands::playback::player_resize_surface,

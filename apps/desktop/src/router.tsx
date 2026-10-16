@@ -14,6 +14,7 @@ import { LibraryPage } from "./pages/LibraryPage";
 import { LibraryDetailPage } from "./pages/LibraryDetailPage";
 import { ExplorePage } from "./pages/ExplorePage";
 import { CollectionsPage } from "./pages/CollectionsPage";
+import { WatchlistPage } from "./pages/WatchlistPage";
 import { SharePage } from "./pages/SharePage";
 import { StatsPage } from "./pages/StatsPage";
 import { ProfilesPage } from "./pages/ProfilesPage";
@@ -33,11 +34,11 @@ import { AetherFyShell } from "./features/aetherfy/AetherFyShell";
 import { AetherFyHomePage } from "./features/aetherfy/AetherFyHomePage";
 import { AetherFyWatchPage } from "./features/aetherfy/AetherFyWatchPage";
 import { AetherFySubscriptionPage } from "./features/aetherfy/AetherFySubscriptionPage";
+import { AetherFyChannelPlaylistPage } from "./features/aetherfy/AetherFyChannelPlaylistPage";
 import { AetherFySearchPage } from "./features/aetherfy/AetherFySearchPage";
 import {
   AetherFyTrendingPage,
   AetherFyLivePage,
-  AetherFyGamingPage,
   AetherFyMusicPage,
   AetherFySubscriptionsPage,
   AetherFyLibraryPage,
@@ -98,6 +99,7 @@ export const router = createHashRouter([
       { path: "/libraries/:id", element: <LibraryDetailPage /> },
       { path: "/explore", element: <ExplorePage /> },
       { path: "/collections", element: <CollectionsPage /> },
+      { path: "/watchlist", element: <WatchlistPage /> },
       { path: "/share", element: <SharePage /> },
       { path: "/stats", element: <StatsPage /> },
       { path: "/profiles", element: <ProfilesPage /> },
@@ -114,6 +116,7 @@ export const router = createHashRouter([
           { index: true, element: <AetherFyHomePage /> },
           { path: "watch/:videoId", element: <AetherFyWatchPage /> },
           { path: "subscription/:id", element: <AetherFySubscriptionPage /> },
+          { path: "yt-playlist/:ytId", element: <AetherFyChannelPlaylistPage /> },
           { path: "trending", element: <AetherFyTrendingPage /> },
           { path: "subscriptions", element: <AetherFySubscriptionsPage /> },
           { path: "library", element: <AetherFyLibraryPage /> },
@@ -122,7 +125,6 @@ export const router = createHashRouter([
           { path: "watch-later", element: <AetherFyWatchLaterPage /> },
           { path: "liked", element: <AetherFyLikedPage /> },
           { path: "music", element: <AetherFyMusicPage /> },
-          { path: "gaming", element: <AetherFyGamingPage /> },
           { path: "live", element: <AetherFyLivePage /> },
           { path: "search", element: <AetherFySearchPage /> },
         ],

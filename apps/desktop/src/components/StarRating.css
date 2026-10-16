@@ -1,0 +1,83 @@
+.avm-stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  outline: none;
+}
+.avm-stars--interactive:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+.avm-stars__star {
+  position: relative;
+  display: inline-block;
+  width: var(--star-size);
+  height: var(--star-size);
+  line-height: 0;
+}
+.avm-stars__empty {
+  color: rgba(255, 255, 255, 0.28);
+}
+.avm-stars__fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  overflow: hidden;
+}
+.avm-stars__full {
+  color: #f5b301;
+  fill: #f5b301;
+}
+.avm-stars__half {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 50%;
+  cursor: pointer;
+}
+.avm-stars__half--left {
+  left: 0;
+}
+.avm-stars__half--right {
+  right: 0;
+}
+.avm-stars__value {
+  margin-left: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+/* Pastille « ★ 4,5 » + marque-page affichées sur les affiches. */
+.avm-userbadges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0.15rem 0.6rem 0.5rem;
+  font-size: 0.8rem;
+  min-height: 1.4rem;
+}
+.avm-userbadges__rating {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #f5b301;
+  font-weight: 600;
+}
+.avm-userbadges__rating svg {
+  fill: #f5b301;
+}
+.avm-userbadges__watch {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--color-accent);
+}
+.avm-userbadges__watch--in_progress {
+  color: #f59e0b;
+}
+.avm-userbadges__watch--done {
+  color: #6ee7a8;
+}

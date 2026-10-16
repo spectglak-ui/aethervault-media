@@ -14,8 +14,8 @@ pub use mpv_ffi::MpvFunctions;
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter};
@@ -29,6 +29,10 @@ pub struct PlayerStateEvent {
     pub error: Option<String>,
     /// 0.4.0 : fin du préchargement (timestamp absolu) pour la barre verte.
     pub buffered_seconds: Option<f64>,
+    /// `paused-for-cache` de mpv : vrai SEULEMENT quand la lecture est
+    /// réellement suspendue faute de données (et non quand le tampon est
+    /// simplement court). Pilote l'indicateur « Mise en mémoire tampon… ».
+    pub buffering: Option<bool>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -75,12 +79,50 @@ struct SurfaceState {
 }
 
 /// 0.5.3 : « start gate » — pour les flux réseau, la lecture reste en
-/// pause jusqu'à ce que la barre verte atteigne 30 % de la durée
-/// (bornée à [5 s, 240 s]), ou 45 s d'attente max (timeout de sécurité).
+/// pause jusqu'à ce que le tampon ait `gate_target_secs()` secondes
+/// d'AVANCE sur la tête de lecture (`demuxer-cache-duration`), ou
+/// `gate_timeout()` d'attente max (timeout de sécurité).
+///
+/// Avant 0.9.x la cible était 30 % de la durée (jusqu'à 240 s de tampon,
+/// timeout 45 s) et comparée à `demuxer-cache-time`, qui est un TIMESTAMP
+/// ABSOLU (fin du tampon) et non une avance : une vidéo de 10 min devait
+/// charger 3 min avant de démarrer, et une reprise à t = 20 min levait la
+/// gate instantanément. Le cache mpv (`cache-pause`) absorbe ensuite les
+/// à-coups réseau.
+/// Avance de tampon (secondes) à atteindre avant de lancer la lecture.
+/// Surchargeable SANS recompiler, pour les essais : variable d'environnement
+/// `AVM_GATE_SECS` (0 = démarrage immédiat).
+const GATE_DEFAULT_TARGET_SECS: f64 = 8.0;
+/// Attente maximale avant de lancer la lecture quoi qu'il arrive.
+/// Surchargeable : `AVM_GATE_TIMEOUT_SECS`.
+const GATE_DEFAULT_TIMEOUT_SECS: u64 = 20;
+
+fn gate_target_secs() -> f64 {
+    static V: OnceLock<f64> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("AVM_GATE_SECS")
+            .ok()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .unwrap_or(GATE_DEFAULT_TARGET_SECS)
+    })
+}
+
+fn gate_timeout() -> Duration {
+    static V: OnceLock<u64> = OnceLock::new();
+    Duration::from_secs(*V.get_or_init(|| {
+        std::env::var("AVM_GATE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(GATE_DEFAULT_TIMEOUT_SECS)
+    }))
+}
+
 struct StartGate {
     armed: AtomicBool,
     armed_at: Mutex<Instant>,
-    /// (durée_seconds, buffered_seconds) — dernières valeurs observées.
+    /// (durée_seconds, avance_de_tampon_seconds) — dernières valeurs observées.
     latest: Mutex<(f64, f64)>,
 }
 
@@ -102,8 +144,10 @@ impl StartGate {
     }
 }
 
-/// Depuis le thread d'événements mpv : libère la gate quand le buffer
-/// atteint 30 % de la durée (ou timeout 45 s) → `set pause no`.
+/// Depuis le thread d'événements mpv : libère la gate quand l'avance de
+/// tampon atteint `gate_target_secs()` (ou timeout) → `set pause no`.
+/// `buffered` = `demuxer-cache-duration` (secondes d'avance), PAS
+/// `demuxer-cache-time` (timestamp absolu).
 fn maybe_release_gate(
     gate: &StartGate,
     functions: &MpvFunctions,
@@ -124,13 +168,13 @@ fn maybe_release_gate(
         }
     }
     let (dur, cache) = *gate.latest.lock().unwrap_or_else(|p| p.into_inner());
-    let target = if dur > 1.0 {
-        (dur * 0.30).clamp(5.0, 240.0)
-    } else {
-        10.0
-    };
-    let timed_out = gate.armed_at.lock().unwrap_or_else(|p| p.into_inner()).elapsed()
-        > Duration::from_secs(45);
+    let mut target = gate_target_secs();
+    if dur > 1.0 {
+        // Média très court : ne pas exiger plus de la moitié de sa durée.
+        target = target.min(dur * 0.5);
+    }
+    let waited = gate.armed_at.lock().unwrap_or_else(|p| p.into_inner()).elapsed();
+    let timed_out = waited > gate_timeout();
     if cache >= target || timed_out {
         gate.disarm();
         let c_args = vec![
@@ -144,12 +188,174 @@ fn maybe_release_gate(
             (functions.command)(mpv.0, ptrs.as_ptr());
         }
         log::info!(
-            "[playback] start gate : lecture lancée (buffer {:.0}s / cible {:.0}s{})",
+            "[playback] start gate : lecture lancée après {} ms (avance {:.1}s / cible {:.1}s{})",
+            waited.as_millis(),
             cache,
             target,
-            if timed_out { ", timeout 45s" } else { "" }
+            if timed_out { ", TIMEOUT" } else { "" }
         );
     }
+}
+
+/// Niveau de spatialisation audio (virtualisation casque) — réglage global.
+///
+/// Les filtres ont été mesurés dans mpv 0.37 (signal décorrélé gauche/droite,
+/// source S/M = −5,0 dB) : « léger » = crossfeed seul, plus étroit que la
+/// source (S/M −8,6 dB) mais naturel ; « moyen » élargit un peu avant le
+/// crossfeed (S/M −6,8 dB) ; « fort » élargit franchement (S/M −4,2 dB).
+/// Réponse centrée plate à ±0,5 dB (pas de creux dans les médiums, contrairement
+/// à `earwax` : −13 à −18 dB sur les voix centrées). `alimiter … level=disabled`
+/// = simple limiteur de crêtes (sans normalisation de volume).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpatialLevel {
+    Off,
+    Light,
+    Medium,
+    Strong,
+}
+
+/// Valeur « inconnue » de `spatial_applied` : force la prochaine application.
+const SPATIAL_UNKNOWN: u8 = u8::MAX;
+
+impl SpatialLevel {
+    /// Clé stockée en base et échangée avec le frontend.
+    pub fn key(self) -> &'static str {
+        match self {
+            SpatialLevel::Off => "off",
+            SpatialLevel::Light => "light",
+            SpatialLevel::Medium => "medium",
+            SpatialLevel::Strong => "strong",
+        }
+    }
+
+    pub fn parse(key: &str) -> Option<Self> {
+        match key.trim() {
+            "off" => Some(SpatialLevel::Off),
+            "light" => Some(SpatialLevel::Light),
+            "medium" => Some(SpatialLevel::Medium),
+            "strong" => Some(SpatialLevel::Strong),
+            _ => None,
+        }
+    }
+
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => SpatialLevel::Light,
+            2 => SpatialLevel::Medium,
+            3 => SpatialLevel::Strong,
+            _ => SpatialLevel::Off,
+        }
+    }
+
+    /// Filtres libavfilter de ce niveau (liste séparée par des virgules, sans
+    /// enveloppe `lavfi=[…]` ni limiteur : voir `build_audio_filter`).
+    fn graph(self) -> &'static str {
+        match self {
+            SpatialLevel::Off => "",
+            SpatialLevel::Light => "crossfeed=strength=0.20:range=0.50",
+            SpatialLevel::Medium => "extrastereo=m=1.4,crossfeed=strength=0.30:range=0.60",
+            SpatialLevel::Strong => "extrastereo=m=2.0,crossfeed=strength=0.40:range=0.70",
+        }
+    }
+}
+
+/// Ambiance cinéma — réglage global, indépendant de la spatialisation et
+/// combinable avec elle. Chaque niveau ajoute : des graves plus profonds
+/// (étagère à 100 Hz), un léger gain de présence (3 kHz) et une réverbération
+/// de salle simulée par des réflexions précoces (`aecho`, 24 à 111 ms). Un
+/// `volume` négatif compense l'essentiel du gain ajouté, pour que la
+/// comparaison A/B ne soit pas faussée par « plus fort = meilleur ».
+///
+/// Mesures (bruit rose, mpv 0.37) — graves 40–120 Hz : +0,8 / +2,6 / +4,0 dB ;
+/// médiums à ±0,8 dB ; réflexions au-delà de 20 ms à −16,8 / −11,7 / −8,3 dB
+/// sous le son direct. Ce sont des mesures objectives : le rendu « salle de
+/// cinéma » se juge à l'oreille, d'où la comparaison A/B des Paramètres.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CinemaLevel {
+    Off,
+    Light,
+    Medium,
+    Strong,
+}
+
+impl CinemaLevel {
+    pub fn key(self) -> &'static str {
+        match self {
+            CinemaLevel::Off => "off",
+            CinemaLevel::Light => "light",
+            CinemaLevel::Medium => "medium",
+            CinemaLevel::Strong => "strong",
+        }
+    }
+
+    pub fn parse(key: &str) -> Option<Self> {
+        match key.trim() {
+            "off" => Some(CinemaLevel::Off),
+            "light" => Some(CinemaLevel::Light),
+            "medium" => Some(CinemaLevel::Medium),
+            "strong" => Some(CinemaLevel::Strong),
+            _ => None,
+        }
+    }
+
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => CinemaLevel::Light,
+            2 => CinemaLevel::Medium,
+            3 => CinemaLevel::Strong,
+            _ => CinemaLevel::Off,
+        }
+    }
+
+    fn graph(self) -> &'static str {
+        match self {
+            CinemaLevel::Off => "",
+            CinemaLevel::Light => {
+                "bass=g=2:f=100:w=0.7,equalizer=f=3000:t=q:w=0.8:g=1,\
+                 aecho=in_gain=1:out_gain=0.92:delays=32|58:decays=0.12|0.08,volume=-1.0dB"
+            }
+            CinemaLevel::Medium => {
+                "bass=g=3.5:f=100:w=0.7,equalizer=f=3000:t=q:w=0.8:g=1.5,\
+                 aecho=in_gain=1:out_gain=0.9:delays=28|47|71:decays=0.2|0.14|0.09,volume=-2.0dB"
+            }
+            CinemaLevel::Strong => {
+                "bass=g=5:f=100:w=0.7,equalizer=f=3000:t=q:w=0.8:g=2,\
+                 aecho=in_gain=1:out_gain=0.86:delays=24|41|63|97:decays=0.28|0.2|0.14|0.1,volume=-3.0dB"
+            }
+        }
+    }
+}
+
+/// Valeur de la propriété mpv `af` pour une combinaison spatialisation +
+/// cinéma (chaîne vide = aucun filtre). Ordre : spatialisation, puis
+/// couleur/salle du cinéma, puis un limiteur de crêtes SANS normalisation de
+/// volume (`level=disabled`) dès que la chaîne peut dépasser 0 dBFS
+/// (élargissement moyen/fort, ou n'importe quel niveau de cinéma).
+fn build_audio_filter(spatial: SpatialLevel, cinema: CinemaLevel) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if spatial != SpatialLevel::Off {
+        parts.push(spatial.graph());
+    }
+    if cinema != CinemaLevel::Off {
+        parts.push(cinema.graph());
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    let needs_limiter = matches!(spatial, SpatialLevel::Medium | SpatialLevel::Strong)
+        || cinema != CinemaLevel::Off;
+    if needs_limiter {
+        parts.push("alimiter=limit=0.97:level=disabled");
+    }
+    format!("lavfi=[{}]", parts.join(","))
 }
 
 pub struct PlaybackEngineHandle {
@@ -177,6 +383,17 @@ pub struct PlaybackEngineHandle {
     /// moment de son lancement et s'annule si elle a changé — sinon il
     /// relançait le flux (et le son) APRÈS le stop, sans image visible.
     stop_epoch: Arc<AtomicU64>,
+    /// Niveau de spatialisation VOULU (`SpatialLevel as u8`) — source de
+    /// vérité côté moteur : appliqué avant CHAQUE `loadfile`, quel que soit
+    /// le chemin de chargement (fichier, AetherFy, TV, changement de qualité).
+    spatial_level: AtomicU8,
+    /// Niveau d'ambiance cinéma VOULU (`CinemaLevel as u8`), appliqué avec la
+    /// spatialisation dans une seule chaîne `af`.
+    cinema_level: AtomicU8,
+    /// Combinaison (spatialisation × 4 + cinéma) réellement présente dans la
+    /// chaîne mpv (`SPATIAL_UNKNOWN` si inconnue) : évite de reconstruire la
+    /// chaîne audio à chaque morceau.
+    audio_applied: AtomicU8,
 }
 
 pub enum PlaybackEngineState {
@@ -254,7 +471,17 @@ impl PlaybackEngineHandle {
         }
         let mpv = MpvHandlePtr(mpv_ptr);
         set_option(&functions, mpv, "vo", "libmpv")?;
-        set_option(&functions, mpv, "hwdec", "auto-safe")?;
+        // `AVM_HWDEC` (ex. `auto-copy-safe`) : essai de décodage matériel avec
+        // recopie en mémoire système, seule forme compatible avec le rendu
+        // logiciel de l'app (`auto-safe` ne sait pas rendre des surfaces GPU
+        // via l'API SW de libmpv et retombe sur le décodage CPU).
+        let hwdec = std::env::var("AVM_HWDEC")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "auto-safe".to_string());
+        log::info!("[playback] hwdec demandé : {hwdec}");
+        set_option(&functions, mpv, "hwdec", &hwdec)?;
         // 0.5.3 : SUPPRIMÉ `video-timing-offset=0.150` (décalait la vidéo
         // de 150 ms par rapport à l'audio).
         set_option(&functions, mpv, "keep-open", "yes")?;
@@ -274,7 +501,25 @@ impl PlaybackEngineHandle {
         let _ = set_option(&functions, mpv, "cache", "yes");
         let _ = set_option(&functions, mpv, "demuxer-max-bytes", "512MiB");
         let _ = set_option(&functions, mpv, "demuxer-max-back-bytes", "256MiB");
-        let _ = set_option(&functions, mpv, "network-timeout", "60");
+        // 20 s (et non 60) : une connexion googlevideo muette depuis 20 s est
+        // morte ; 60 s figeait l'UI en « chargement » pendant une minute.
+        let _ = set_option(&functions, mpv, "network-timeout", "20");
+        // Après une panne de tampon, mpv ne reprend qu'avec `cache-pause-wait`
+        // secondes d'avance (1 s par défaut). Avec un débit voisin de la
+        // vitesse de lecture, 1 s fait alterner lecture / « mise en mémoire
+        // tampon » toutes les secondes ; 6 s donne des pauses plus rares.
+        // Surchargeable : `AVM_CACHE_PAUSE_WAIT` (secondes).
+        let cache_pause_wait = std::env::var("AVM_CACHE_PAUSE_WAIT")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .unwrap_or(6.0);
+        let _ = set_option(
+            &functions,
+            mpv,
+            "cache-pause-wait",
+            &format!("{cache_pause_wait}"),
+        );
         let _ = set_option(&functions, mpv, "hr-seek", "yes");
         // 0.5.3 : horloge AUDIO maître (`display-resample` dérivait sur
         // notre rendu logiciel sans vsync fiable).
@@ -300,7 +545,10 @@ impl PlaybackEngineHandle {
         observe(&functions, mpv, "time-pos", MpvFormat::Double);
         observe(&functions, mpv, "duration", MpvFormat::Double);
         observe(&functions, mpv, "pause", MpvFormat::Flag);
+        observe(&functions, mpv, "paused-for-cache", MpvFormat::Flag);
         observe(&functions, mpv, "demuxer-cache-time", MpvFormat::Double);
+        // Avance de tampon en secondes : pilote la start gate.
+        observe(&functions, mpv, "demuxer-cache-duration", MpvFormat::Double);
         let gate = Arc::new(StartGate::new());
         let handle = Arc::new(Self {
             functions: functions.clone(),
@@ -313,8 +561,16 @@ impl PlaybackEngineHandle {
             pot_cache: Mutex::new(None),
             gate: gate.clone(),
             stop_epoch: Arc::new(AtomicU64::new(0)),
+            spatial_level: AtomicU8::new(SpatialLevel::Off.as_u8()),
+            cinema_level: AtomicU8::new(CinemaLevel::Off.as_u8()),
+            audio_applied: AtomicU8::new(SPATIAL_UNKNOWN),
         });
         std::thread::spawn(move || run_event_thread(functions, mpv, app_handle, gate));
+        spawn_pot_prewarm(handle.clone());
+        spawn_playback_diagnostics(handle.clone());
+        if let Some(ytdlp) = locate_ytdlp() {
+            warn_if_no_js_runtime(&ytdlp);
+        }
         log::info!(
             "Playback Engine Bridge démarré (libmpv chargée depuis {})",
             library_path.display()
@@ -350,6 +606,8 @@ impl PlaybackEngineHandle {
     }
 
     fn load_direct(&self, path: &str) -> Result<(), String> {
+        // Spatialisation : chaîne audio dans l'état voulu AVANT le loadfile.
+        self.apply_audio_filter();
         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
             Some((path.to_string(), None));
         // 0.6.0 (visualiseur) : pour un fichier local, l'origine = le chemin lui-même.
@@ -383,6 +641,18 @@ impl PlaybackEngineHandle {
     /// 2. yt-dlp web + POT (si sidecar dispo) — 1080p/4K VP9 non-throtté
     /// 3. yt-dlp cascade tv/android/ios (fallback) — 720p H.264
     pub fn load_url_quality(&self, url: &str, height: Option<i64>) -> Result<(), String> {
+        let t0 = Instant::now();
+        let res = self.load_url_quality_inner(url, height);
+        log::info!(
+            "[playback] load_url_quality terminé en {} ms (ok={}, thread={:?})",
+            t0.elapsed().as_millis(),
+            res.is_ok(),
+            std::thread::current().name()
+        );
+        res
+    }
+
+    fn load_url_quality_inner(&self, url: &str, height: Option<i64>) -> Result<(), String> {
         // 0.9.2 — flux direct (HLS/HTTP) : mpv lit l'URL telle quelle,
         // sans Cobalt ni yt-dlp (démarrage immédiat, aucun échec d'extraction).
         if is_direct_stream(url) {
@@ -410,7 +680,12 @@ impl PlaybackEngineHandle {
         // 2. Sélection exacte (bouton Qualité) — POT en tête.
         if let Some(h) = height {
             let resume = self.get_property_double("time-pos").unwrap_or(0.0);
-            let sel = format!("bv*[height={h}]+ba/b[height={h}][acodec!=none]");
+            let avc = if prefer_avc() {
+                format!("bv*[height={h}][vcodec^=avc1]+ba/")
+            } else {
+                String::new()
+            };
+            let sel = format!("{avc}bv*[height={h}]+ba/b[height={h}][acodec!=none]");
             // 2a. web + POT (1080p/4K VP9 non-throtté)
             let pot_args = self.pot_extractor_args();
             if !pot_args.is_empty() {
@@ -449,7 +724,16 @@ impl PlaybackEngineHandle {
             log::warn!("[playback] {h}p indisponible partout — fallback auto");
         }
         // 3. Auto : web+POT d'abord (4K possible), puis cascade.
-        let format_sel = "bv*[height=1080]+ba/bv*[height=720]+ba/bv*[height<=1080]+ba/b[height<=1080][acodec!=none]";
+        const BASE_FORMAT_SEL: &str =
+            "bv*[height=1080]+ba/bv*[height=720]+ba/bv*[height<=1080]+ba/b[height<=1080][acodec!=none]";
+        let format_owned = if prefer_avc() {
+            format!(
+                "bv*[height=1080][vcodec^=avc1]+ba/bv*[height=720][vcodec^=avc1]+ba/{BASE_FORMAT_SEL}"
+            )
+        } else {
+            BASE_FORMAT_SEL.to_string()
+        };
+        let format_sel = format_owned.as_str();
         // 3a. web + POT
         let pot_args = self.pot_extractor_args();
         if !pot_args.is_empty() {
@@ -497,9 +781,17 @@ impl PlaybackEngineHandle {
     /// 0.5.3 : arme la start gate (pause jusqu'à 30 % de buffer) —
     /// 0.6.1 : SAUF en session audio explicite (lecture immédiate).
     fn load_split(&self, video: &str, audio: Option<&str>) -> Result<(), String> {
+        // Spatialisation : chaîne audio dans l'état voulu AVANT le loadfile
+        // (couvre AetherFy, TV/HLS, changement de qualité…).
+        self.apply_audio_filter();
         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
             Some((video.to_string(), audio.map(|s| s.to_string())));
         // 0.6.0 (visualiseur) : on NE touche PLUS à `audio_origin` ici.
+        log::info!(
+            "[playback] flux : vidéo {} | audio {}",
+            describe_stream_url(video),
+            audio.map(describe_stream_url).unwrap_or_else(|| "(intégré)".into())
+        );
         if self.audio_session.load(Ordering::Relaxed) {
             // 0.6.1 : flux audio → pas de gate, démarrage immédiat.
             self.gate.disarm();
@@ -509,7 +801,10 @@ impl PlaybackEngineHandle {
         }
         match audio {
             Some(a) => {
-                let opts = format!("audio-file={a}");
+                // Syntaxe mpv « %longueur%valeur » : sans elle, une virgule dans
+                // l'URL coupe la valeur et loadfile échoue (« invalid parameter »,
+                // vérifié sur mpv 0.37) → repli silencieux en vidéo SANS son.
+                let opts = format!("audio-file=%{}%{}", a.len(), a);
                 if self
                     .command(&["loadfile", video, "replace", "0", &opts])
                     .is_err()
@@ -560,6 +855,7 @@ impl PlaybackEngineHandle {
             Some(url.to_string());
         // Flux audio = petit débit → démarrage immédiat, pas de gate.
         self.gate.disarm();
+        self.apply_audio_filter();
         self.command(&["loadfile", &audio_url, "replace"])?;
         self.set_paused(false)
     }
@@ -733,17 +1029,26 @@ impl PlaybackEngineHandle {
         ]
     }
 
-    /// 0.5.2 : récupère un PO Token (cache 30 min, refresh à 20 min), ou None si sidecar absent/échec.
+    /// 0.5.2 : récupère un PO Token (cache `CACHE_TTL_SECS`), ou None si sidecar absent/échec.
+    /// Le token est pré-généré au démarrage et rafraîchi en tâche de fond
+    /// (voir `spawn_pot_prewarm`) : un clic sur une vidéo ne paie normalement
+    /// plus la génération (processus sidecar, plusieurs secondes à froid).
     fn fetch_pot_token(&self) -> Option<(String, String)> {
-        const CACHE_TTL_SECS: u64 = 20 * 60;
         {
             let guard = self.pot_cache.lock().unwrap_or_else(|p| p.into_inner());
             if let Some((v, t, instant)) = guard.as_ref() {
-                if instant.elapsed() < Duration::from_secs(CACHE_TTL_SECS) {
+                if instant.elapsed() < Duration::from_secs(POT_CACHE_TTL_SECS) {
                     return Some((v.clone(), t.clone()));
                 }
             }
         }
+        self.generate_pot_token()
+    }
+
+    /// Lance le sidecar bgutil-pot et met le résultat en cache (sans
+    /// consulter le cache — utilisé par le rafraîchissement anticipé).
+    fn generate_pot_token(&self) -> Option<(String, String)> {
+        let t_pot = Instant::now();
         let pot_bin = locate_bgutil_pot()?;
         let mut cmd = std::process::Command::new(&pot_bin);
         #[cfg(windows)]
@@ -777,7 +1082,8 @@ impl PlaybackEngineHandle {
             return None;
         }
         log::info!(
-            "[playback] PO Token généré (visitor={}…, token={}…)",
+            "[playback] PO Token généré en {} ms (visitor={}…, token={}…)",
+            t_pot.elapsed().as_millis(),
             &visitor[..visitor.len().min(20)],
             &token[..token.len().min(20)]
         );
@@ -846,13 +1152,51 @@ impl PlaybackEngineHandle {
         self.command(&["set", "aid", &track_id.to_string()])
     }
 
-    /// FONCTIONNALITÉ (amélioration audio — spatialisation) : élargissement
-    /// stéréo / crossfeed casque, via le filtre `crossfeed` de FFmpeg
-    /// (algorithme Bauer stereophonic-to-binaural — bs2b) — déjà lié par
-    /// mpv, donc aucune dépendance supplémentaire.
-    pub fn set_audio_spatialization(&self, enabled: bool) -> Result<(), String> {
-        let filter = if enabled { "lavfi=[crossfeed]" } else { "" };
-        self.command(&["set", "af", filter])
+    /// Spatialisation audio : fixe le niveau voulu et l'applique tout de suite
+    /// au média en cours. Le niveau reste mémorisé dans le moteur et est
+    /// ré-appliqué avant chaque chargement (`apply_audio_filter`).
+    pub fn set_spatial_level(&self, level: SpatialLevel) -> Result<(), String> {
+        self.spatial_level.store(level.as_u8(), Ordering::Relaxed);
+        self.try_apply_audio_filter()
+    }
+
+    /// Ambiance cinéma : même principe que `set_spatial_level`.
+    pub fn set_cinema_level(&self, level: CinemaLevel) -> Result<(), String> {
+        self.cinema_level.store(level.as_u8(), Ordering::Relaxed);
+        self.try_apply_audio_filter()
+    }
+
+    /// Applique les DEUX niveaux d'un coup (aperçu A/B des Paramètres : un seul
+    /// changement de chaîne audio au lieu de deux).
+    pub fn set_audio_effects(
+        &self,
+        spatial: SpatialLevel,
+        cinema: CinemaLevel,
+    ) -> Result<(), String> {
+        self.spatial_level.store(spatial.as_u8(), Ordering::Relaxed);
+        self.cinema_level.store(cinema.as_u8(), Ordering::Relaxed);
+        self.try_apply_audio_filter()
+    }
+
+    /// Place la chaîne `af` de mpv dans l'état voulu si elle ne l'y est pas déjà.
+    fn try_apply_audio_filter(&self) -> Result<(), String> {
+        let spatial = self.spatial_level.load(Ordering::Relaxed);
+        let cinema = self.cinema_level.load(Ordering::Relaxed);
+        let wanted = spatial * 4 + cinema;
+        if self.audio_applied.load(Ordering::Relaxed) == wanted {
+            return Ok(());
+        }
+        let filter = build_audio_filter(SpatialLevel::from_u8(spatial), CinemaLevel::from_u8(cinema));
+        self.command(&["set", "af", &filter])?;
+        self.audio_applied.store(wanted, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Variante « au chargement » : ne doit JAMAIS empêcher la lecture.
+    fn apply_audio_filter(&self) {
+        if let Err(err) = self.try_apply_audio_filter() {
+            log::warn!("[playback] effets audio non appliqués : {err}");
+        }
     }
 
     pub fn set_subtitle_track(&self, track_id: Option<i64>) -> Result<(), String> {
@@ -951,6 +1295,9 @@ impl PlaybackEngineHandle {
                 let _ = render_thread.join();
             }
         }
+        log::info!(
+            "[playback] attach_surface {width}x{height} — la source sera RECHARGÉE dans 300 ms (cache perdu)"
+        );
         let size = Arc::new((AtomicI32::new(width), AtomicI32::new(height)));
         let stop_flag = Arc::new(AtomicBool::new(false));
         let in_flight_frames = Arc::new(AtomicI32::new(0));
@@ -1024,9 +1371,24 @@ impl PlaybackEngineHandle {
                 CString::new("replace").unwrap_or_default(),
                 CString::new("0").unwrap_or_default(),
             ];
-            let audio_opt = audio.map(|a| format!("audio-file={a}"));
-            if let Some(opts) = &audio_opt {
-                c_args.push(CString::new(opts.as_str()).unwrap_or_default());
+            // Options du loadfile. Même quoting `%n%` que `load_split` (virgule
+            // dans l'URL). La reprise passe par `start=` : un `seek` lancé
+            // juste après `loadfile` échoue (« error running command », fichier
+            // pas encore ouvert — vérifié sur mpv 0.37) et la lecture repartait
+            // de 0:00, tampon vide, à chaque attache de surface (PiP, plein écran…).
+            let mut opts: Vec<String> = Vec::new();
+            if let Some(a) = &audio {
+                opts.push(format!("audio-file=%{}%{}", a.len(), a));
+            }
+            if resume > 1.0 {
+                opts.push(format!("start={resume:.3}"));
+            }
+            log::info!(
+                "[playback] rechargement correctif : reprise à {resume:.1}s, audio externe={}",
+                audio.is_some()
+            );
+            if !opts.is_empty() {
+                c_args.push(CString::new(opts.join(",")).unwrap_or_default());
             }
             let mut ptrs: Vec<*const c_char> = c_args.iter().map(|a| a.as_ptr()).collect();
             ptrs.push(std::ptr::null());
@@ -1047,19 +1409,6 @@ impl PlaybackEngineHandle {
                 uptrs.push(std::ptr::null());
                 unsafe {
                     (functions_for_reload.command)(mpv_ptr, uptrs.as_ptr());
-                }
-            }
-            if resume > 1.0 {
-                let r = format!("{resume:.3}");
-                let c_seek = vec![
-                    CString::new("seek").unwrap_or_default(),
-                    CString::new(r.as_str()).unwrap_or_default(),
-                    CString::new("absolute").unwrap_or_default(),
-                ];
-                let mut sptrs: Vec<*const c_char> = c_seek.iter().map(|a| a.as_ptr()).collect();
-                sptrs.push(std::ptr::null());
-                unsafe {
-                    (functions_for_reload.command)(mpv_ptr, sptrs.as_ptr());
                 }
             }
             // Filet de sécurité : un stop() a pu s'intercaler entre le
@@ -1186,6 +1535,29 @@ impl PlaybackEngineHandle {
         }
     }
 
+    /// Propriété mpv de type chaîne (ex. `video-format`, `hwdec-current`).
+    fn get_property_string(&self, name: &str) -> Result<String, String> {
+        let cname = CString::new(name).unwrap_or_default();
+        let mut raw: *mut c_char = std::ptr::null_mut();
+        let rc = unsafe {
+            (self.functions.get_property)(
+                self.mpv.0,
+                cname.as_ptr(),
+                MpvFormat::String as c_int,
+                &mut raw as *mut _ as *mut c_void,
+            )
+        };
+        if rc < 0 {
+            return Err(error_string(&self.functions, rc));
+        }
+        if raw.is_null() {
+            return Ok(String::new());
+        }
+        let value = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+        unsafe { (self.functions.free)(raw as *mut c_void) };
+        Ok(value)
+    }
+
     fn get_property_flag(&self, name: &str) -> Result<bool, String> {
         let cname = CString::new(name).unwrap_or_default();
         let mut value: c_int = 0;
@@ -1276,19 +1648,142 @@ fn error_string(functions: &MpvFunctions, code: c_int) -> String {
     }
 }
 
-/// 0.5.0 : extraction via Cobalt (API self-host ou publique) — flux muxés
-/// (vidéo+audio) NON throttés, en une seule requête HTTP.
+/// Résumé SANS JETON d'une URL de flux, pour les logs : hôte, `mime`, `itag`.
+/// Permet de voir d'un coup d'œil si le flux vient de googlevideo ou d'un
+/// serveur tiers (Cobalt), et quel codec a été retenu (`mime=video/webm` =
+/// VP9/AV1, `video/mp4` = H.264/AV1 selon l'itag).
+fn describe_stream_url(url: &str) -> String {
+    let host = url
+        .split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or("?");
+    let param = |key: &str| -> Option<&str> {
+        let query = url.split_once('?')?.1;
+        query
+            .split('&')
+            .find_map(|kv| kv.strip_prefix(key).and_then(|v| v.strip_prefix('=')))
+    };
+    format!(
+        "{host} (mime={}, itag={})",
+        param("mime").unwrap_or("?"),
+        param("itag").unwrap_or("?")
+    )
+}
+
+/// Essai de fluidité : `AVM_PREFER_AVC=1` fait préférer le H.264 à AV1/VP9
+/// (que yt-dlp classe en tête). Sur le rendu logiciel de l'app, le décodage
+/// H.264 est nettement plus léger. Désactivé par défaut.
+fn prefer_avc() -> bool {
+    static V: OnceLock<bool> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("AVM_PREFER_AVC").as_deref() == Ok("1"))
+}
+
+/// Depuis yt-dlp 2025.11.12, un runtime JavaScript externe (Deno par défaut)
+/// est requis pour résoudre les défis YouTube (signature, `n`). Sans lui :
+/// formats manquants, flux bridés, erreurs 403 — et `--no-warnings` masque
+/// l'avertissement de yt-dlp. On le signale donc une fois au démarrage.
+fn warn_if_no_js_runtime(ytdlp: &std::path::Path) {
+    let exe = if cfg!(windows) { "deno.exe" } else { "deno" };
+    let beside_ytdlp = ytdlp.parent().map(|d| d.join(exe)).filter(|p| p.exists());
+    let in_path = std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|d| d.join(exe))
+            .find(|p| p.exists())
+    });
+    match beside_ytdlp.or(in_path) {
+        Some(found) => log::info!("[playback] runtime JS pour yt-dlp : {}", found.display()),
+        None => log::warn!(
+            "[playback] AUCUN runtime JavaScript (deno) trouvé pour yt-dlp : depuis yt-dlp \
+             2025.11.12, YouTube sans lui peut renvoyer des formats manquants, bridés ou des \
+             erreurs 403 (cause possible de « mise en mémoire tampon » fréquente). Placer \
+             `{exe}` à côté de yt-dlp (ce dossier est ajouté au PATH par l'app)."
+        ),
+    }
+}
+
+/// Diagnostic de lecture : toutes les 5 s, tant qu'un média est chargé et
+/// qu'il joue (ou attend son tampon), trace l'état du cache et du rendu.
+/// Sert à départager « réseau trop lent » (avance ≈ 0, débit < débit du flux),
+/// « décodage/rendu trop lent » (images perdues qui montent) et « source
+/// rechargée » (compteurs remis à zéro).
+fn spawn_playback_diagnostics(handle: Arc<PlaybackEngineHandle>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(5));
+        let Ok(pos) = handle.get_property_double("time-pos") else {
+            continue;
+        };
+        let waiting = handle.get_property_flag("paused-for-cache").unwrap_or(false);
+        let paused = handle.get_property_flag("pause").unwrap_or(false);
+        if paused && !waiting {
+            continue;
+        }
+        let ahead = handle.get_property_double("demuxer-cache-duration").unwrap_or(-1.0);
+        let speed_kib = handle.get_property_int64("cache-speed").unwrap_or(-1) / 1024;
+        let fps = handle.get_property_double("estimated-vf-fps").unwrap_or(-1.0);
+        let src_fps = handle.get_property_double("container-fps").unwrap_or(-1.0);
+        let vo_drops = handle.get_property_int64("frame-drop-count").unwrap_or(-1);
+        let dec_drops = handle.get_property_int64("decoder-frame-drop-count").unwrap_or(-1);
+        let delayed = handle.get_property_int64("vo-delayed-frame-count").unwrap_or(-1);
+        let codec = handle.get_property_string("video-format").unwrap_or_default();
+        let hwdec = handle.get_property_string("hwdec-current").unwrap_or_default();
+        let size = format!(
+            "{}x{}",
+            handle.get_property_int64("width").unwrap_or(0),
+            handle.get_property_int64("height").unwrap_or(0)
+        );
+        log::info!(
+            "[playback-diag] t={pos:.0}s avance={ahead:.1}s débit={speed_kib}KiB/s \
+             tampon_vide={waiting} fps={fps:.1}/{src_fps:.1} perdues(vo={vo_drops}, \
+             décodeur={dec_drops}) en_retard={delayed} codec={codec} {size} hwdec={hwdec}"
+        );
+    });
+}
+
+/// Durée de validité d'un PO Token en cache.
+const POT_CACHE_TTL_SECS: u64 = 20 * 60;
+/// Rafraîchissement anticipé (strictement < TTL) : le cache ne tombe donc
+/// jamais « à froid » sous les yeux de l'utilisateur.
+const POT_REFRESH_EVERY_SECS: u64 = 15 * 60;
+
+/// Pré-chauffe le PO Token au démarrage puis le renouvelle en tâche de fond.
+/// Sans sidecar (`locate_bgutil_pot()` vide) : aucun thread n'est créé.
+fn spawn_pot_prewarm(handle: Arc<PlaybackEngineHandle>) {
+    if locate_bgutil_pot().is_none() {
+        return;
+    }
+    std::thread::spawn(move || {
+        let _ = handle.generate_pot_token();
+        loop {
+            std::thread::sleep(Duration::from_secs(POT_REFRESH_EVERY_SECS));
+            let _ = handle.generate_pot_token();
+        }
+    });
+}
+
+/// 0.5.0 : extraction via Cobalt — flux muxés (vidéo+audio) en une seule
+/// requête HTTP.
+///
+/// Instances interrogées : par défaut UNIQUEMENT l'instance locale
+/// `127.0.0.1:9000` (échec immédiat si rien n'écoute). Les instances
+/// publiques tierces ne sont plus jamais contactées par défaut : elles
+/// recevaient l'URL de chaque vidéo regardée (contraire à « 100 % local »),
+/// ajoutaient jusqu'à 2 × 6 s d'attente avant yt-dlp et faisaient passer le
+/// flux par un serveur tiers (débit bridé → mise en mémoire tampon).
+/// Réglages : `COBALT_API=<url>` pour sa propre instance ;
+/// `AVM_COBALT_PUBLIC=1` pour réactiver les instances publiques.
 fn cobalt_extract(url: &str, height: Option<i64>) -> Option<String> {
     let instances: Vec<String> = std::env::var("COBALT_API")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .map(|s| vec![s.trim().trim_end_matches('/').to_string()])
         .unwrap_or_else(|| {
-            vec![
-                "http://127.0.0.1:9000".into(),
-                "https://cobalt-api.meow.lol".into(),
-                "https://api.cobalt.tools".into(),
-            ]
+            let mut list: Vec<String> = vec!["http://127.0.0.1:9000".into()];
+            if std::env::var("AVM_COBALT_PUBLIC").as_deref() == Ok("1") {
+                list.push("https://cobalt-api.meow.lol".into());
+                list.push("https://api.cobalt.tools".into());
+            }
+            list
         });
     let quality = match height {
         Some(h) => h.to_string(),
@@ -1301,10 +1796,11 @@ fn cobalt_extract(url: &str, height: Option<i64>) -> Option<String> {
             "downloadMode": "auto",
             "filenameStyle": "basic",
         });
+        let t_cobalt = Instant::now();
         let res = ureq::post(&format!("{base}/"))
             .set("Accept", "application/json")
             .set("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(6))
             .send_json(body);
         match res {
             Ok(resp) => {
@@ -1322,7 +1818,10 @@ fn cobalt_extract(url: &str, height: Option<i64>) -> Option<String> {
                     log::warn!("[playback] cobalt {base} : réponse sans URL");
                 }
             }
-            Err(e) => log::warn!("[playback] cobalt {base} en échec : {e}"),
+            Err(e) => log::warn!(
+                "[playback] cobalt {base} en échec après {} ms : {e}",
+                t_cobalt.elapsed().as_millis()
+            ),
         }
     }
     None
@@ -1493,12 +1992,28 @@ fn locate_ytdlp() -> Option<PathBuf> {
     }
 }
 
+/// Essai : `AVM_POS_HZ=4` limite à 4/s les événements de position envoyés
+/// à l'interface (chacun re-rend tous les composants qui lisent le contexte
+/// du lecteur — jusqu'à 30–60 fois par seconde sans limite). Le PTS interne
+/// du rendu reste mis à jour à chaque événement. Désactivé par défaut.
+fn pos_emit_min_gap() -> Option<Duration> {
+    static V: OnceLock<Option<Duration>> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("AVM_POS_HZ")
+            .ok()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .filter(|hz| hz.is_finite() && *hz > 0.0)
+            .map(|hz| Duration::from_secs_f64(1.0 / hz))
+    })
+}
+
 fn run_event_thread(
     functions: Arc<MpvFunctions>,
     mpv: MpvHandlePtr,
     app_handle: AppHandle,
     gate: Arc<StartGate>,
 ) {
+    let mut last_pos_emit: Option<Instant> = None;
     loop {
         let event_ptr = unsafe { (functions.wait_event)(mpv.0, -1.0) };
         if event_ptr.is_null() {
@@ -1531,25 +2046,37 @@ fn run_event_thread(
                         // (sw_render::LAST_PTS_MS) — sans appeler libmpv
                         // depuis ce dernier.
                         sw_render::LAST_PTS_MS.store((secs * 1000.0) as i64, Ordering::Relaxed);
+                        if let Some(gap) = pos_emit_min_gap() {
+                            if last_pos_emit.is_some_and(|t| t.elapsed() < gap) {
+                                continue;
+                            }
+                            last_pos_emit = Some(Instant::now());
+                        }
                     }
                     "duration" if prop.format == MpvFormat::Double as c_int => {
                         payload.duration_seconds = Some(unsafe { *(prop.data as *const f64) });
+                    }
+                    "demuxer-cache-duration" if prop.format == MpvFormat::Double as c_int => {
+                        // Avance de tampon : ne sert qu'à la start gate (la
+                        // barre verte de l'UI reste pilotée par
+                        // `demuxer-cache-time`) — aucun événement UI ici.
+                        let ahead = unsafe { *(prop.data as *const f64) };
+                        maybe_release_gate(&gate, &functions, mpv, None, Some(ahead));
+                        continue;
                     }
                     "pause" if prop.format == MpvFormat::Flag as c_int => {
                         let flag = unsafe { *(prop.data as *const c_int) };
                         payload.playing = Some(flag == 0);
                     }
+                    "paused-for-cache" if prop.format == MpvFormat::Flag as c_int => {
+                        let flag = unsafe { *(prop.data as *const c_int) };
+                        payload.buffering = Some(flag != 0);
+                    }
                     _ => continue,
                 }
-                // 0.5.3 : start gate — libère la lecture à 30 % de buffer
-                // (ou timeout 45 s).
-                maybe_release_gate(
-                    &gate,
-                    &functions,
-                    mpv,
-                    payload.duration_seconds,
-                    payload.buffered_seconds,
-                );
+                // 0.5.3 : start gate — libère la lecture dès que la durée est
+                // connue et que l'avance de tampon suffit (voir plus haut).
+                maybe_release_gate(&gate, &functions, mpv, payload.duration_seconds, None);
                 let _ = app_handle.emit("player-state", payload);
             }
             id if id == mpv_ffi::event_id::END_FILE => {
@@ -1570,11 +2097,18 @@ fn run_event_thread(
                     }
                     _ => None,
                 };
+                // `playing: Some(false)` UNIQUEMENT pour une vraie fin (EOF /
+                // erreur). Un END_FILE de raison STOP/REDIRECT est émis par
+                // mpv à chaque `loadfile … replace` (morceau suivant, changement
+                // de qualité) ; or, en lecture audio (pas de start gate), la
+                // propriété `pause` ne change alors pas → aucun événement
+                // `pause` ne venait corriger le `false` : le bouton Lecture
+                // restait « inactif » alors que le son jouait.
                 let _ = app_handle.emit(
                     "player-state",
                     PlayerStateEvent {
                         ended: is_real_end,
-                        playing: Some(false),
+                        playing: if is_real_end { Some(false) } else { None },
                         error,
                         ..Default::default()
                     },
@@ -1668,7 +2202,11 @@ pub fn player_set_preferred_quality(
     Ok(())
 }
 
-#[tauri::command]
+// `(async)` : exécutée dans le thread pool de Tauri et non sur le thread
+// principal (une commande synchrone `#[tauri::command]` y tourne en ligne et
+// bloquerait fenêtre + autres commandes pendant tout le yt-dlp). Lecture
+// seule : aucun risque de course avec un chargement en cours.
+#[tauri::command(async)]
 pub fn player_extract_media(
     state: tauri::State<'_, crate::state::AppState>,
     url: String,
@@ -1684,7 +2222,8 @@ pub fn player_unload(
 }
 
 /// 0.5.0 : résolutions disponibles pour une URL AetherFy.
-#[tauri::command]
+/// `(async)` : voir `player_extract_media` (yt-dlp -J hors du thread principal).
+#[tauri::command(async)]
 pub fn player_list_qualities(
     state: tauri::State<'_, crate::state::AppState>,
     url: String,
@@ -1701,4 +2240,69 @@ pub fn player_load_url_quality(
     height: Option<i64>,
 ) -> Result<(), String> {
     state.playback_engine.handle()?.load_url_quality(&url, height)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_audio_filter, CinemaLevel, SpatialLevel};
+
+    const ALL: [SpatialLevel; 4] = [
+        SpatialLevel::Off,
+        SpatialLevel::Light,
+        SpatialLevel::Medium,
+        SpatialLevel::Strong,
+    ];
+
+    #[test]
+    fn spatial_level_keys_round_trip() {
+        for level in ALL {
+            assert_eq!(SpatialLevel::parse(level.key()), Some(level));
+            assert_eq!(SpatialLevel::from_u8(level.as_u8()), level);
+        }
+        assert_eq!(SpatialLevel::parse("  medium "), Some(SpatialLevel::Medium));
+        assert_eq!(SpatialLevel::parse("earwax"), None);
+        assert_eq!(SpatialLevel::parse(""), None);
+    }
+
+    #[test]
+    fn spatial_filters_are_well_formed() {
+        // « off » partout = chaîne `af` vide ; sinon un graphe lavfi entre crochets.
+        assert_eq!(build_audio_filter(SpatialLevel::Off, CinemaLevel::Off), "");
+        for level in [SpatialLevel::Light, SpatialLevel::Medium, SpatialLevel::Strong] {
+            let f = build_audio_filter(level, CinemaLevel::Off);
+            assert!(f.starts_with("lavfi=[") && f.ends_with(']'), "{f}");
+            assert!(f.contains("crossfeed="), "{f}");
+        }
+        // Les niveaux qui élargissent la scène doivent être protégés par un
+        // limiteur de crêtes SANS normalisation de volume (`level=disabled`).
+        for level in [SpatialLevel::Medium, SpatialLevel::Strong] {
+            assert!(build_audio_filter(level, CinemaLevel::Off)
+                .contains("alimiter=limit=0.97:level=disabled"));
+        }
+        // Le niveau « léger » seul ne dépasse pas : pas de limiteur ajouté.
+        assert!(!build_audio_filter(SpatialLevel::Light, CinemaLevel::Off).contains("alimiter"));
+    }
+
+    #[test]
+    fn cinema_levels_round_trip_and_combine() {
+        for level in [CinemaLevel::Off, CinemaLevel::Light, CinemaLevel::Medium, CinemaLevel::Strong] {
+            assert_eq!(CinemaLevel::parse(level.key()), Some(level));
+            assert_eq!(CinemaLevel::from_u8(level.as_u8()), level);
+        }
+        assert_eq!(CinemaLevel::parse("imax"), None);
+        // Cinéma seul : graves + réflexions + limiteur.
+        let f = build_audio_filter(SpatialLevel::Off, CinemaLevel::Medium);
+        assert!(f.contains("bass=") && f.contains("aecho=") && f.contains("alimiter="), "{f}");
+        // Combinaison : la spatialisation passe AVANT le cinéma, le limiteur est en dernier.
+        let both = build_audio_filter(SpatialLevel::Strong, CinemaLevel::Light);
+        let (i_cross, i_bass, i_lim) = (
+            both.find("crossfeed=").unwrap(),
+            both.find("bass=").unwrap(),
+            both.find("alimiter=").unwrap(),
+        );
+        assert!(i_cross < i_bass && i_bass < i_lim, "{both}");
+        // Un seul limiteur, une seule enveloppe lavfi.
+        assert_eq!(both.matches("alimiter=").count(), 1);
+        assert_eq!(both.matches("lavfi=[").count(), 1);
+    }
 }

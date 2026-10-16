@@ -8,7 +8,6 @@ import {
   Clock,
   Heart,
   Music,
-  Gamepad2,
   Radio,
   Sparkles,
 } from "lucide-react";
@@ -34,7 +33,6 @@ const SECONDARY_NAV: NavEntry[] = [
 
 const EXPLORE_NAV: NavEntry[] = [
   { path: "/aetherfy/music", label: "Musique", icon: Music },
-  { path: "/aetherfy/gaming", label: "Jeux oniriques", icon: Gamepad2 },
   { path: "/aetherfy/live", label: "Directs", icon: Radio },
 ];
 

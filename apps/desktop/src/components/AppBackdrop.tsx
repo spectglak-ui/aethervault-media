@@ -25,7 +25,8 @@ import { getBuiltinImage, getBuiltinVideo } from "../lib/builtinBackdrops";
 export function AppBackdrop() {
   const [backdrop, setBackdrop] = useState<string | null>(null);
   const [videoBackdrop, setVideoBackdrop] = useState<string | null>(null);
-  const [videoEnabled, setVideoEnabled] = useState(false);
+  // Activé par défaut (même défaut que le backend) : évite un flash du fond image au démarrage.
+  const [videoEnabled, setVideoEnabled] = useState(true);
   // Fonds intégrés (Paramètres) : utilisés seulement en l'absence de fond personnel.
   const [builtinImage, setBuiltinImageState] = useState(getBuiltinImage);
   const [builtinVideo, setBuiltinVideoState] = useState(getBuiltinVideo);

@@ -1,0 +1,366 @@
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyChannelPlaylistPage.tsx b/apps/desktop/src/features/aetherfy/AetherFyChannelPlaylistPage.tsx
+index dee0521..4ae3e25 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFyChannelPlaylistPage.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFyChannelPlaylistPage.tsx
+@@ -4,6 +4,7 @@ import { ArrowLeft, ListVideo, Play } from "lucide-react";
+ import type { VaultTubeVideo } from "../vaulttube/api";
+ import { vaultTubeApi } from "../vaulttube/api";
+ import { AetherFyVideoCard } from "./AetherFyVideoCard";
++import { setPlaylistSession } from "./playlistSession";
+ 
+ const PAGE = 48;
+ 
+@@ -24,6 +25,8 @@ export function AetherFyChannelPlaylistPage() {
+   const [videos, setVideos] = useState<VaultTubeVideo[] | null>(null);
+   const [error, setError] = useState<string | null>(null);
+   const [shown, setShown] = useState(PAGE);
++  const playlistKey = `yt:${ytId ?? ""}`;
++  const playlistTitle = state?.title ?? "Playlist";
+ 
+   const load = useCallback(async () => {
+     if (!ytId) return;
+@@ -42,14 +45,25 @@ export function AetherFyChannelPlaylistPage() {
+     void load();
+   }, [load]);
+ 
+-  const withChannel = (v: VaultTubeVideo) => ({
+-    ...v,
+-    channel: state?.channel ?? v.channel ?? null,
+-  });
++  const withChannel = useCallback(
++    (v: VaultTubeVideo) => ({ ...v, channel: state?.channel ?? v.channel ?? null }),
++    [state?.channel]
++  );
++
++  // La page de lecture lira cette liste : SEULEMENT les vidéos de la playlist, dans l'ordre.
++  useEffect(() => {
++    if (videos && videos.length > 0) {
++      setPlaylistSession({ key: playlistKey, title: playlistTitle, videos: videos.map(withChannel) });
++    }
++  }, [videos, playlistKey, playlistTitle, withChannel]);
+ 
+   const playAll = () => {
+     const first = videos?.[0];
+-    if (first) navigate(`/aetherfy/watch/${first.youtube_id}`, { state: { video: withChannel(first) } });
++    if (first) {
++      navigate(`/aetherfy/watch/${first.youtube_id}`, {
++        state: { video: withChannel(first), playlistKey, playlistTitle },
++      });
++    }
+   };
+ 
+   return (
+@@ -65,7 +79,7 @@ export function AetherFyChannelPlaylistPage() {
+           <ArrowLeft size={20} />
+         </button>
+         <div className="afy-sub-head__info">
+-          <h1 className="afy-sub-head__name">{state?.title ?? "Playlist"}</h1>
++          <h1 className="afy-sub-head__name">{playlistTitle}</h1>
+           <div className="afy-sub-head__meta">
+             <ListVideo size={13} />
+             {videos === null
+@@ -104,7 +118,11 @@ export function AetherFyChannelPlaylistPage() {
+         <section className="afy-row">
+           <div className="afy-grid">
+             {videos.slice(0, shown).map((v) => (
+-              <AetherFyVideoCard key={`${v.source}-${v.youtube_id}`} video={withChannel(v)} />
++              <AetherFyVideoCard
++                key={`${v.source}-${v.youtube_id}`}
++                video={withChannel(v)}
++                navState={{ playlistKey, playlistTitle }}
++              />
+             ))}
+           </div>
+           {shown < videos.length && (
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyPages.tsx b/apps/desktop/src/features/aetherfy/AetherFyPages.tsx
+index ef13e33..bff02d5 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFyPages.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFyPages.tsx
+@@ -453,8 +453,31 @@ export function AetherFyUserPlaylistPage() {
+       })
+     );
+   });
++  const navigate = useNavigate();
++  const playAll = () => {
++    const first = feed.items[0];
++    if (first) {
++      navigate(`/aetherfy/watch/${first.youtube_id}`, {
++        state: { video: first, playlistId: pid, playlistTitle: title },
++      });
++    }
++  };
+   return (
+-    <AfyGridPage title={title} icon={<ListVideo size={20} />} items={[]} loading={feed.loading} error={feed.error} empty="Playlist vide.">
++    <AfyGridPage
++      title={title}
++      icon={<ListVideo size={20} />}
++      items={[]}
++      loading={feed.loading}
++      error={feed.error}
++      empty="Playlist vide."
++      actions={
++        feed.items.length > 0 ? (
++          <button type="button" className="afy-btn-secondary" onClick={playAll}>
++            Tout lire
++          </button>
++        ) : undefined
++      }
++    >
+       {feed.items.length > 0 && (
+         <div className="afy-grid" style={{ margin: "16px 24px" }}>
+           {feed.items.map((v) => (
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyPlaylistPanel.tsx b/apps/desktop/src/features/aetherfy/AetherFyPlaylistPanel.tsx
+index ce4653b..c7ada77 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFyPlaylistPanel.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFyPlaylistPanel.tsx
+@@ -14,6 +14,8 @@ interface Props {
+   activeYoutubeId: string;
+   sideTitle: string;
+   playlistId: number | null;
++  /** Clé de la playlist de chaîne en cours (voir `playlistSession.ts`). */
++  playlistKey: string | null;
+   playlistTitle: string | null;
+   loop: boolean;
+   shuffle: boolean;
+@@ -54,6 +56,7 @@ function AetherFyPlaylistPanelImpl({
+   activeYoutubeId,
+   sideTitle,
+   playlistId,
++  playlistKey,
+   playlistTitle,
+   loop,
+   shuffle,
+@@ -156,6 +159,7 @@ function AetherFyPlaylistPanelImpl({
+                   state: {
+                     video: v,
+                     playlistId: playlistId ?? undefined,
++                    playlistKey: playlistKey ?? undefined,
+                     playlistTitle: playlistTitle ?? undefined,
+                   },
+                 })
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx b/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx
+index fe9887f..6b10821 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx
+@@ -28,6 +28,7 @@ import { usePlayer } from "../../player/PlayerContext";
+ import { PlayerSurface } from "../../player/PlayerSurface";
+ import { AetherFyAmbientLight, useAmbientSettings } from "./AetherFyAmbientLight";
+ import { AetherFyPlaylistPanel } from "./AetherFyPlaylistPanel";
++import { getPlaylistSession } from "./playlistSession";
+ import { AetherFyVideoCard } from "./AetherFyVideoCard";
+ import { useVisualizer } from "../../hooks/useVisualizer";
+ import { addToHistory, isInLiked, toggleLiked } from "./afyLibrary";
+@@ -87,6 +88,8 @@ export function AetherFyWatchPage() {
+       video?: VaultTubeVideo;
+       playlistId?: number;
+       playlistTitle?: string;
++      /** Playlist publique d'une chaîne, lue en direct (voir `playlistSession.ts`). */
++      playlistKey?: string;
+     } | null) ?? null;
+   const passedVideo = passedState?.video ?? null;
+ 
+@@ -123,6 +126,7 @@ export function AetherFyWatchPage() {
+   const [related, setRelated] = useState<VaultTubeVideo[]>([]);
+   const [subscription, setSubscription] = useState<VaultTubeSubscription | null>(null);
+   const [playlistId, setPlaylistId] = useState<number | null>(null);
++  const [playlistKey, setPlaylistKey] = useState<string | null>(null);
+   const [playlistTitle, setPlaylistTitle] = useState<string | null>(null);
+   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+   const [loop, setLoop] = useState(false);
+@@ -165,6 +169,23 @@ export function AetherFyWatchPage() {
+     if (!videoId) return;
+     setError(null);
+     try {
++      // Playlist publique d'une chaîne : la liste de droite contient SEULEMENT
++      // ses vidéos, dans son ordre (jamais celles de l'abonnement).
++      const session = getPlaylistSession(passedState?.playlistKey);
++      if (session) {
++        const found = session.videos.find((v) => v.youtube_id === videoId) ?? passedVideo;
++        if (found) {
++          setVideo(found);
++          setPlaylist(session.videos);
++          setPlaylistId(null);
++          setPlaylistKey(session.key);
++          setPlaylistTitle(session.title);
++          setSubscription(null);
++          setRelated([]);
++          return;
++        }
++      }
++
+       // 0.8.2 : ouverture depuis une playlist locale → la sidebar montre
+       // CETTE playlist, pas les vidéos d'un abonnement.
+       if (passedState?.playlistId) {
+@@ -188,8 +209,10 @@ export function AetherFyWatchPage() {
+           setVideo(found);
+           setPlaylist(mapped);
+           setPlaylistId(passedState.playlistId);
++          setPlaylistKey(null);
+           setPlaylistTitle(passedState.playlistTitle ?? "Playlist locale");
+           setSubscription(null);
++          setRelated([]);
+           return;
+         }
+       }
+@@ -204,6 +227,7 @@ export function AetherFyWatchPage() {
+             setPlaylist(vids);
+             setSubscription(sub);
+             setPlaylistId(null);
++            setPlaylistKey(null);
+             setPlaylistTitle(null);
+             const idx = vids.findIndex((v) => v.youtube_id === videoId);
+             const following = vids.slice(idx + 1, idx + 8);
+@@ -231,6 +255,7 @@ export function AetherFyWatchPage() {
+         setPlaylist([passedVideo]);
+         setSubscription(null);
+         setPlaylistId(null);
++        setPlaylistKey(null);
+         setPlaylistTitle(null);
+         return;
+       }
+@@ -725,6 +750,7 @@ export function AetherFyWatchPage() {
+             activeYoutubeId={video.youtube_id}
+             sideTitle={sideTitle}
+             playlistId={playlistId}
++            playlistKey={playlistKey}
+             playlistTitle={playlistTitle}
+             loop={loop}
+             shuffle={shuffle}
+diff --git a/apps/desktop/src/features/aetherfy/playlistSession.ts b/apps/desktop/src/features/aetherfy/playlistSession.ts
+new file mode 100644
+index 0000000..12f66f6
+--- /dev/null
++++ b/apps/desktop/src/features/aetherfy/playlistSession.ts
+@@ -0,0 +1,27 @@
++import type { VaultTubeVideo } from "../vaulttube/api";
++
++/**
++ * Playlist EN COURS DE LECTURE dans AetherFy quand elle n'existe pas en base
++ * (playlist publique d'une chaîne, lue en direct). La page de lecture y puise
++ * la liste affichée à droite : SEULEMENT les vidéos de cette playlist, dans son
++ * ordre. L'état de navigation ne transporte que la clé (`playlistKey`), pas des
++ * milliers de vidéos recopiées à chaque clic dans la liste.
++ *
++ * Mémoire volatile : après un rechargement de l'application, la clé est
++ * inconnue et la page retombe sur son comportement habituel (abonnement).
++ */
++export interface AfyPlaylistSession {
++  key: string;
++  title: string;
++  videos: VaultTubeVideo[];
++}
++
++let current: AfyPlaylistSession | null = null;
++
++export function setPlaylistSession(session: AfyPlaylistSession): void {
++  current = session;
++}
++
++export function getPlaylistSession(key: string | null | undefined): AfyPlaylistSession | null {
++  return key && current && current.key === key ? current : null;
++}
+diff --git a/apps/desktop/src/layout/PlayerDock.tsx b/apps/desktop/src/layout/PlayerDock.tsx
+index 70f8281..0d1fda9 100644
+--- a/apps/desktop/src/layout/PlayerDock.tsx
++++ b/apps/desktop/src/layout/PlayerDock.tsx
+@@ -1,5 +1,6 @@
++import { useEffect } from "react";
+ import { ChevronUp, Music, Pause, Play, SkipForward } from "lucide-react";
+-import { usePlayer, FULLSCREEN_TARGET_ID } from "../player/PlayerContext";
++import { usePlayer, FULLSCREEN_TARGET_ID, isAetherFyInlineVideo } from "../player/PlayerContext";
+ import { PlayerSurface } from "../player/PlayerSurface";
+ import { PlayerControls } from "../player/PlayerControls";
+ import { useControlsAutoHide } from "../player/useControlsAutoHide";
+@@ -177,11 +178,28 @@ function AudioMiniBar() {
+  */
+ export function PlayerDock() {
+   const location = useLocation();
+-  const { currentMedia, isDetached, isPlaying, immersiveOpen } = usePlayer();
++  const { currentMedia, isDetached, isPlaying, immersiveOpen, stop } = usePlayer();
+   const active = Boolean(currentMedia) && !isDetached;
+   const { visible: controlsVisible, onActivity, controlsHoverHandlers } =
+     useControlsAutoHide(active, isPlaying);
+ 
++  // Vidéo AetherFy dont plus rien n'affiche l'image : on a quitté la page de
++  // lecture (clic sur « Films » dans la barre latérale, etc.) sans passer par
++  // le PiP ni la vue classique. Comme pour la TV, quitter la page arrête la
++  // lecture ; sans cela le pane plein écran ci-dessous se rendait par-dessus la
++  // page demandée.
++  // `/aetherfy/watch/` AVEC la barre finale : `/aetherfy/watch-later` (« À
++  // regarder plus tard ») n'est PAS une page de lecture.
++  const onAfyWatchPage = location.pathname.startsWith("/aetherfy/watch/");
++  const orphanAfyVideo =
++    isAetherFyInlineVideo(currentMedia) &&
++    !isDetached &&
++    !immersiveOpen &&
++    !onAfyWatchPage;
++  useEffect(() => {
++    if (orphanAfyVideo) stop();
++  }, [orphanAfyVideo, stop]);
++
+   if (!currentMedia || isDetached) return null;
+ 
+   if (currentMedia.mode === "audio") {
+@@ -189,7 +207,10 @@ export function PlayerDock() {
+   }
+ 
+   if (immersiveOpen) return null;
+-  
++
++  // Jamais de lecteur plein écran du Dock pour une vidéo AetherFy (voir plus haut).
++  if (isAetherFyInlineVideo(currentMedia)) return null;
++
+     // 0.7.10 — la page watch AetherFy héberge sa propre PlayerSurface
+   // inline : le pane .avm-player du Dock monterait une DEUXIÈME surface
+   // (canal de rendu unique → canvas inline affamé) et recouvrirait la
+@@ -197,10 +218,7 @@ export function PlayerDock() {
+   // (La mini-barre audio, elle, reste disponible partout.)
+   // 0.9.1 : les pages watch INLINE (AetherFy ET TV) hébergent leur propre
+   // PlayerSurface — le pane plein écran du Dock ne doit jamais s'y rendre.
+-  if (
+-    location.pathname.startsWith("/aetherfy/watch") ||
+-    location.pathname.startsWith("/tv/watch")
+-  ) {
++  if (onAfyWatchPage || location.pathname.startsWith("/tv/watch")) {
+     return null;
+   }
+ 
+diff --git a/apps/desktop/src/player/PlayerContext.tsx b/apps/desktop/src/player/PlayerContext.tsx
+index a5117f2..2971498 100644
+--- a/apps/desktop/src/player/PlayerContext.tsx
++++ b/apps/desktop/src/player/PlayerContext.tsx
+@@ -109,6 +109,19 @@ function isOnlineMedia(media: PlayableMedia): boolean {
+   return /^https?:\/\//i.test(media.path);
+ }
+ 
++/** Vidéo AetherFy lue « en place » (sans `mode`) : sa surface vidéo est hébergée
++ *  par la page de lecture, la vue classique ou la fenêtre PiP — jamais par le
++ *  lecteur plein écran du Dock. */
++export function isAetherFyInlineVideo(media: PlayableMedia | null | undefined): boolean {
++  return (
++    !!media &&
++    !media.mode &&
++    media.id >= 0 &&
++    media.libraryId === -1 &&
++    isOnlineMedia(media)
++  );
++}
++
+ function loadAndBroadcast(items: PlayableMedia[], index: number, background = false): void {
+   const media = items[index];
+   // 0.9.3 — anti-fuite TV (double sécurité ; le verrou réel est dans loadMedia)
+@@ -514,13 +527,7 @@ useEffect(() => {
+   // ouverture VOLONTAIRE (`openImmersive`) fait apparaître cette vue : les
+   // ouvertures automatiques exigent toujours `media.mode`.
+   const immersiveMode: "audio" | "video" | null =
+-    currentMedia?.mode ??
+-    (currentMedia &&
+-    currentMedia.id >= 0 &&
+-    currentMedia.libraryId === -1 &&
+-    isOnlineMedia(currentMedia)
+-      ? "video"
+-      : null);
++    currentMedia?.mode ?? (isAetherFyInlineVideo(currentMedia) ? "video" : null);
+ 
+   const value = useMemo<PlayerContextValue>(
+     () => ({

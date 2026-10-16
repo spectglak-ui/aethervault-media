@@ -1,0 +1,267 @@
+diff --git a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+index 1eaec83..ee3619e 100644
+--- a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
++++ b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+@@ -394,6 +394,22 @@ impl PlaybackEngineHandle {
+         // 20 s (et non 60) : une connexion googlevideo muette depuis 20 s est
+         // morte ; 60 s figeait l'UI en « chargement » pendant une minute.
+         let _ = set_option(&functions, mpv, "network-timeout", "20");
++        // Après une panne de tampon, mpv ne reprend qu'avec `cache-pause-wait`
++        // secondes d'avance (1 s par défaut). Avec un débit voisin de la
++        // vitesse de lecture, 1 s fait alterner lecture / « mise en mémoire
++        // tampon » toutes les secondes ; 6 s donne des pauses plus rares.
++        // Surchargeable : `AVM_CACHE_PAUSE_WAIT` (secondes).
++        let cache_pause_wait = std::env::var("AVM_CACHE_PAUSE_WAIT")
++            .ok()
++            .and_then(|v| v.trim().parse::<f64>().ok())
++            .filter(|v| v.is_finite() && *v >= 0.0)
++            .unwrap_or(6.0);
++        let _ = set_option(
++            &functions,
++            mpv,
++            "cache-pause-wait",
++            &format!("{cache_pause_wait}"),
++        );
+         let _ = set_option(&functions, mpv, "hr-seek", "yes");
+         // 0.5.3 : horloge AUDIO maître (`display-resample` dérivait sur
+         // notre rendu logiciel sans vsync fiable).
+@@ -439,6 +455,10 @@ impl PlaybackEngineHandle {
+         });
+         std::thread::spawn(move || run_event_thread(functions, mpv, app_handle, gate));
+         spawn_pot_prewarm(handle.clone());
++        spawn_playback_diagnostics(handle.clone());
++        if let Some(ytdlp) = locate_ytdlp() {
++            warn_if_no_js_runtime(&ytdlp);
++        }
+         log::info!(
+             "Playback Engine Bridge démarré (libmpv chargée depuis {})",
+             library_path.display()
+@@ -548,7 +568,12 @@ impl PlaybackEngineHandle {
+         // 2. Sélection exacte (bouton Qualité) — POT en tête.
+         if let Some(h) = height {
+             let resume = self.get_property_double("time-pos").unwrap_or(0.0);
+-            let sel = format!("bv*[height={h}]+ba/b[height={h}][acodec!=none]");
++            let avc = if prefer_avc() {
++                format!("bv*[height={h}][vcodec^=avc1]+ba/")
++            } else {
++                String::new()
++            };
++            let sel = format!("{avc}bv*[height={h}]+ba/b[height={h}][acodec!=none]");
+             // 2a. web + POT (1080p/4K VP9 non-throtté)
+             let pot_args = self.pot_extractor_args();
+             if !pot_args.is_empty() {
+@@ -587,7 +612,16 @@ impl PlaybackEngineHandle {
+             log::warn!("[playback] {h}p indisponible partout — fallback auto");
+         }
+         // 3. Auto : web+POT d'abord (4K possible), puis cascade.
+-        let format_sel = "bv*[height=1080]+ba/bv*[height=720]+ba/bv*[height<=1080]+ba/b[height<=1080][acodec!=none]";
++        const BASE_FORMAT_SEL: &str =
++            "bv*[height=1080]+ba/bv*[height=720]+ba/bv*[height<=1080]+ba/b[height<=1080][acodec!=none]";
++        let format_owned = if prefer_avc() {
++            format!(
++                "bv*[height=1080][vcodec^=avc1]+ba/bv*[height=720][vcodec^=avc1]+ba/{BASE_FORMAT_SEL}"
++            )
++        } else {
++            BASE_FORMAT_SEL.to_string()
++        };
++        let format_sel = format_owned.as_str();
+         // 3a. web + POT
+         let pot_args = self.pot_extractor_args();
+         if !pot_args.is_empty() {
+@@ -641,6 +675,11 @@ impl PlaybackEngineHandle {
+         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
+             Some((video.to_string(), audio.map(|s| s.to_string())));
+         // 0.6.0 (visualiseur) : on NE touche PLUS à `audio_origin` ici.
++        log::info!(
++            "[playback] flux : vidéo {} | audio {}",
++            describe_stream_url(video),
++            audio.map(describe_stream_url).unwrap_or_else(|| "(intégré)".into())
++        );
+         if self.audio_session.load(Ordering::Relaxed) {
+             // 0.6.1 : flux audio → pas de gate, démarrage immédiat.
+             self.gate.disarm();
+@@ -1124,6 +1163,9 @@ impl PlaybackEngineHandle {
+                 let _ = render_thread.join();
+             }
+         }
++        log::info!(
++            "[playback] attach_surface {width}x{height} — la source sera RECHARGÉE dans 300 ms (cache perdu)"
++        );
+         let size = Arc::new((AtomicI32::new(width), AtomicI32::new(height)));
+         let stop_flag = Arc::new(AtomicBool::new(false));
+         let in_flight_frames = Arc::new(AtomicI32::new(0));
+@@ -1197,7 +1239,8 @@ impl PlaybackEngineHandle {
+                 CString::new("replace").unwrap_or_default(),
+                 CString::new("0").unwrap_or_default(),
+             ];
+-            let audio_opt = audio.map(|a| format!("audio-file={a}"));
++            // Même quoting `%n%` que `load_split` (virgule dans l'URL).
++            let audio_opt = audio.map(|a| format!("audio-file=%{}%{}", a.len(), a));
+             if let Some(opts) = &audio_opt {
+                 c_args.push(CString::new(opts.as_str()).unwrap_or_default());
+             }
+@@ -1449,6 +1492,91 @@ fn error_string(functions: &MpvFunctions, code: c_int) -> String {
+     }
+ }
+ 
++/// Résumé SANS JETON d'une URL de flux, pour les logs : hôte, `mime`, `itag`.
++/// Permet de voir d'un coup d'œil si le flux vient de googlevideo ou d'un
++/// serveur tiers (Cobalt), et quel codec a été retenu (`mime=video/webm` =
++/// VP9/AV1, `video/mp4` = H.264/AV1 selon l'itag).
++fn describe_stream_url(url: &str) -> String {
++    let host = url
++        .split("://")
++        .nth(1)
++        .and_then(|rest| rest.split('/').next())
++        .unwrap_or("?");
++    let param = |key: &str| -> Option<&str> {
++        let query = url.split_once('?')?.1;
++        query
++            .split('&')
++            .find_map(|kv| kv.strip_prefix(key).and_then(|v| v.strip_prefix('=')))
++    };
++    format!(
++        "{host} (mime={}, itag={})",
++        param("mime").unwrap_or("?"),
++        param("itag").unwrap_or("?")
++    )
++}
++
++/// Essai de fluidité : `AVM_PREFER_AVC=1` fait préférer le H.264 à AV1/VP9
++/// (que yt-dlp classe en tête). Sur le rendu logiciel de l'app, le décodage
++/// H.264 est nettement plus léger. Désactivé par défaut.
++fn prefer_avc() -> bool {
++    static V: OnceLock<bool> = OnceLock::new();
++    *V.get_or_init(|| std::env::var("AVM_PREFER_AVC").as_deref() == Ok("1"))
++}
++
++/// Depuis yt-dlp 2025.11.12, un runtime JavaScript externe (Deno par défaut)
++/// est requis pour résoudre les défis YouTube (signature, `n`). Sans lui :
++/// formats manquants, flux bridés, erreurs 403 — et `--no-warnings` masque
++/// l'avertissement de yt-dlp. On le signale donc une fois au démarrage.
++fn warn_if_no_js_runtime(ytdlp: &std::path::Path) {
++    let exe = if cfg!(windows) { "deno.exe" } else { "deno" };
++    let beside_ytdlp = ytdlp.parent().map(|d| d.join(exe)).filter(|p| p.exists());
++    let in_path = std::env::var_os("PATH").and_then(|paths| {
++        std::env::split_paths(&paths)
++            .map(|d| d.join(exe))
++            .find(|p| p.exists())
++    });
++    match beside_ytdlp.or(in_path) {
++        Some(found) => log::info!("[playback] runtime JS pour yt-dlp : {}", found.display()),
++        None => log::warn!(
++            "[playback] AUCUN runtime JavaScript (deno) trouvé pour yt-dlp : depuis yt-dlp \
++             2025.11.12, YouTube sans lui peut renvoyer des formats manquants, bridés ou des \
++             erreurs 403 (cause possible de « mise en mémoire tampon » fréquente). Placer \
++             `{exe}` à côté de yt-dlp (ce dossier est ajouté au PATH par l'app)."
++        ),
++    }
++}
++
++/// Diagnostic de lecture : toutes les 5 s, tant qu'un média est chargé et
++/// qu'il joue (ou attend son tampon), trace l'état du cache et du rendu.
++/// Sert à départager « réseau trop lent » (avance ≈ 0, débit < débit du flux),
++/// « décodage/rendu trop lent » (images perdues qui montent) et « source
++/// rechargée » (compteurs remis à zéro).
++fn spawn_playback_diagnostics(handle: Arc<PlaybackEngineHandle>) {
++    std::thread::spawn(move || loop {
++        std::thread::sleep(Duration::from_secs(5));
++        let Ok(pos) = handle.get_property_double("time-pos") else {
++            continue;
++        };
++        let waiting = handle.get_property_flag("paused-for-cache").unwrap_or(false);
++        let paused = handle.get_property_flag("pause").unwrap_or(false);
++        if paused && !waiting {
++            continue;
++        }
++        let ahead = handle.get_property_double("demuxer-cache-duration").unwrap_or(-1.0);
++        let speed_kib = handle.get_property_int64("cache-speed").unwrap_or(-1) / 1024;
++        let fps = handle.get_property_double("estimated-vf-fps").unwrap_or(-1.0);
++        let src_fps = handle.get_property_double("container-fps").unwrap_or(-1.0);
++        let vo_drops = handle.get_property_int64("frame-drop-count").unwrap_or(-1);
++        let dec_drops = handle.get_property_int64("decoder-frame-drop-count").unwrap_or(-1);
++        let delayed = handle.get_property_int64("vo-delayed-frame-count").unwrap_or(-1);
++        log::info!(
++            "[playback-diag] t={pos:.0}s avance={ahead:.1}s débit={speed_kib}KiB/s \
++             tampon_vide={waiting} fps={fps:.1}/{src_fps:.1} perdues(vo={vo_drops}, \
++             décodeur={dec_drops}) en_retard={delayed}"
++        );
++    });
++}
++
+ /// Durée de validité d'un PO Token en cache.
+ const POT_CACHE_TTL_SECS: u64 = 20 * 60;
+ /// Rafraîchissement anticipé (strictement < TTL) : le cache ne tombe donc
+@@ -1470,19 +1598,29 @@ fn spawn_pot_prewarm(handle: Arc<PlaybackEngineHandle>) {
+     });
+ }
+ 
+-/// 0.5.0 : extraction via Cobalt (API self-host ou publique) — flux muxés
+-/// (vidéo+audio) NON throttés, en une seule requête HTTP.
++/// 0.5.0 : extraction via Cobalt — flux muxés (vidéo+audio) en une seule
++/// requête HTTP.
++///
++/// Instances interrogées : par défaut UNIQUEMENT l'instance locale
++/// `127.0.0.1:9000` (échec immédiat si rien n'écoute). Les instances
++/// publiques tierces ne sont plus jamais contactées par défaut : elles
++/// recevaient l'URL de chaque vidéo regardée (contraire à « 100 % local »),
++/// ajoutaient jusqu'à 2 × 6 s d'attente avant yt-dlp et faisaient passer le
++/// flux par un serveur tiers (débit bridé → mise en mémoire tampon).
++/// Réglages : `COBALT_API=<url>` pour sa propre instance ;
++/// `AVM_COBALT_PUBLIC=1` pour réactiver les instances publiques.
+ fn cobalt_extract(url: &str, height: Option<i64>) -> Option<String> {
+     let instances: Vec<String> = std::env::var("COBALT_API")
+         .ok()
+         .filter(|s| !s.trim().is_empty())
+         .map(|s| vec![s.trim().trim_end_matches('/').to_string()])
+         .unwrap_or_else(|| {
+-            vec![
+-                "http://127.0.0.1:9000".into(),
+-                "https://cobalt-api.meow.lol".into(),
+-                "https://api.cobalt.tools".into(),
+-            ]
++            let mut list: Vec<String> = vec!["http://127.0.0.1:9000".into()];
++            if std::env::var("AVM_COBALT_PUBLIC").as_deref() == Ok("1") {
++                list.push("https://cobalt-api.meow.lol".into());
++                list.push("https://api.cobalt.tools".into());
++            }
++            list
+         });
+     let quality = match height {
+         Some(h) => h.to_string(),
+diff --git a/apps/desktop/src/player/PlayerSurface.tsx b/apps/desktop/src/player/PlayerSurface.tsx
+index ec702bd..c6b2c0e 100644
+--- a/apps/desktop/src/player/PlayerSurface.tsx
++++ b/apps/desktop/src/player/PlayerSurface.tsx
+@@ -42,6 +42,13 @@ interface ParsedFrame {
+  */
+ export function PlayerSurface({ className }: PlayerSurfaceProps) {
+   const { currentMedia, displayMode, isPlaying, buffered, position, duration } = usePlayer();
++  // Clé STABLE du média courant. L'effet d'attache ci-dessous en dépend (et non
++  // de l'identité de l'objet `currentMedia`) : chaque événement
++  // `player-queue-changed` — ajout à la file, réordonnancement, enrichissement
++  // de la playlist… — fabrique de nouveaux objets, et une simple identité
++  // différente ré-attachait la surface, ce qui côté Rust recharge TOUTE la
++  // source (cache perdu → « mise en mémoire tampon » + saccade).
++  const mediaKey = currentMedia ? `${currentMedia.id}|${currentMedia.path}` : null;
+   const canvasRef = useRef<HTMLCanvasElement>(null);
+   const shaderModeRef = useRef(0);
+   const playingRef = useRef(isPlaying);
+@@ -87,7 +94,7 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
+   }, [displayMode]);
+ 
+   useEffect(() => {
+-    if (!currentMedia) return;
++    if (!mediaKey) return;
+     const canvas = canvasRef.current;
+     if (!canvas) return;
+     canvas.style.width = "100%";
+@@ -558,7 +565,7 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
+       gl.deleteShader(vertexShader);
+       gl.deleteShader(fragmentShader);
+     };
+-  }, [currentMedia]);
++  }, [mediaKey]);
+ 
+   // 0.4.0 : indicateur de mise en mémoire tampon — PUREMENT VISUEL,
+   // ne bloque JAMAIS la lecture (mpv gère lui-même la reprise).

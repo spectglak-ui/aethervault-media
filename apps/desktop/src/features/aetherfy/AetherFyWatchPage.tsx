@@ -6,9 +6,6 @@ import {
   Share2,
   Download,
   MoreHorizontal,
-  Repeat,
-  Shuffle,
-  X,
   MessageSquare,
   ChevronDown,
   ChevronUp,
@@ -22,6 +19,7 @@ import {
   Maximize,
   Minimize,
   MonitorPlay,
+  PictureInPicture2,
   CheckCircle2,
 } from "lucide-react";
 import type { VaultTubeVideo, VaultTubeSubscription, Comment } from "../vaulttube/api";
@@ -29,6 +27,8 @@ import { vaultTubeApi, watchUrl } from "../vaulttube/api";
 import { usePlayer } from "../../player/PlayerContext";
 import { PlayerSurface } from "../../player/PlayerSurface";
 import { AetherFyAmbientLight, useAmbientSettings } from "./AetherFyAmbientLight";
+import { AetherFyPlaylistPanel } from "./AetherFyPlaylistPanel";
+import { getPlaylistSession } from "./playlistSession";
 import { AetherFyVideoCard } from "./AetherFyVideoCard";
 import { useVisualizer } from "../../hooks/useVisualizer";
 import { addToHistory, isInLiked, toggleLiked } from "./afyLibrary";
@@ -88,6 +88,8 @@ export function AetherFyWatchPage() {
       video?: VaultTubeVideo;
       playlistId?: number;
       playlistTitle?: string;
+      /** Playlist publique d'une chaîne, lue en direct (voir `playlistSession.ts`). */
+      playlistKey?: string;
     } | null) ?? null;
   const passedVideo = passedState?.video ?? null;
 
@@ -96,10 +98,13 @@ export function AetherFyWatchPage() {
     immersiveOpen,
     openImmersive,
     closeAudioView,
+    isDetached,
+    toggleDetached,
     isPlaying,
     togglePlay,
     position,
     duration,
+    buffered,
     seek,
     playNext,
     playPrevious,
@@ -121,10 +126,20 @@ export function AetherFyWatchPage() {
   const [related, setRelated] = useState<VaultTubeVideo[]>([]);
   const [subscription, setSubscription] = useState<VaultTubeSubscription | null>(null);
   const [playlistId, setPlaylistId] = useState<number | null>(null);
+  const [playlistKey, setPlaylistKey] = useState<string | null>(null);
   const [playlistTitle, setPlaylistTitle] = useState<string | null>(null);
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const [loop, setLoop] = useState(false);
   const [shuffle, setShuffle] = useState(false);
+  // Avance du préchargement sur la lecture (secondes) et niveau d'alerte.
+  const aheadSeconds = Math.max(0, buffered - position);
+  const aheadLevel = aheadSeconds < 3 ? "low" : aheadSeconds < 10 ? "mid" : "ok";
+
+  // Callbacks STABLES : le panneau de file est mémoïsé et ne doit pas se
+  // re-rendre à chaque événement de position du lecteur.
+  const toggleLoop = useCallback(() => setLoop((l) => !l), []);
+  const toggleShuffle = useCallback(() => setShuffle((x) => !x), []);
+  const closePlaylist = useCallback(() => navigate(-1), [navigate]);
   const [error, setError] = useState<string | null>(null);
   const [liked, setLiked] = useState(false);
   const [disliked, setDisliked] = useState(false);
@@ -154,6 +169,23 @@ export function AetherFyWatchPage() {
     if (!videoId) return;
     setError(null);
     try {
+      // Playlist publique d'une chaîne : la liste de droite contient SEULEMENT
+      // ses vidéos, dans son ordre (jamais celles de l'abonnement).
+      const session = getPlaylistSession(passedState?.playlistKey);
+      if (session) {
+        const found = session.videos.find((v) => v.youtube_id === videoId) ?? passedVideo;
+        if (found) {
+          setVideo(found);
+          setPlaylist(session.videos);
+          setPlaylistId(null);
+          setPlaylistKey(session.key);
+          setPlaylistTitle(session.title);
+          setSubscription(null);
+          setRelated([]);
+          return;
+        }
+      }
+
       // 0.8.2 : ouverture depuis une playlist locale → la sidebar montre
       // CETTE playlist, pas les vidéos d'un abonnement.
       if (passedState?.playlistId) {
@@ -177,8 +209,10 @@ export function AetherFyWatchPage() {
           setVideo(found);
           setPlaylist(mapped);
           setPlaylistId(passedState.playlistId);
+          setPlaylistKey(null);
           setPlaylistTitle(passedState.playlistTitle ?? "Playlist locale");
           setSubscription(null);
+          setRelated([]);
           return;
         }
       }
@@ -193,6 +227,7 @@ export function AetherFyWatchPage() {
             setPlaylist(vids);
             setSubscription(sub);
             setPlaylistId(null);
+            setPlaylistKey(null);
             setPlaylistTitle(null);
             const idx = vids.findIndex((v) => v.youtube_id === videoId);
             const following = vids.slice(idx + 1, idx + 8);
@@ -220,6 +255,7 @@ export function AetherFyWatchPage() {
         setPlaylist([passedVideo]);
         setSubscription(null);
         setPlaylistId(null);
+        setPlaylistKey(null);
         setPlaylistTitle(null);
         return;
       }
@@ -415,21 +451,62 @@ export function AetherFyWatchPage() {
 
           {immersiveOpen ? (
             <div className="afy-player-placeholder">Lecture dans la vue classique…</div>
+          ) : isDetached ? (
+            <div className="afy-player-placeholder">
+              <span>Lecture dans la fenêtre flottante…</span>
+              <button
+                type="button"
+                className="afy-controls__btn"
+                style={{ marginLeft: 12 }}
+                onClick={toggleDetached}
+                title="Ramener la vidéo dans cette page"
+              >
+                Revenir ici
+              </button>
+            </div>
           ) : (
             <PlayerSurface />
           )}
 
-          {!immersiveOpen && (
+          {!immersiveOpen && !isDetached && (
             <div className={`afy-controls${!isPlaying ? " afy-controls--visible" : ""}`}>
-              <input
-                type="range"
-                className="afy-controls__seek"
-                min={0}
-                max={Math.max(0, duration)}
-                step={1}
-                value={Math.min(position, duration || 0)}
-                onChange={(e) => seek(Number(e.target.value))}
-              />
+              {/* Barre de lecture à trois couches : piste, PRÉCHARGEMENT (vert,
+                  jusqu'où mpv a déjà en tampon) et lecture (rose) ; le curseur
+                  natif, transparent, reste au-dessus pour le clic. Le vert qui
+                  dépasse le rose = le préchargement devance la lecture. */}
+              <div
+                className="afy-seek"
+                title={
+                  duration > 0
+                    ? `Préchargement : ${
+                        aheadSeconds > 0 ? `+${Math.round(aheadSeconds)} s d'avance` : "aucune avance"
+                      }`
+                    : undefined
+                }
+              >
+                <div className="afy-seek__track" />
+                {duration > 0 && buffered > position && (
+                  <div
+                    className="afy-seek__buffered"
+                    style={{ width: `${Math.min(100, (buffered / duration) * 100)}%` }}
+                  />
+                )}
+                <div
+                  className="afy-seek__played"
+                  style={{
+                    width: `${duration > 0 ? Math.min(100, (position / duration) * 100) : 0}%`,
+                  }}
+                />
+                <input
+                  type="range"
+                  className="afy-controls__seek afy-seek__input"
+                  min={0}
+                  max={Math.max(0, duration)}
+                  step={1}
+                  value={Math.min(position, duration || 0)}
+                  onChange={(e) => seek(Number(e.target.value))}
+                />
+              </div>
               <div className="afy-controls__row">
                 <button
                   type="button"
@@ -459,6 +536,15 @@ export function AetherFyWatchPage() {
                 </button>
                 <span className="afy-controls__time">
                   {formatClock(position)} / {formatClock(duration)}
+                  {duration > 0 && (
+                    <span
+                      className={`afy-controls__ahead afy-controls__ahead--${aheadLevel}`}
+                      title="Avance du préchargement sur la lecture"
+                    >
+                      {" "}
+                      · +{Math.round(aheadSeconds)} s
+                    </span>
+                  )}
                 </span>
                 <span style={{ flex: 1 }} />
                 <button
@@ -497,6 +583,14 @@ export function AetherFyWatchPage() {
                   title="Plein écran"
                 >
                   {localFs ? <Minimize size={16} /> : <Maximize size={16} />}
+                </button>
+                <button
+                  type="button"
+                  className="afy-controls__btn"
+                  onClick={toggleDetached}
+                  title="Lecteur flottant (PiP)"
+                >
+                  <PictureInPicture2 size={16} />
                 </button>
                 <button
                   type="button"
@@ -651,92 +745,19 @@ export function AetherFyWatchPage() {
       {/* ----- SIDEBAR PLAYLIST (abonnement OU playlist locale) ----- */}
       <aside className="afy-watch__aside">
         {playlist.length > 0 && (subscription || playlistTitle) && (
-          <div className="afy-playlist">
-            <div className="afy-playlist__head">
-              <div>
-                <div className="afy-playlist__title">{sideTitle}</div>
-                <div className="afy-playlist__sub">
-                  {currentIndex + 1} / {playlist.length}
-                </div>
-              </div>
-              <div className="afy-playlist__actions">
-                <button
-                  type="button"
-                  className="afy-playlist__icon-btn"
-                  onClick={() => setLoop((l) => !l)}
-                  title="Répéter"
-                  style={{ color: loop ? "#ff9f1c" : undefined }}
-                >
-                  <Repeat size={16} />
-                </button>
-                <button
-                  type="button"
-                  className="afy-playlist__icon-btn"
-                  onClick={() => setShuffle((s) => !s)}
-                  title="Aléatoire"
-                  style={{ color: shuffle ? "#ff9f1c" : undefined }}
-                >
-                  <Shuffle size={16} />
-                </button>
-                <button
-                  type="button"
-                  className="afy-playlist__icon-btn"
-                  onClick={() => navigate(-1)}
-                  title="Fermer"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-            </div>
-            <div className="afy-playlist__list">
-              {playlist.map((v, idx) => {
-                const isActive = v.youtube_id === video.youtube_id;
-                return (
-                  <button
-                    key={`${v.source}-${v.youtube_id}`}
-                    type="button"
-                    className={`afy-playlist-item${isActive ? " afy-playlist-item--active" : ""}`}
-                    onClick={() =>
-                      navigate(`/aetherfy/watch/${v.youtube_id}`, {
-                        state: {
-                          video: v,
-                          playlistId: playlistId ?? undefined,
-                          playlistTitle: playlistTitle ?? undefined,
-                        },
-                      })
-                    }
-                  >
-                    <span className="afy-playlist-item__index">{idx + 1}</span>
-                    <div className="afy-playlist-item__thumb">
-                      {v.thumbnail_url && <img src={v.thumbnail_url} alt="" />}
-                      {isActive && (
-                        <div className="afy-playlist-item__playing-icon">
-                          <Play size={18} fill="#ff9f1c" />
-                        </div>
-                      )}
-                      {!isActive && v.duration_seconds && (
-                        <span className="afy-playlist-item__thumb-duration">
-                          {formatDuration(v.duration_seconds)}
-                        </span>
-                      )}
-                    </div>
-                    <div className="afy-playlist-item__info">
-                      <div className="afy-playlist-item__title">{v.title}</div>
-                      <div className="afy-playlist-item__channel">
-                        {sideTitle}
-                        {isActive && " • lecture en cours"}
-                      </div>
-                    </div>
-                    {v.duration_seconds && (
-                      <span className="afy-playlist-item__duration">
-                        {formatDuration(v.duration_seconds)}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          <AetherFyPlaylistPanel
+            playlist={playlist}
+            activeYoutubeId={video.youtube_id}
+            sideTitle={sideTitle}
+            playlistId={playlistId}
+            playlistKey={playlistKey}
+            playlistTitle={playlistTitle}
+            loop={loop}
+            shuffle={shuffle}
+            onToggleLoop={toggleLoop}
+            onToggleShuffle={toggleShuffle}
+            onClose={closePlaylist}
+          />
         )}
         {related.length > 0 && (
           <div>
