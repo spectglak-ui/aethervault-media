@@ -35,3 +35,4 @@ pub mod friends;
 pub mod private_tags;
 pub mod reading;
 pub mod tv;
+pub mod user_lists;

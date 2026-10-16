@@ -61,7 +61,11 @@ const menuItemStyle = (active: boolean): CSSProperties => ({
  */
 function QualitySelector({ url }: { url: string }) {
   const [qualities, setQualities] = useState<QualityOption[]>([]);
+  const [loadingQualities, setLoadingQualities] = useState(false);
   const [open, setOpen] = useState(false);
+  // URL pour laquelle la liste a été demandée (null = jamais). Sert à ne
+  // l'interroger qu'UNE fois par vidéo ET à ignorer une réponse périmée.
+  const requestedUrlRef = useRef<string | null>(null);
   const [selected, setSelected] = useState<number | null>(() => {
     try {
       const v = localStorage.getItem(QUALITY_STORAGE_KEY);
@@ -73,14 +77,10 @@ function QualitySelector({ url }: { url: string }) {
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    let alive = true;
-    invoke<QualityOption[]>("player_list_qualities", { url })
-      .then((q) => {
-        if (alive) setQualities(q);
-      })
-      .catch(() => {
-        if (alive) setQualities([]);
-      });
+    // Nouvelle vidéo : on oublie la liste de la précédente.
+    requestedUrlRef.current = null;
+    setQualities([]);
+    setLoadingQualities(false);
     let saved: number | null = null;
     try {
       const v = localStorage.getItem(QUALITY_STORAGE_KEY);
@@ -89,10 +89,28 @@ function QualitySelector({ url }: { url: string }) {
       saved = null;
     }
     invoke("player_set_preferred_quality", { height: saved }).catch(() => {});
-    return () => {
-      alive = false;
-    };
   }, [url]);
+
+  // La liste des résolutions lance une SECONDE extraction yt-dlp complète
+  // de la vidéo. Elle n'est donc demandée qu'à la première ouverture du
+  // menu (et plus au montage, où elle concurrençait — et sérialisait,
+  // les commandes synchrones tournant sur le thread principal — la
+  // vraie extraction de lecture).
+  useEffect(() => {
+    if (!open || requestedUrlRef.current === url) return;
+    requestedUrlRef.current = url;
+    setLoadingQualities(true);
+    invoke<QualityOption[]>("player_list_qualities", { url })
+      .then((q) => {
+        if (requestedUrlRef.current === url) setQualities(q);
+      })
+      .catch(() => {
+        if (requestedUrlRef.current === url) setQualities([]);
+      })
+      .finally(() => {
+        if (requestedUrlRef.current === url) setLoadingQualities(false);
+      });
+  }, [open, url]);
 
   useEffect(() => {
     if (!open) return;
@@ -170,7 +188,7 @@ function QualitySelector({ url }: { url: string }) {
           ))}
           {qualities.length === 0 && (
             <div style={{ padding: "6px 10px", fontSize: 11, color: "#9a9aa3" }}>
-              Résolutions indisponibles
+              {loadingQualities ? "Chargement des résolutions…" : "Résolutions indisponibles"}
             </div>
           )}
         </div>

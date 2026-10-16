@@ -61,25 +61,9 @@ pub fn save_playback_progress(
 #[tauri::command]
 pub fn player_load(state: tauri::State<AppState>, path: String) -> Result<(), String> {
     let handle = state.playback_engine.handle()?;
-    handle.load(&path)?;
-    // FONCTIONNALITÉ (amélioration audio — spatialisation) : réappliquée
-    // automatiquement à chaque nouveau média à partir de la préférence
-    // persistée, pour que l'utilisateur n'ait à l'activer qu'une seule
-    // fois (voir commands::settings::get_audio_spatialization_enabled).
-    // Best-effort : une erreur ici (ex. connexion DB momentanément
-    // indisponible) ne doit jamais empêcher la lecture de démarrer.
-    if let Ok(conn) = state.get_conn() {
-        let enabled = crate::db::repositories::settings_repository::get(
-            &conn,
-            "audio_spatialization_enabled",
-        )
-        .ok()
-        .flatten()
-        .as_deref()
-            == Some("1");
-        let _ = handle.set_audio_spatialization(enabled);
-    }
-    Ok(())
+    // La spatialisation audio est ré-appliquée par le moteur lui-même, avant
+    // chaque loadfile (voir `PlaybackEngineHandle::apply_spatial_filter`).
+    handle.load(&path)
 }
 
 #[tauri::command]
@@ -110,18 +94,23 @@ pub fn player_set_rate(state: tauri::State<AppState>, rate: f64) -> Result<(), S
     state.playback_engine.handle()?.set_rate(rate)
 }
 
-/// FONCTIONNALITÉ (amélioration audio — spatialisation) : application
-/// immédiate sur le média en cours de lecture (voir Paramètres → Audio).
-/// La préférence elle-même est enregistrée séparément par
-/// `commands::settings::set_audio_spatialization_enabled`, qui est ce
-/// que le frontend appelle réellement au moment du clic — celle-ci n'est
-/// là que pour éviter d'attendre le prochain chargement de média.
+/// Effets audio — APERÇU : applique une combinaison spatialisation + ambiance
+/// cinéma (niveaux `off` | `light` | `medium` | `strong`) au moteur SANS la
+/// persister. Sert à la comparaison A/B de Paramètres → Audio ; les réglages
+/// réels sont enregistrés par `commands::settings::set_audio_spatialization_level`
+/// et `set_audio_cinema_level`.
 #[tauri::command]
-pub fn player_set_audio_spatialization(
+pub fn player_preview_audio_effects(
     state: tauri::State<AppState>,
-    enabled: bool,
+    spatial: String,
+    cinema: String,
 ) -> Result<(), String> {
-    state.playback_engine.handle()?.set_audio_spatialization(enabled)
+    use crate::services::playback_engine::{CinemaLevel, SpatialLevel};
+    let spatial = SpatialLevel::parse(&spatial)
+        .ok_or_else(|| format!("Niveau de spatialisation inconnu : {spatial}"))?;
+    let cinema = CinemaLevel::parse(&cinema)
+        .ok_or_else(|| format!("Niveau d'ambiance cinéma inconnu : {cinema}"))?;
+    state.playback_engine.handle()?.set_audio_effects(spatial, cinema)
 }
 
 /// Liste les pistes audio et sous-titres du fichier actuellement chargé
@@ -491,17 +480,5 @@ pub fn player_load_mode(
     mode: String,
 ) -> Result<(), String> {
     let handle = state.playback_engine.handle()?;
-    handle.load_with_mode(&path, Some(&mode))?;
-    if let Ok(conn) = state.get_conn() {
-        let enabled = crate::db::repositories::settings_repository::get(
-            &conn,
-            "audio_spatialization_enabled",
-        )
-        .ok()
-        .flatten()
-        .as_deref()
-            == Some("1");
-        let _ = handle.set_audio_spatialization(enabled);
-    }
-    Ok(())
+    handle.load_with_mode(&path, Some(&mode))
 }

@@ -1,0 +1,224 @@
+diff --git a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+index ee3619e..dc3a988 100644
+--- a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
++++ b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+@@ -371,7 +371,17 @@ impl PlaybackEngineHandle {
+         }
+         let mpv = MpvHandlePtr(mpv_ptr);
+         set_option(&functions, mpv, "vo", "libmpv")?;
+-        set_option(&functions, mpv, "hwdec", "auto-safe")?;
++        // `AVM_HWDEC` (ex. `auto-copy-safe`) : essai de décodage matériel avec
++        // recopie en mémoire système, seule forme compatible avec le rendu
++        // logiciel de l'app (`auto-safe` ne sait pas rendre des surfaces GPU
++        // via l'API SW de libmpv et retombe sur le décodage CPU).
++        let hwdec = std::env::var("AVM_HWDEC")
++            .ok()
++            .map(|v| v.trim().to_string())
++            .filter(|v| !v.is_empty())
++            .unwrap_or_else(|| "auto-safe".to_string());
++        log::info!("[playback] hwdec demandé : {hwdec}");
++        set_option(&functions, mpv, "hwdec", &hwdec)?;
+         // 0.5.3 : SUPPRIMÉ `video-timing-offset=0.150` (décalait la vidéo
+         // de 150 ms par rapport à l'audio).
+         set_option(&functions, mpv, "keep-open", "yes")?;
+@@ -1402,6 +1412,29 @@ impl PlaybackEngineHandle {
+         }
+     }
+ 
++    /// Propriété mpv de type chaîne (ex. `video-format`, `hwdec-current`).
++    fn get_property_string(&self, name: &str) -> Result<String, String> {
++        let cname = CString::new(name).unwrap_or_default();
++        let mut raw: *mut c_char = std::ptr::null_mut();
++        let rc = unsafe {
++            (self.functions.get_property)(
++                self.mpv.0,
++                cname.as_ptr(),
++                MpvFormat::String as c_int,
++                &mut raw as *mut _ as *mut c_void,
++            )
++        };
++        if rc < 0 {
++            return Err(error_string(&self.functions, rc));
++        }
++        if raw.is_null() {
++            return Ok(String::new());
++        }
++        let value = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
++        unsafe { (self.functions.free)(raw as *mut c_void) };
++        Ok(value)
++    }
++
+     fn get_property_flag(&self, name: &str) -> Result<bool, String> {
+         let cname = CString::new(name).unwrap_or_default();
+         let mut value: c_int = 0;
+@@ -1569,10 +1602,17 @@ fn spawn_playback_diagnostics(handle: Arc<PlaybackEngineHandle>) {
+         let vo_drops = handle.get_property_int64("frame-drop-count").unwrap_or(-1);
+         let dec_drops = handle.get_property_int64("decoder-frame-drop-count").unwrap_or(-1);
+         let delayed = handle.get_property_int64("vo-delayed-frame-count").unwrap_or(-1);
++        let codec = handle.get_property_string("video-format").unwrap_or_default();
++        let hwdec = handle.get_property_string("hwdec-current").unwrap_or_default();
++        let size = format!(
++            "{}x{}",
++            handle.get_property_int64("width").unwrap_or(0),
++            handle.get_property_int64("height").unwrap_or(0)
++        );
+         log::info!(
+             "[playback-diag] t={pos:.0}s avance={ahead:.1}s débit={speed_kib}KiB/s \
+              tampon_vide={waiting} fps={fps:.1}/{src_fps:.1} perdues(vo={vo_drops}, \
+-             décodeur={dec_drops}) en_retard={delayed}"
++             décodeur={dec_drops}) en_retard={delayed} codec={codec} {size} hwdec={hwdec}"
+         );
+     });
+ }
+@@ -1829,12 +1869,28 @@ fn locate_ytdlp() -> Option<PathBuf> {
+     }
+ }
+ 
++/// Essai : `AVM_POS_HZ=4` limite à 4/s les événements de position envoyés
++/// à l'interface (chacun re-rend tous les composants qui lisent le contexte
++/// du lecteur — jusqu'à 30–60 fois par seconde sans limite). Le PTS interne
++/// du rendu reste mis à jour à chaque événement. Désactivé par défaut.
++fn pos_emit_min_gap() -> Option<Duration> {
++    static V: OnceLock<Option<Duration>> = OnceLock::new();
++    *V.get_or_init(|| {
++        std::env::var("AVM_POS_HZ")
++            .ok()
++            .and_then(|s| s.trim().parse::<f64>().ok())
++            .filter(|hz| hz.is_finite() && *hz > 0.0)
++            .map(|hz| Duration::from_secs_f64(1.0 / hz))
++    })
++}
++
+ fn run_event_thread(
+     functions: Arc<MpvFunctions>,
+     mpv: MpvHandlePtr,
+     app_handle: AppHandle,
+     gate: Arc<StartGate>,
+ ) {
++    let mut last_pos_emit: Option<Instant> = None;
+     loop {
+         let event_ptr = unsafe { (functions.wait_event)(mpv.0, -1.0) };
+         if event_ptr.is_null() {
+@@ -1867,6 +1923,12 @@ fn run_event_thread(
+                         // (sw_render::LAST_PTS_MS) — sans appeler libmpv
+                         // depuis ce dernier.
+                         sw_render::LAST_PTS_MS.store((secs * 1000.0) as i64, Ordering::Relaxed);
++                        if let Some(gap) = pos_emit_min_gap() {
++                            if last_pos_emit.is_some_and(|t| t.elapsed() < gap) {
++                                continue;
++                            }
++                            last_pos_emit = Some(Instant::now());
++                        }
+                     }
+                     "duration" if prop.format == MpvFormat::Double as c_int => {
+                         payload.duration_seconds = Some(unsafe { *(prop.data as *const f64) });
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx b/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx
+index ffa063c..5f78b5f 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx
+@@ -22,6 +22,7 @@ import {
+   Maximize,
+   Minimize,
+   MonitorPlay,
++  PictureInPicture2,
+   CheckCircle2,
+ } from "lucide-react";
+ import type { VaultTubeVideo, VaultTubeSubscription, Comment } from "../vaulttube/api";
+@@ -96,6 +97,8 @@ export function AetherFyWatchPage() {
+     immersiveOpen,
+     openImmersive,
+     closeAudioView,
++    isDetached,
++    toggleDetached,
+     isPlaying,
+     togglePlay,
+     position,
+@@ -415,11 +418,24 @@ export function AetherFyWatchPage() {
+ 
+           {immersiveOpen ? (
+             <div className="afy-player-placeholder">Lecture dans la vue classique…</div>
++          ) : isDetached ? (
++            <div className="afy-player-placeholder">
++              <span>Lecture dans la fenêtre flottante…</span>
++              <button
++                type="button"
++                className="afy-controls__btn"
++                style={{ marginLeft: 12 }}
++                onClick={toggleDetached}
++                title="Ramener la vidéo dans cette page"
++              >
++                Revenir ici
++              </button>
++            </div>
+           ) : (
+             <PlayerSurface />
+           )}
+ 
+-          {!immersiveOpen && (
++          {!immersiveOpen && !isDetached && (
+             <div className={`afy-controls${!isPlaying ? " afy-controls--visible" : ""}`}>
+               <input
+                 type="range"
+@@ -498,6 +514,14 @@ export function AetherFyWatchPage() {
+                 >
+                   {localFs ? <Minimize size={16} /> : <Maximize size={16} />}
+                 </button>
++                <button
++                  type="button"
++                  className="afy-controls__btn"
++                  onClick={toggleDetached}
++                  title="Lecteur flottant (PiP)"
++                >
++                  <PictureInPicture2 size={16} />
++                </button>
+                 <button
+                   type="button"
+                   className="afy-controls__btn"
+diff --git a/apps/desktop/src/player/PlayerContext.tsx b/apps/desktop/src/player/PlayerContext.tsx
+index 9f17ed1..ded0f19 100644
+--- a/apps/desktop/src/player/PlayerContext.tsx
++++ b/apps/desktop/src/player/PlayerContext.tsx
+@@ -500,7 +500,21 @@ useEffect(() => {
+ 
+   const hasNext = queue.currentIndex !== null && queue.currentIndex < queue.items.length - 1;
+   const hasPrevious = queue.currentIndex !== null && queue.currentIndex > 0;
+-  const immersiveMode: "audio" | "video" | null = currentMedia?.mode ?? null;
++  // Vue immersive à afficher. Une vidéo AetherFy en ligne est lancée « en place »
++  // SANS `mode` (voir AetherFyWatchPage : pas d'ouverture automatique de la
++  // vue immersive) ; sans ce repli, le bouton « Ouvrir la vue classique »
++  // posait `immersiveOpen` mais AppShell n'affichait aucune vue (`mode` nul) :
++  // la page n'affichait que « Lecture dans la vue classique… ». Seule une
++  // ouverture VOLONTAIRE (`openImmersive`) fait apparaître cette vue : les
++  // ouvertures automatiques exigent toujours `media.mode`.
++  const immersiveMode: "audio" | "video" | null =
++    currentMedia?.mode ??
++    (currentMedia &&
++    currentMedia.id >= 0 &&
++    currentMedia.libraryId === -1 &&
++    isOnlineMedia(currentMedia)
++      ? "video"
++      : null);
+ 
+   const value = useMemo<PlayerContextValue>(
+     () => ({
+@@ -653,7 +667,19 @@ useEffect(() => {
+         }
+         windowApi
+           .openPlayerWindow()
+-          .then(() => setIsDetached(true))
++          .then(() => {
++            setIsDetached(true);
++            // Le webview PiP est resté caché jusque-là : on lui renvoie
++            // explicitement la file et la position/durée courantes (mpv
++            // n'émet la durée qu'à son changement), sans quoi il peut
++            // s'ouvrir sur « Aucune lecture en cours ».
++            void emit("player-queue-changed", { ...queueRef.current, background: true });
++            void emit("player-state", {
++              ended: false,
++              position_seconds: positionRef.current,
++              duration_seconds: durationRef.current,
++            });
++          })
+           .catch((err) => {
+             console.error("[PiP] Échec de l'ouverture PiP.", err);
+             setLastError("Impossible d'ouvrir le mode PiP.");

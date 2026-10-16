@@ -158,6 +158,11 @@ pub const MIGRATIONS: &[Migration] = &[
         description: "Catégorie TV — table tv_channels (flux IPTV/HLS publics)",
         sql: include_str!("0025_tv_channels.sql"),
     },
+    Migration {
+        version: 26,
+        description: "Notes personnelles (demi-étoiles) et Watchlist, par profil",
+        sql: include_str!("0026_ratings_watchlist.sql"),
+    },
 ];
 
 /// Applique, dans l'ordre, toutes les migrations dont la version est

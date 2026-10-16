@@ -19,6 +19,7 @@ import { useAnimatedBackdropActive } from "../hooks/useAnimatedBackdropActive";
 import { libraryApi } from "../features/library/api";
 import { PersonalizableImage } from "../features/personalization/PersonalizableImage";
 import { CastRow, GenreRow } from "../components/TitleRows";
+import { TitleUserPanel } from "../features/userlists/TitleUserPanel";
 import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
 import "./pages.css";
@@ -472,6 +473,7 @@ export function TitleDetailPage() {
               ))}
             </div>
           )}
+          <TitleUserPanel titleId={title.id} />
           {title.directors.length > 0 && (
             <p>
               <strong>Réalisation : </strong> {title.directors.join(", ")}

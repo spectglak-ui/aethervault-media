@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Flame, Users, Library as LibraryIcon, History as HistoryIcon, Clock, Heart,
-  Music, Gamepad2, Radio, Plus, Trash2, RefreshCw, X, ListVideo, Link2,
+  Music, Radio, Plus, Trash2, RefreshCw, X, ListVideo, Link2,
 } from "lucide-react";
 import type { VaultTubeVideo, VaultTubeSubscription, SearchResult } from "../vaulttube/api";
 import { vaultTubeApi } from "../vaulttube/api";
@@ -167,23 +167,6 @@ export function AetherFyLivePage() {
       {...feed}
       live
       empty="Aucun direct en cours ou programmé sur vos abonnements."
-    />
-  );
-}
-
-/* ---------- Jeux oniriques (inchangé : recherche globale gameplay) ---------- */
-
-export function AetherFyGamingPage() {
-  const feed = useFeed(async () => {
-    const r = await vaultTubeApi.search("jeux indépendants gameplay fr");
-    return r.filter((x) => x.kind === "video").map(fromSearch);
-  });
-  return (
-    <AfyGridPage
-      title="Jeux oniriques"
-      icon={<Gamepad2 size={20} style={{ color: "#2ec4b6" }} />}
-      {...feed}
-      empty="Aucune vidéo gaming trouvée."
     />
   );
 }
@@ -470,8 +453,31 @@ export function AetherFyUserPlaylistPage() {
       })
     );
   });
+  const navigate = useNavigate();
+  const playAll = () => {
+    const first = feed.items[0];
+    if (first) {
+      navigate(`/aetherfy/watch/${first.youtube_id}`, {
+        state: { video: first, playlistId: pid, playlistTitle: title },
+      });
+    }
+  };
   return (
-    <AfyGridPage title={title} icon={<ListVideo size={20} />} items={[]} loading={feed.loading} error={feed.error} empty="Playlist vide.">
+    <AfyGridPage
+      title={title}
+      icon={<ListVideo size={20} />}
+      items={[]}
+      loading={feed.loading}
+      error={feed.error}
+      empty="Playlist vide."
+      actions={
+        feed.items.length > 0 ? (
+          <button type="button" className="afy-btn-secondary" onClick={playAll}>
+            Tout lire
+          </button>
+        ) : undefined
+      }
+    >
       {feed.items.length > 0 && (
         <div className="afy-grid" style={{ margin: "16px 24px" }}>
           {feed.items.map((v) => (

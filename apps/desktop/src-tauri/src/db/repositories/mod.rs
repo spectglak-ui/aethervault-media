@@ -23,3 +23,4 @@ pub mod media_probe_repository;
 pub mod segment_repository;
 pub mod private_tag_repository;
 pub mod reading_repository;
+pub mod user_list_repository;

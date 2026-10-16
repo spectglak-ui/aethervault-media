@@ -1,0 +1,155 @@
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx b/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx
+index 501e1d4..fe9887f 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx
+@@ -101,6 +101,7 @@ export function AetherFyWatchPage() {
+     togglePlay,
+     position,
+     duration,
++    buffered,
+     seek,
+     playNext,
+     playPrevious,
+@@ -126,6 +127,10 @@ export function AetherFyWatchPage() {
+   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+   const [loop, setLoop] = useState(false);
+   const [shuffle, setShuffle] = useState(false);
++  // Avance du préchargement sur la lecture (secondes) et niveau d'alerte.
++  const aheadSeconds = Math.max(0, buffered - position);
++  const aheadLevel = aheadSeconds < 3 ? "low" : aheadSeconds < 10 ? "mid" : "ok";
++
+   // Callbacks STABLES : le panneau de file est mémoïsé et ne doit pas se
+   // re-rendre à chaque événement de position du lecteur.
+   const toggleLoop = useCallback(() => setLoop((l) => !l), []);
+@@ -440,15 +445,43 @@ export function AetherFyWatchPage() {
+ 
+           {!immersiveOpen && !isDetached && (
+             <div className={`afy-controls${!isPlaying ? " afy-controls--visible" : ""}`}>
+-              <input
+-                type="range"
+-                className="afy-controls__seek"
+-                min={0}
+-                max={Math.max(0, duration)}
+-                step={1}
+-                value={Math.min(position, duration || 0)}
+-                onChange={(e) => seek(Number(e.target.value))}
+-              />
++              {/* Barre de lecture à trois couches : piste, PRÉCHARGEMENT (vert,
++                  jusqu'où mpv a déjà en tampon) et lecture (rose) ; le curseur
++                  natif, transparent, reste au-dessus pour le clic. Le vert qui
++                  dépasse le rose = le préchargement devance la lecture. */}
++              <div
++                className="afy-seek"
++                title={
++                  duration > 0
++                    ? `Préchargement : ${
++                        aheadSeconds > 0 ? `+${Math.round(aheadSeconds)} s d'avance` : "aucune avance"
++                      }`
++                    : undefined
++                }
++              >
++                <div className="afy-seek__track" />
++                {duration > 0 && buffered > position && (
++                  <div
++                    className="afy-seek__buffered"
++                    style={{ width: `${Math.min(100, (buffered / duration) * 100)}%` }}
++                  />
++                )}
++                <div
++                  className="afy-seek__played"
++                  style={{
++                    width: `${duration > 0 ? Math.min(100, (position / duration) * 100) : 0}%`,
++                  }}
++                />
++                <input
++                  type="range"
++                  className="afy-controls__seek afy-seek__input"
++                  min={0}
++                  max={Math.max(0, duration)}
++                  step={1}
++                  value={Math.min(position, duration || 0)}
++                  onChange={(e) => seek(Number(e.target.value))}
++                />
++              </div>
+               <div className="afy-controls__row">
+                 <button
+                   type="button"
+@@ -478,6 +511,15 @@ export function AetherFyWatchPage() {
+                 </button>
+                 <span className="afy-controls__time">
+                   {formatClock(position)} / {formatClock(duration)}
++                  {duration > 0 && (
++                    <span
++                      className={`afy-controls__ahead afy-controls__ahead--${aheadLevel}`}
++                      title="Avance du préchargement sur la lecture"
++                    >
++                      {" "}
++                      · +{Math.round(aheadSeconds)} s
++                    </span>
++                  )}
+                 </span>
+                 <span style={{ flex: 1 }} />
+                 <button
+diff --git a/apps/desktop/src/features/aetherfy/aetherfy.css b/apps/desktop/src/features/aetherfy/aetherfy.css
+index c71fe1b..67623e3 100644
+--- a/apps/desktop/src/features/aetherfy/aetherfy.css
++++ b/apps/desktop/src/features/aetherfy/aetherfy.css
+@@ -1683,6 +1683,58 @@
+   cursor: pointer;
+ }
+ 
++/* Barre de lecture à trois couches (voir AetherFyWatchPage) :
++   piste → préchargement (vert) → lecture (rose) → curseur natif transparent. */
++.afy-seek {
++  position: relative;
++  width: 100%;
++  height: 14px;
++  display: flex;
++  align-items: center;
++}
++.afy-seek__track,
++.afy-seek__buffered,
++.afy-seek__played {
++  position: absolute;
++  left: 0;
++  top: 50%;
++  height: 4px;
++  transform: translateY(-50%);
++  border-radius: 2px;
++  pointer-events: none;
++}
++.afy-seek__track {
++  width: 100%;
++  background: rgba(255, 255, 255, 0.25);
++}
++.afy-seek__buffered {
++  background: rgba(74, 222, 128, 0.6);
++}
++.afy-seek__played {
++  background: #ff2e63;
++}
++.afy-seek .afy-seek__input {
++  position: relative;
++  margin: 0;
++  height: 14px;
++  background: transparent;
++}
++
++/* Avance du préchargement : rouge < 3 s, orange < 10 s, vert au-delà. */
++.afy-controls__ahead {
++  font-size: 11px;
++  font-weight: 600;
++}
++.afy-controls__ahead--low {
++  color: #ff6b6b;
++}
++.afy-controls__ahead--mid {
++  color: #ffb347;
++}
++.afy-controls__ahead--ok {
++  color: #4ade80;
++}
++
+ .afy-controls__rate {
+   background: rgba(255, 255, 255, 0.10);
+   border: 1px solid rgba(255, 255, 255, 0.22);

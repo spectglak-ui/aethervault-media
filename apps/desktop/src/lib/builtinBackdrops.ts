@@ -27,29 +27,42 @@ export const BUILTIN_VIDEOS: readonly BuiltinBackdrop[] = [
 const IMAGE_KEY = "avm-builtin-backdrop-image";
 const VIDEO_KEY = "avm-builtin-backdrop-video";
 
+/** Valeur stockée quand l'utilisateur RETIRE explicitement le fond intégré :
+ *  la distingue de « jamais choisi » (clé absente → fond par défaut). */
+const NONE = "none";
+/** Fond animé intégré sélectionné tant que l'utilisateur n'a rien choisi. */
+const DEFAULT_VIDEO_ID = "ciel-carres";
+
 /** Même événement que celui déjà émis par les sections de Paramètres. */
 export const BACKDROP_CHANGED_EVENT = "avm-home-backdrop-changed";
 
-function read(key: string, list: readonly BuiltinBackdrop[]): BuiltinBackdrop | null {
+function read(
+  key: string,
+  list: readonly BuiltinBackdrop[],
+  defaultId: string | null
+): BuiltinBackdrop | null {
+  let id: string | null = null;
   try {
-    const id = localStorage.getItem(key);
-    return list.find((b) => b.id === id) ?? null;
+    id = localStorage.getItem(key);
   } catch {
-    return null;
+    /* stockage indisponible : on retombe sur le défaut */
   }
+  if (id === null) return list.find((b) => b.id === defaultId) ?? null;
+  return list.find((b) => b.id === id) ?? null;
 }
 
 function write(key: string, id: string | null): void {
   try {
-    if (id === null) localStorage.removeItem(key);
-    else localStorage.setItem(key, id);
+    localStorage.setItem(key, id ?? NONE);
   } catch {
     /* stockage indisponible : le choix n'est simplement pas mémorisé */
   }
   window.dispatchEvent(new Event(BACKDROP_CHANGED_EVENT));
 }
 
-export const getBuiltinImage = (): BuiltinBackdrop | null => read(IMAGE_KEY, BUILTIN_IMAGES);
+export const getBuiltinImage = (): BuiltinBackdrop | null =>
+  read(IMAGE_KEY, BUILTIN_IMAGES, null);
 export const setBuiltinImage = (id: string | null): void => write(IMAGE_KEY, id);
-export const getBuiltinVideo = (): BuiltinBackdrop | null => read(VIDEO_KEY, BUILTIN_VIDEOS);
+export const getBuiltinVideo = (): BuiltinBackdrop | null =>
+  read(VIDEO_KEY, BUILTIN_VIDEOS, DEFAULT_VIDEO_ID);
 export const setBuiltinVideo = (id: string | null): void => write(VIDEO_KEY, id);

@@ -29,6 +29,8 @@ interface PlayerContextValue {
   position: number;
   duration: number;
   buffered: number;
+  /** mpv est réellement en pause faute de données (`paused-for-cache`). */
+  isBuffering: boolean;
   volume: number;
   muted: boolean;
   rate: number;
@@ -97,6 +99,29 @@ function loadMedia(media: PlayableMedia): Promise<void> {
     : playerApi.load(media.path);
 }
 
+/** Média en ligne (YouTube, Dailymotion, flux HLS…) : son `id` n'est PAS un
+    `media_files.id`. La progression locale (`playback_progress`, clé étrangère
+    vers `media_files`) et `watch_history` ne doivent jamais être lues ni
+    écrites pour lui — sinon un id AetherFy qui coïncide avec un fichier
+    local lirait/écraserait la progression de CE fichier, et ferait sauter la
+    lecture à une position sans rapport (re-buffering à l'ouverture). */
+function isOnlineMedia(media: PlayableMedia): boolean {
+  return /^https?:\/\//i.test(media.path);
+}
+
+/** Vidéo AetherFy lue « en place » (sans `mode`) : sa surface vidéo est hébergée
+ *  par la page de lecture, la vue classique ou la fenêtre PiP — jamais par le
+ *  lecteur plein écran du Dock. */
+export function isAetherFyInlineVideo(media: PlayableMedia | null | undefined): boolean {
+  return (
+    !!media &&
+    !media.mode &&
+    media.id >= 0 &&
+    media.libraryId === -1 &&
+    isOnlineMedia(media)
+  );
+}
+
 function loadAndBroadcast(items: PlayableMedia[], index: number, background = false): void {
   const media = items[index];
   // 0.9.3 — anti-fuite TV (double sécurité ; le verrou réel est dans loadMedia)
@@ -111,8 +136,9 @@ function loadAndBroadcast(items: PlayableMedia[], index: number, background = fa
   } as unknown as PlaybackQueueState);
 
   // 0.9.1 : médias TV (ids négatifs) absents de la base → pas de
-  // recherche de progression, chargement direct.
-  if (media.id < 0) {
+  // recherche de progression, chargement direct. Idem pour tout média en
+  // ligne (AetherFy) : voir isOnlineMedia.
+  if (media.id < 0 || isOnlineMedia(media)) {
     void loadMedia(media);
     return;
   }
@@ -162,6 +188,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [queue, setQueue] = useState<PlaybackQueueState>(EMPTY_QUEUE);
   const [isPlaying, setIsPlaying] = useState(false);
   const [buffered, setBuffered] = useState(0);
+  const [isBuffering, setIsBuffering] = useState(false);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
@@ -262,8 +289,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
     endedHandledRef.current = media.id;
 
-    // 0.9.1 : médias TV absents de la base → pas d'historique.
-    if (media.id >= 0 && positionRef.current >= 30 && durationRef.current > 0) {
+    // 0.9.1 : médias TV absents de la base → pas d'historique (idem en ligne).
+    if (
+      media.id >= 0 &&
+      !isOnlineMedia(media) &&
+      positionRef.current >= 30 &&
+      durationRef.current > 0
+    ) {
       void titleApi
         .recordWatch(media.id, positionRef.current, durationRef.current)
         .catch(() => {});
@@ -284,7 +316,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         } else if (currentIndex < items.length - 1) {
           nextIndex = currentIndex + 1;
         }
-        if (nextIndex !== null) loadAndBroadcast(items, nextIndex);
+        // `background = true` : l'enchaînement automatique ne doit JAMAIS
+        // rouvrir la vue immersive (sinon un lecteur musique réduit en
+        // mini-barre se réaffiche à chaque morceau). Si la vue est déjà
+        // ouverte elle le reste : le drapeau n'empêche que l'ouverture.
+        if (nextIndex !== null) loadAndBroadcast(items, nextIndex, true);
       }
     }
   };
@@ -315,10 +351,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const media = currentMediaRef.current;
     // 0.9.1 : médias TV absents de la base → pas de progression.
     if (media && durationRef.current > 0 && media.id >= 0) {
-      const saveProgress = media.isPrivate
-        ? playerApi.savePrivateProgress
-        : playerApi.saveProgress;
-      saveProgress(media.id, positionRef.current, durationRef.current).catch(() => {});
+      if (!isOnlineMedia(media)) {
+        const saveProgress = media.isPrivate
+          ? playerApi.savePrivateProgress
+          : playerApi.saveProgress;
+        saveProgress(media.id, positionRef.current, durationRef.current).catch(() => {});
+      }
       publishActivity();
     }
   };
@@ -328,6 +366,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const bufferedSeconds = (event.payload as { buffered_seconds?: number })
         .buffered_seconds;
       if (typeof bufferedSeconds === "number") setBuffered(bufferedSeconds);
+      const buffering = (event.payload as { buffering?: boolean | null }).buffering;
+      if (typeof buffering === "boolean") setIsBuffering(buffering);
 
       const { position_seconds, duration_seconds, playing, ended, error } =
         event.payload;
@@ -380,6 +420,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         setIsPlaying(media !== null);
         setPosition(0);
         setDuration(0);
+        setIsBuffering(false);
         setBuffered(0);
         endedHandledRef.current = null;
         userPausedRef.current = false;
@@ -478,7 +519,15 @@ useEffect(() => {
 
   const hasNext = queue.currentIndex !== null && queue.currentIndex < queue.items.length - 1;
   const hasPrevious = queue.currentIndex !== null && queue.currentIndex > 0;
-  const immersiveMode: "audio" | "video" | null = currentMedia?.mode ?? null;
+  // Vue immersive à afficher. Une vidéo AetherFy en ligne est lancée « en place »
+  // SANS `mode` (voir AetherFyWatchPage : pas d'ouverture automatique de la
+  // vue immersive) ; sans ce repli, le bouton « Ouvrir la vue classique »
+  // posait `immersiveOpen` mais AppShell n'affichait aucune vue (`mode` nul) :
+  // la page n'affichait que « Lecture dans la vue classique… ». Seule une
+  // ouverture VOLONTAIRE (`openImmersive`) fait apparaître cette vue : les
+  // ouvertures automatiques exigent toujours `media.mode`.
+  const immersiveMode: "audio" | "video" | null =
+    currentMedia?.mode ?? (isAetherFyInlineVideo(currentMedia) ? "video" : null);
 
   const value = useMemo<PlayerContextValue>(
     () => ({
@@ -487,6 +536,7 @@ useEffect(() => {
       position,
       duration,
       buffered,
+      isBuffering,
       volume,
       muted,
       rate,
@@ -520,11 +570,11 @@ useEffect(() => {
           while (n === currentIndex) {
             n = Math.floor(Math.random() * items.length);
           }
-          loadAndBroadcast(items, n);
+          loadAndBroadcast(items, n, true);
           return;
         }
         if (currentIndex >= items.length - 1) return;
-        loadAndBroadcast(items, currentIndex + 1);
+        loadAndBroadcast(items, currentIndex + 1, true);
       },
       playPrevious: () => {
         const { items, currentIndex } = queueRef.current;
@@ -537,7 +587,7 @@ useEffect(() => {
           void playerApi.seek(0);
           return;
         }
-        loadAndBroadcast(items, currentIndex - 1);
+        loadAndBroadcast(items, currentIndex - 1, true);
       },
       togglePlay: () => {
         const next = !isPlaying;
@@ -631,7 +681,19 @@ useEffect(() => {
         }
         windowApi
           .openPlayerWindow()
-          .then(() => setIsDetached(true))
+          .then(() => {
+            setIsDetached(true);
+            // Le webview PiP est resté caché jusque-là : on lui renvoie
+            // explicitement la file et la position/durée courantes (mpv
+            // n'émet la durée qu'à son changement), sans quoi il peut
+            // s'ouvrir sur « Aucune lecture en cours ».
+            void emit("player-queue-changed", { ...queueRef.current, background: true });
+            void emit("player-state", {
+              ended: false,
+              position_seconds: positionRef.current,
+              duration_seconds: durationRef.current,
+            });
+          })
           .catch((err) => {
             console.error("[PiP] Échec de l'ouverture PiP.", err);
             setLastError("Impossible d'ouvrir le mode PiP.");
@@ -643,6 +705,7 @@ useEffect(() => {
         if (
           media &&
           media.id >= 0 &&
+          !isOnlineMedia(media) &&
           endedHandledRef.current !== media.id &&
           durationRef.current > 0 &&
           positionRef.current >= 30
@@ -675,6 +738,7 @@ useEffect(() => {
       position,
       duration,
       buffered,
+      isBuffering,
       volume,
       muted,
       rate,

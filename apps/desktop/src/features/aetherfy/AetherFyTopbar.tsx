@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Menu, Mic, Search, Bell, Plus } from "lucide-react";
+import { ArrowLeft, Mic, Search, Bell } from "lucide-react";
 import { AetherFyNotifications } from "./AetherFyNotifications";
 import { AetherFyAccountMenu, getAfyAccount } from "./AetherFyAccountMenu";
 
@@ -37,13 +37,9 @@ export function AetherFyTopbar({ showBack = false }: { showBack?: boolean }) {
 
   return (
     <header className="afy-topbar">
-      {showBack ? (
+      {showBack && (
         <button type="button" className="afy-topbar__back" onClick={() => navigate(-1)}>
           <ArrowLeft size={20} />
-        </button>
-      ) : (
-        <button type="button" className="afy-topbar__icon-btn" title="Menu">
-          <Menu size={18} />
         </button>
       )}
 
@@ -64,9 +60,6 @@ export function AetherFyTopbar({ showBack = false }: { showBack?: boolean }) {
       </form>
 
       <div className="afy-topbar__actions">
-        <button type="button" className="afy-topbar__icon-btn" title="Créer">
-          <Plus size={18} />
-        </button>
         <button
           type="button"
           className="afy-topbar__icon-btn"

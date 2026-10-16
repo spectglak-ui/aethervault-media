@@ -1,5 +1,6 @@
+import { useEffect } from "react";
 import { ChevronUp, Music, Pause, Play, SkipForward } from "lucide-react";
-import { usePlayer, FULLSCREEN_TARGET_ID } from "../player/PlayerContext";
+import { usePlayer, FULLSCREEN_TARGET_ID, isAetherFyInlineVideo } from "../player/PlayerContext";
 import { PlayerSurface } from "../player/PlayerSurface";
 import { PlayerControls } from "../player/PlayerControls";
 import { useControlsAutoHide } from "../player/useControlsAutoHide";
@@ -177,10 +178,27 @@ function AudioMiniBar() {
  */
 export function PlayerDock() {
   const location = useLocation();
-  const { currentMedia, isDetached, isPlaying, immersiveOpen } = usePlayer();
+  const { currentMedia, isDetached, isPlaying, immersiveOpen, stop } = usePlayer();
   const active = Boolean(currentMedia) && !isDetached;
   const { visible: controlsVisible, onActivity, controlsHoverHandlers } =
     useControlsAutoHide(active, isPlaying);
+
+  // Vidéo AetherFy dont plus rien n'affiche l'image : on a quitté la page de
+  // lecture (clic sur « Films » dans la barre latérale, etc.) sans passer par
+  // le PiP ni la vue classique. Comme pour la TV, quitter la page arrête la
+  // lecture ; sans cela le pane plein écran ci-dessous se rendait par-dessus la
+  // page demandée.
+  // `/aetherfy/watch/` AVEC la barre finale : `/aetherfy/watch-later` (« À
+  // regarder plus tard ») n'est PAS une page de lecture.
+  const onAfyWatchPage = location.pathname.startsWith("/aetherfy/watch/");
+  const orphanAfyVideo =
+    isAetherFyInlineVideo(currentMedia) &&
+    !isDetached &&
+    !immersiveOpen &&
+    !onAfyWatchPage;
+  useEffect(() => {
+    if (orphanAfyVideo) stop();
+  }, [orphanAfyVideo, stop]);
 
   if (!currentMedia || isDetached) return null;
 
@@ -189,7 +207,10 @@ export function PlayerDock() {
   }
 
   if (immersiveOpen) return null;
-  
+
+  // Jamais de lecteur plein écran du Dock pour une vidéo AetherFy (voir plus haut).
+  if (isAetherFyInlineVideo(currentMedia)) return null;
+
     // 0.7.10 — la page watch AetherFy héberge sa propre PlayerSurface
   // inline : le pane .avm-player du Dock monterait une DEUXIÈME surface
   // (canal de rendu unique → canvas inline affamé) et recouvrirait la
@@ -197,10 +218,7 @@ export function PlayerDock() {
   // (La mini-barre audio, elle, reste disponible partout.)
   // 0.9.1 : les pages watch INLINE (AetherFy ET TV) hébergent leur propre
   // PlayerSurface — le pane plein écran du Dock ne doit jamais s'y rendre.
-  if (
-    location.pathname.startsWith("/aetherfy/watch") ||
-    location.pathname.startsWith("/tv/watch")
-  ) {
+  if (onAfyWatchPage || location.pathname.startsWith("/tv/watch")) {
     return null;
   }
 

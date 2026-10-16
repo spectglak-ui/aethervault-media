@@ -4,8 +4,8 @@ import { playerApi } from "../features/player/api";
  * 0.5.6 — Qualité de rendu du lecteur local (rendu logiciel libmpv → canvas).
  * Deux modes proposés dans les Paramètres :
  * - "fluid"  : rendu interne ≈720p puis upscale GPU vers l'écran
- *              (fluidité garantie sur toutes les machines testées) ;
- * - "native" : rendu interne 1080p (qualité maximale, mode test ;
+ *              (charge processeur réduite) ;
+ * - "native" : rendu interne 1080p (qualité maximale, stable ;
  *              repli adaptatif automatique si la machine ne suit pas).
  * Le choix est persisté en localStorage et appliqué immédiatement
  * (commande `player_set_render_scale`) + diffusé aux lecteurs ouverts

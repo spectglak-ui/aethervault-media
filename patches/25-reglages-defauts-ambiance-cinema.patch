@@ -1,0 +1,987 @@
+diff --git a/apps/desktop/src-tauri/src/commands/playback.rs b/apps/desktop/src-tauri/src/commands/playback.rs
+index b6b7527..b900ae7 100644
+--- a/apps/desktop/src-tauri/src/commands/playback.rs
++++ b/apps/desktop/src-tauri/src/commands/playback.rs
+@@ -94,18 +94,23 @@ pub fn player_set_rate(state: tauri::State<AppState>, rate: f64) -> Result<(), S
+     state.playback_engine.handle()?.set_rate(rate)
+ }
+ 
+-/// Spatialisation audio — APERÇU : applique un niveau (`off` | `light` |
+-/// `medium` | `strong`) au moteur SANS le persister. Sert à la comparaison
+-/// A/B de Paramètres → Audio ; le réglage réel est enregistré par
+-/// `commands::settings::set_audio_spatialization_level`.
++/// Effets audio — APERÇU : applique une combinaison spatialisation + ambiance
++/// cinéma (niveaux `off` | `light` | `medium` | `strong`) au moteur SANS la
++/// persister. Sert à la comparaison A/B de Paramètres → Audio ; les réglages
++/// réels sont enregistrés par `commands::settings::set_audio_spatialization_level`
++/// et `set_audio_cinema_level`.
+ #[tauri::command]
+-pub fn player_preview_audio_spatialization(
++pub fn player_preview_audio_effects(
+     state: tauri::State<AppState>,
+-    level: String,
++    spatial: String,
++    cinema: String,
+ ) -> Result<(), String> {
+-    let level = crate::services::playback_engine::SpatialLevel::parse(&level)
+-        .ok_or_else(|| format!("Niveau de spatialisation inconnu : {level}"))?;
+-    state.playback_engine.handle()?.set_spatial_level(level)
++    use crate::services::playback_engine::{CinemaLevel, SpatialLevel};
++    let spatial = SpatialLevel::parse(&spatial)
++        .ok_or_else(|| format!("Niveau de spatialisation inconnu : {spatial}"))?;
++    let cinema = CinemaLevel::parse(&cinema)
++        .ok_or_else(|| format!("Niveau d'ambiance cinéma inconnu : {cinema}"))?;
++    state.playback_engine.handle()?.set_audio_effects(spatial, cinema)
+ }
+ 
+ /// Liste les pistes audio et sous-titres du fichier actuellement chargé
+diff --git a/apps/desktop/src-tauri/src/commands/settings.rs b/apps/desktop/src-tauri/src/commands/settings.rs
+index 5249aeb..f9339c9 100644
+--- a/apps/desktop/src-tauri/src/commands/settings.rs
++++ b/apps/desktop/src-tauri/src/commands/settings.rs
+@@ -1,7 +1,7 @@
+ //! Commandes des paramètres applicatifs (Étape 7) : wrapper autour de
+ //! `services::metadata::tmdb` pour la section « Métadonnées en ligne ».
+ use crate::services::metadata::tmdb::{self, MetadataSettings};
+-use crate::services::playback_engine::SpatialLevel;
++use crate::services::playback_engine::{CinemaLevel, SpatialLevel};
+ use crate::state::AppState;
+ 
+ #[tauri::command]
+@@ -83,6 +83,49 @@ pub fn set_audio_spatialization_level(
+     }
+ }
+ 
++// ---- Amélioration audio — ambiance cinéma (FONCTIONNALITÉ) ----------
++//
++// Même principe que la spatialisation : réglage global à quatre niveaux
++// (off, light, medium, strong), porté par le moteur (une seule chaîne `af`
++// combine spatialisation et cinéma) et poussé dans le moteur au démarrage.
++const AUDIO_CINEMA_LEVEL_KEY: &str = "audio_cinema_level";
++
++/// Niveau d'ambiance cinéma persisté (« off » par défaut).
++pub fn read_audio_cinema_level(conn: &rusqlite::Connection) -> CinemaLevel {
++    crate::db::repositories::settings_repository::get(conn, AUDIO_CINEMA_LEVEL_KEY)
++        .ok()
++        .flatten()
++        .as_deref()
++        .and_then(CinemaLevel::parse)
++        .unwrap_or(CinemaLevel::Off)
++}
++
++#[tauri::command]
++pub fn get_audio_cinema_level(state: tauri::State<AppState>) -> Result<String, String> {
++    let conn = state.get_conn()?;
++    Ok(read_audio_cinema_level(&conn).key().to_string())
++}
++
++#[tauri::command]
++pub fn set_audio_cinema_level(state: tauri::State<AppState>, level: String) -> Result<(), String> {
++    let parsed = CinemaLevel::parse(&level)
++        .ok_or_else(|| format!("Niveau d'ambiance cinéma inconnu : {level}"))?;
++    {
++        let conn = state.get_conn()?;
++        crate::db::repositories::settings_repository::set(
++            &conn,
++            AUDIO_CINEMA_LEVEL_KEY,
++            parsed.key(),
++        )
++        .map_err(|e| e.to_string())?;
++    }
++    // Moteur indisponible (libmpv absente) : le réglage reste enregistré.
++    match state.playback_engine.handle() {
++        Ok(engine) => engine.set_cinema_level(parsed),
++        Err(_) => Ok(()),
++    }
++}
++
+ // ---- Accès rapide (FONCTIONNALITÉ) --------------------------------
+ //
+ // Un profil protégé par mot de passe peut, si ce réglage est activé,
+@@ -311,6 +354,9 @@ pub fn clear_home_backdrop_video(
+ /// fond par défaut du logiciel tant qu'il est activé). Un futur réglage
+ /// pourra affiner, page par page, lequel des deux s'applique — pas
+ /// nécessaire pour cette première version.
++///
++/// ACTIVÉ PAR DÉFAUT : seul un « 0 » explicitement enregistré (case décochée
++/// par l'utilisateur) le désactive ; absence de valeur = activé.
+ #[tauri::command]
+ pub fn get_backdrop_video_enabled(state: tauri::State<AppState>) -> Result<bool, String> {
+     let conn = state.get_conn()?;
+@@ -318,7 +364,7 @@ pub fn get_backdrop_video_enabled(state: tauri::State<AppState>) -> Result<bool,
+         crate::db::repositories::settings_repository::get(&conn, "backdrop_video_enabled")
+             .map_err(|e| e.to_string())?
+             .as_deref()
+-            == Some("1"),
++            != Some("0"),
+     )
+ }
+ 
+diff --git a/apps/desktop/src-tauri/src/lib.rs b/apps/desktop/src-tauri/src/lib.rs
+index defd7d0..b738fe8 100644
+--- a/apps/desktop/src-tauri/src/lib.rs
++++ b/apps/desktop/src-tauri/src/lib.rs
+@@ -160,9 +160,10 @@ pub fn run() {
+             {
+                 let state = app.state::<AppState>();
+                 if let (Ok(engine), Ok(conn)) = (state.playback_engine.handle(), state.get_conn()) {
+-                    let level = commands::settings::read_audio_spatialization_level(&conn);
+-                    if let Err(err) = engine.set_spatial_level(level) {
+-                        log::warn!("Spatialisation audio : niveau initial non appliqué : {err}");
++                    let spatial = commands::settings::read_audio_spatialization_level(&conn);
++                    let cinema = commands::settings::read_audio_cinema_level(&conn);
++                    if let Err(err) = engine.set_audio_effects(spatial, cinema) {
++                        log::warn!("Effets audio : niveaux initiaux non appliqués : {err}");
+                     }
+                 }
+             }
+@@ -250,6 +251,8 @@ pub fn run() {
+             commands::settings::set_quick_access_enabled,
+             commands::settings::get_audio_spatialization_level,
+             commands::settings::set_audio_spatialization_level,
++            commands::settings::get_audio_cinema_level,
++            commands::settings::set_audio_cinema_level,
+             commands::security::get_vault_status,
+             commands::security::setup_vault,
+             commands::security::unlock_vault,
+@@ -357,7 +360,7 @@ pub fn run() {
+             commands::playback::player_set_volume,
+             commands::playback::player_set_muted,
+             commands::playback::player_set_rate,
+-            commands::playback::player_preview_audio_spatialization,
++            commands::playback::player_preview_audio_effects,
+             commands::playback::player_stop,
+             commands::playback::player_attach_surface,
+             commands::playback::player_resize_surface,
+diff --git a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+index 4307db6..dd838ce 100644
+--- a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
++++ b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+@@ -251,21 +251,113 @@ impl SpatialLevel {
+         }
+     }
+ 
+-    /// Valeur de la propriété mpv `af` (chaîne vide = aucun filtre).
+-    fn mpv_filter(self) -> &'static str {
++    /// Filtres libavfilter de ce niveau (liste séparée par des virgules, sans
++    /// enveloppe `lavfi=[…]` ni limiteur : voir `build_audio_filter`).
++    fn graph(self) -> &'static str {
+         match self {
+             SpatialLevel::Off => "",
+-            SpatialLevel::Light => "lavfi=[crossfeed=strength=0.20:range=0.50]",
+-            SpatialLevel::Medium => {
+-                "lavfi=[extrastereo=m=1.4,crossfeed=strength=0.30:range=0.60,alimiter=limit=0.97:level=disabled]"
++            SpatialLevel::Light => "crossfeed=strength=0.20:range=0.50",
++            SpatialLevel::Medium => "extrastereo=m=1.4,crossfeed=strength=0.30:range=0.60",
++            SpatialLevel::Strong => "extrastereo=m=2.0,crossfeed=strength=0.40:range=0.70",
++        }
++    }
++}
++
++/// Ambiance cinéma — réglage global, indépendant de la spatialisation et
++/// combinable avec elle. Chaque niveau ajoute : des graves plus profonds
++/// (étagère à 100 Hz), un léger gain de présence (3 kHz) et une réverbération
++/// de salle simulée par des réflexions précoces (`aecho`, 24 à 111 ms). Un
++/// `volume` négatif compense l'essentiel du gain ajouté, pour que la
++/// comparaison A/B ne soit pas faussée par « plus fort = meilleur ».
++///
++/// Mesures (bruit rose, mpv 0.37) — graves 40–120 Hz : +0,8 / +2,6 / +4,0 dB ;
++/// médiums à ±0,8 dB ; réflexions au-delà de 20 ms à −16,8 / −11,7 / −8,3 dB
++/// sous le son direct. Ce sont des mesures objectives : le rendu « salle de
++/// cinéma » se juge à l'oreille, d'où la comparaison A/B des Paramètres.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum CinemaLevel {
++    Off,
++    Light,
++    Medium,
++    Strong,
++}
++
++impl CinemaLevel {
++    pub fn key(self) -> &'static str {
++        match self {
++            CinemaLevel::Off => "off",
++            CinemaLevel::Light => "light",
++            CinemaLevel::Medium => "medium",
++            CinemaLevel::Strong => "strong",
++        }
++    }
++
++    pub fn parse(key: &str) -> Option<Self> {
++        match key.trim() {
++            "off" => Some(CinemaLevel::Off),
++            "light" => Some(CinemaLevel::Light),
++            "medium" => Some(CinemaLevel::Medium),
++            "strong" => Some(CinemaLevel::Strong),
++            _ => None,
++        }
++    }
++
++    fn as_u8(self) -> u8 {
++        self as u8
++    }
++
++    fn from_u8(v: u8) -> Self {
++        match v {
++            1 => CinemaLevel::Light,
++            2 => CinemaLevel::Medium,
++            3 => CinemaLevel::Strong,
++            _ => CinemaLevel::Off,
++        }
++    }
++
++    fn graph(self) -> &'static str {
++        match self {
++            CinemaLevel::Off => "",
++            CinemaLevel::Light => {
++                "bass=g=2:f=100:w=0.7,equalizer=f=3000:t=q:w=0.8:g=1,\
++                 aecho=in_gain=1:out_gain=0.92:delays=32|58:decays=0.12|0.08,volume=-1.0dB"
+             }
+-            SpatialLevel::Strong => {
+-                "lavfi=[extrastereo=m=2.0,crossfeed=strength=0.40:range=0.70,alimiter=limit=0.97:level=disabled]"
++            CinemaLevel::Medium => {
++                "bass=g=3.5:f=100:w=0.7,equalizer=f=3000:t=q:w=0.8:g=1.5,\
++                 aecho=in_gain=1:out_gain=0.9:delays=28|47|71:decays=0.2|0.14|0.09,volume=-2.0dB"
++            }
++            CinemaLevel::Strong => {
++                "bass=g=5:f=100:w=0.7,equalizer=f=3000:t=q:w=0.8:g=2,\
++                 aecho=in_gain=1:out_gain=0.86:delays=24|41|63|97:decays=0.28|0.2|0.14|0.1,volume=-3.0dB"
+             }
+         }
+     }
+ }
+ 
++/// Valeur de la propriété mpv `af` pour une combinaison spatialisation +
++/// cinéma (chaîne vide = aucun filtre). Ordre : spatialisation, puis
++/// couleur/salle du cinéma, puis un limiteur de crêtes SANS normalisation de
++/// volume (`level=disabled`) dès que la chaîne peut dépasser 0 dBFS
++/// (élargissement moyen/fort, ou n'importe quel niveau de cinéma).
++fn build_audio_filter(spatial: SpatialLevel, cinema: CinemaLevel) -> String {
++    let mut parts: Vec<&str> = Vec::new();
++    if spatial != SpatialLevel::Off {
++        parts.push(spatial.graph());
++    }
++    if cinema != CinemaLevel::Off {
++        parts.push(cinema.graph());
++    }
++    if parts.is_empty() {
++        return String::new();
++    }
++    let needs_limiter = matches!(spatial, SpatialLevel::Medium | SpatialLevel::Strong)
++        || cinema != CinemaLevel::Off;
++    if needs_limiter {
++        parts.push("alimiter=limit=0.97:level=disabled");
++    }
++    format!("lavfi=[{}]", parts.join(","))
++}
++
+ pub struct PlaybackEngineHandle {
+     functions: Arc<MpvFunctions>,
+     mpv: MpvHandlePtr,
+@@ -295,9 +387,13 @@ pub struct PlaybackEngineHandle {
+     /// vérité côté moteur : appliqué avant CHAQUE `loadfile`, quel que soit
+     /// le chemin de chargement (fichier, AetherFy, TV, changement de qualité).
+     spatial_level: AtomicU8,
+-    /// Niveau réellement présent dans la chaîne mpv (`SPATIAL_UNKNOWN` si
+-    /// inconnu) : évite de reconstruire la chaîne audio à chaque morceau.
+-    spatial_applied: AtomicU8,
++    /// Niveau d'ambiance cinéma VOULU (`CinemaLevel as u8`), appliqué avec la
++    /// spatialisation dans une seule chaîne `af`.
++    cinema_level: AtomicU8,
++    /// Combinaison (spatialisation × 4 + cinéma) réellement présente dans la
++    /// chaîne mpv (`SPATIAL_UNKNOWN` si inconnue) : évite de reconstruire la
++    /// chaîne audio à chaque morceau.
++    audio_applied: AtomicU8,
+ }
+ 
+ pub enum PlaybackEngineState {
+@@ -466,7 +562,8 @@ impl PlaybackEngineHandle {
+             gate: gate.clone(),
+             stop_epoch: Arc::new(AtomicU64::new(0)),
+             spatial_level: AtomicU8::new(SpatialLevel::Off.as_u8()),
+-            spatial_applied: AtomicU8::new(SPATIAL_UNKNOWN),
++            cinema_level: AtomicU8::new(CinemaLevel::Off.as_u8()),
++            audio_applied: AtomicU8::new(SPATIAL_UNKNOWN),
+         });
+         std::thread::spawn(move || run_event_thread(functions, mpv, app_handle, gate));
+         spawn_pot_prewarm(handle.clone());
+@@ -510,7 +607,7 @@ impl PlaybackEngineHandle {
+ 
+     fn load_direct(&self, path: &str) -> Result<(), String> {
+         // Spatialisation : chaîne audio dans l'état voulu AVANT le loadfile.
+-        self.apply_spatial_filter();
++        self.apply_audio_filter();
+         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
+             Some((path.to_string(), None));
+         // 0.6.0 (visualiseur) : pour un fichier local, l'origine = le chemin lui-même.
+@@ -686,7 +783,7 @@ impl PlaybackEngineHandle {
+     fn load_split(&self, video: &str, audio: Option<&str>) -> Result<(), String> {
+         // Spatialisation : chaîne audio dans l'état voulu AVANT le loadfile
+         // (couvre AetherFy, TV/HLS, changement de qualité…).
+-        self.apply_spatial_filter();
++        self.apply_audio_filter();
+         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
+             Some((video.to_string(), audio.map(|s| s.to_string())));
+         // 0.6.0 (visualiseur) : on NE touche PLUS à `audio_origin` ici.
+@@ -758,7 +855,7 @@ impl PlaybackEngineHandle {
+             Some(url.to_string());
+         // Flux audio = petit débit → démarrage immédiat, pas de gate.
+         self.gate.disarm();
+-        self.apply_spatial_filter();
++        self.apply_audio_filter();
+         self.command(&["loadfile", &audio_url, "replace"])?;
+         self.set_paused(false)
+     }
+@@ -1057,28 +1154,48 @@ impl PlaybackEngineHandle {
+ 
+     /// Spatialisation audio : fixe le niveau voulu et l'applique tout de suite
+     /// au média en cours. Le niveau reste mémorisé dans le moteur et est
+-    /// ré-appliqué avant chaque chargement (`apply_spatial_filter`).
++    /// ré-appliqué avant chaque chargement (`apply_audio_filter`).
+     pub fn set_spatial_level(&self, level: SpatialLevel) -> Result<(), String> {
+         self.spatial_level.store(level.as_u8(), Ordering::Relaxed);
+-        self.try_apply_spatial_filter()
++        self.try_apply_audio_filter()
++    }
++
++    /// Ambiance cinéma : même principe que `set_spatial_level`.
++    pub fn set_cinema_level(&self, level: CinemaLevel) -> Result<(), String> {
++        self.cinema_level.store(level.as_u8(), Ordering::Relaxed);
++        self.try_apply_audio_filter()
++    }
++
++    /// Applique les DEUX niveaux d'un coup (aperçu A/B des Paramètres : un seul
++    /// changement de chaîne audio au lieu de deux).
++    pub fn set_audio_effects(
++        &self,
++        spatial: SpatialLevel,
++        cinema: CinemaLevel,
++    ) -> Result<(), String> {
++        self.spatial_level.store(spatial.as_u8(), Ordering::Relaxed);
++        self.cinema_level.store(cinema.as_u8(), Ordering::Relaxed);
++        self.try_apply_audio_filter()
+     }
+ 
+     /// Place la chaîne `af` de mpv dans l'état voulu si elle ne l'y est pas déjà.
+-    fn try_apply_spatial_filter(&self) -> Result<(), String> {
+-        let wanted = self.spatial_level.load(Ordering::Relaxed);
+-        if self.spatial_applied.load(Ordering::Relaxed) == wanted {
++    fn try_apply_audio_filter(&self) -> Result<(), String> {
++        let spatial = self.spatial_level.load(Ordering::Relaxed);
++        let cinema = self.cinema_level.load(Ordering::Relaxed);
++        let wanted = spatial * 4 + cinema;
++        if self.audio_applied.load(Ordering::Relaxed) == wanted {
+             return Ok(());
+         }
+-        let level = SpatialLevel::from_u8(wanted);
+-        self.command(&["set", "af", level.mpv_filter()])?;
+-        self.spatial_applied.store(wanted, Ordering::Relaxed);
++        let filter = build_audio_filter(SpatialLevel::from_u8(spatial), CinemaLevel::from_u8(cinema));
++        self.command(&["set", "af", &filter])?;
++        self.audio_applied.store(wanted, Ordering::Relaxed);
+         Ok(())
+     }
+ 
+     /// Variante « au chargement » : ne doit JAMAIS empêcher la lecture.
+-    fn apply_spatial_filter(&self) {
+-        if let Err(err) = self.try_apply_spatial_filter() {
+-            log::warn!("[playback] spatialisation audio non appliquée : {err}");
++    fn apply_audio_filter(&self) {
++        if let Err(err) = self.try_apply_audio_filter() {
++            log::warn!("[playback] effets audio non appliqués : {err}");
+         }
+     }
+ 
+@@ -2127,7 +2244,7 @@ pub fn player_load_url_quality(
+ 
+ #[cfg(test)]
+ mod tests {
+-    use super::SpatialLevel;
++    use super::{build_audio_filter, CinemaLevel, SpatialLevel};
+ 
+     const ALL: [SpatialLevel; 4] = [
+         SpatialLevel::Off,
+@@ -2149,17 +2266,43 @@ mod tests {
+ 
+     #[test]
+     fn spatial_filters_are_well_formed() {
+-        // « off » = chaîne `af` vide ; les autres = un graphe lavfi entre crochets.
+-        assert_eq!(SpatialLevel::Off.mpv_filter(), "");
++        // « off » partout = chaîne `af` vide ; sinon un graphe lavfi entre crochets.
++        assert_eq!(build_audio_filter(SpatialLevel::Off, CinemaLevel::Off), "");
+         for level in [SpatialLevel::Light, SpatialLevel::Medium, SpatialLevel::Strong] {
+-            let f = level.mpv_filter();
++            let f = build_audio_filter(level, CinemaLevel::Off);
+             assert!(f.starts_with("lavfi=[") && f.ends_with(']'), "{f}");
+             assert!(f.contains("crossfeed="), "{f}");
+         }
+         // Les niveaux qui élargissent la scène doivent être protégés par un
+         // limiteur de crêtes SANS normalisation de volume (`level=disabled`).
+         for level in [SpatialLevel::Medium, SpatialLevel::Strong] {
+-            assert!(level.mpv_filter().contains("alimiter=limit=0.97:level=disabled"));
++            assert!(build_audio_filter(level, CinemaLevel::Off)
++                .contains("alimiter=limit=0.97:level=disabled"));
++        }
++        // Le niveau « léger » seul ne dépasse pas : pas de limiteur ajouté.
++        assert!(!build_audio_filter(SpatialLevel::Light, CinemaLevel::Off).contains("alimiter"));
++    }
++
++    #[test]
++    fn cinema_levels_round_trip_and_combine() {
++        for level in [CinemaLevel::Off, CinemaLevel::Light, CinemaLevel::Medium, CinemaLevel::Strong] {
++            assert_eq!(CinemaLevel::parse(level.key()), Some(level));
++            assert_eq!(CinemaLevel::from_u8(level.as_u8()), level);
+         }
++        assert_eq!(CinemaLevel::parse("imax"), None);
++        // Cinéma seul : graves + réflexions + limiteur.
++        let f = build_audio_filter(SpatialLevel::Off, CinemaLevel::Medium);
++        assert!(f.contains("bass=") && f.contains("aecho=") && f.contains("alimiter="), "{f}");
++        // Combinaison : la spatialisation passe AVANT le cinéma, le limiteur est en dernier.
++        let both = build_audio_filter(SpatialLevel::Strong, CinemaLevel::Light);
++        let (i_cross, i_bass, i_lim) = (
++            both.find("crossfeed=").unwrap(),
++            both.find("bass=").unwrap(),
++            both.find("alimiter=").unwrap(),
++        );
++        assert!(i_cross < i_bass && i_bass < i_lim, "{both}");
++        // Un seul limiteur, une seule enveloppe lavfi.
++        assert_eq!(both.matches("alimiter=").count(), 1);
++        assert_eq!(both.matches("lavfi=[").count(), 1);
+     }
+ }
+diff --git a/apps/desktop/src/components/AppBackdrop.tsx b/apps/desktop/src/components/AppBackdrop.tsx
+index 30290dc..b0bf6c1 100644
+--- a/apps/desktop/src/components/AppBackdrop.tsx
++++ b/apps/desktop/src/components/AppBackdrop.tsx
+@@ -25,7 +25,8 @@ import { getBuiltinImage, getBuiltinVideo } from "../lib/builtinBackdrops";
+ export function AppBackdrop() {
+   const [backdrop, setBackdrop] = useState<string | null>(null);
+   const [videoBackdrop, setVideoBackdrop] = useState<string | null>(null);
+-  const [videoEnabled, setVideoEnabled] = useState(false);
++  // Activé par défaut (même défaut que le backend) : évite un flash du fond image au démarrage.
++  const [videoEnabled, setVideoEnabled] = useState(true);
+   // Fonds intégrés (Paramètres) : utilisés seulement en l'absence de fond personnel.
+   const [builtinImage, setBuiltinImageState] = useState(getBuiltinImage);
+   const [builtinVideo, setBuiltinVideoState] = useState(getBuiltinVideo);
+diff --git a/apps/desktop/src/features/player/api.ts b/apps/desktop/src/features/player/api.ts
+index 4500231..cc312f2 100644
+--- a/apps/desktop/src/features/player/api.ts
++++ b/apps/desktop/src/features/player/api.ts
+@@ -4,6 +4,8 @@ import type { PlayerTrack } from "@aethervault/shared-types";
+ 
+ /** Niveaux de spatialisation audio (miroir de `SpatialLevel::key()` côté Rust). */
+ export type SpatialLevel = "off" | "light" | "medium" | "strong";
++/** Niveaux d'ambiance cinéma (mêmes clés que `CinemaLevel::key()` côté Rust). */
++export type CinemaLevel = SpatialLevel;
+ 
+ export interface ExtractedMedia {
+   kind: "merged" | "split";
+@@ -53,9 +55,10 @@ export const playerApi = {
+   getPostShader: () => invoke<string>("get_post_shader"),
+     setPostShader: (preset: string) => invoke<void>("set_post_shader", { preset }),
+ 	setRenderScale: (percent: number) => invoke<void>("player_set_render_scale", { percent }),
+-  // Spatialisation audio — APERÇU (comparaison A/B de Paramètres → Audio) :
+-  // applique un niveau au moteur SANS l'enregistrer. Le réglage réel passe
+-  // par `set_audio_spatialization_level` (commands::settings).
+-  previewAudioSpatialization: (level: SpatialLevel) =>
+-    invoke<void>("player_preview_audio_spatialization", { level }),
++  // Effets audio — APERÇU (comparaison A/B de Paramètres → Audio) : applique
++  // une combinaison spatialisation + ambiance cinéma au moteur SANS l'enregistrer.
++  // Les réglages réels passent par `set_audio_spatialization_level` et
++  // `set_audio_cinema_level` (commands::settings).
++  previewAudioEffects: (spatial: SpatialLevel, cinema: CinemaLevel) =>
++    invoke<void>("player_preview_audio_effects", { spatial, cinema }),
+ };
+\ No newline at end of file
+diff --git a/apps/desktop/src/lib/builtinBackdrops.ts b/apps/desktop/src/lib/builtinBackdrops.ts
+index cf8f6a0..936fc83 100644
+--- a/apps/desktop/src/lib/builtinBackdrops.ts
++++ b/apps/desktop/src/lib/builtinBackdrops.ts
+@@ -27,29 +27,42 @@ export const BUILTIN_VIDEOS: readonly BuiltinBackdrop[] = [
+ const IMAGE_KEY = "avm-builtin-backdrop-image";
+ const VIDEO_KEY = "avm-builtin-backdrop-video";
+ 
++/** Valeur stockée quand l'utilisateur RETIRE explicitement le fond intégré :
++ *  la distingue de « jamais choisi » (clé absente → fond par défaut). */
++const NONE = "none";
++/** Fond animé intégré sélectionné tant que l'utilisateur n'a rien choisi. */
++const DEFAULT_VIDEO_ID = "ciel-carres";
++
+ /** Même événement que celui déjà émis par les sections de Paramètres. */
+ export const BACKDROP_CHANGED_EVENT = "avm-home-backdrop-changed";
+ 
+-function read(key: string, list: readonly BuiltinBackdrop[]): BuiltinBackdrop | null {
++function read(
++  key: string,
++  list: readonly BuiltinBackdrop[],
++  defaultId: string | null
++): BuiltinBackdrop | null {
++  let id: string | null = null;
+   try {
+-    const id = localStorage.getItem(key);
+-    return list.find((b) => b.id === id) ?? null;
++    id = localStorage.getItem(key);
+   } catch {
+-    return null;
++    /* stockage indisponible : on retombe sur le défaut */
+   }
++  if (id === null) return list.find((b) => b.id === defaultId) ?? null;
++  return list.find((b) => b.id === id) ?? null;
+ }
+ 
+ function write(key: string, id: string | null): void {
+   try {
+-    if (id === null) localStorage.removeItem(key);
+-    else localStorage.setItem(key, id);
++    localStorage.setItem(key, id ?? NONE);
+   } catch {
+     /* stockage indisponible : le choix n'est simplement pas mémorisé */
+   }
+   window.dispatchEvent(new Event(BACKDROP_CHANGED_EVENT));
+ }
+ 
+-export const getBuiltinImage = (): BuiltinBackdrop | null => read(IMAGE_KEY, BUILTIN_IMAGES);
++export const getBuiltinImage = (): BuiltinBackdrop | null =>
++  read(IMAGE_KEY, BUILTIN_IMAGES, null);
+ export const setBuiltinImage = (id: string | null): void => write(IMAGE_KEY, id);
+-export const getBuiltinVideo = (): BuiltinBackdrop | null => read(VIDEO_KEY, BUILTIN_VIDEOS);
++export const getBuiltinVideo = (): BuiltinBackdrop | null =>
++  read(VIDEO_KEY, BUILTIN_VIDEOS, DEFAULT_VIDEO_ID);
+ export const setBuiltinVideo = (id: string | null): void => write(VIDEO_KEY, id);
+diff --git a/apps/desktop/src/pages/RenderQualitySection.tsx b/apps/desktop/src/pages/RenderQualitySection.tsx
+index 1543071..ebfc99b 100644
+--- a/apps/desktop/src/pages/RenderQualitySection.tsx
++++ b/apps/desktop/src/pages/RenderQualitySection.tsx
+@@ -2,8 +2,8 @@ import { useState } from "react";
+ import { getRenderQuality, setRenderQuality, type RenderQuality } from "../player/renderQuality";
+ 
+ /**
+- * 0.5.6 — Paramètres → Qualité de rendu : propose les deux méthodes de
+- * lecture (720p upscalé = fluidité garantie / 1080p natif = mode test).
++ * Paramètres → Qualité de rendu : propose les deux méthodes de lecture
++ * (1080p natif = qualité maximale, stable / 720p upscalé = plus léger).
+  */
+ export function RenderQualitySection() {
+   const [quality, setQuality] = useState<RenderQuality>(() => getRenderQuality());
+@@ -27,11 +27,11 @@ export function RenderQualitySection() {
+             onChange={() => choose("fluid")}
+           />
+           <span>
+-            <strong>720p upscalé — fluidité garantie (recommandé)</strong>
++            <strong>720p upscalé — économe</strong>
+             <br />
+             <span className="avm-settings-muted">
+-              Rendu interne ≈720p puis upscale GPU vers l'écran : aucune saccade
+-              sur toutes les machines testées.
++              Rendu interne ≈720p puis upscale GPU vers l'écran : charge processeur
++              réduite, utile sur une machine modeste ou pour de la 4K.
+             </span>
+           </span>
+         </label>
+@@ -43,11 +43,11 @@ export function RenderQualitySection() {
+             onChange={() => choose("native")}
+           />
+           <span>
+-            <strong>1080p natif — mode test</strong>
++            <strong>1080p natif — qualité maximale</strong>
+             <br />
+             <span className="avm-settings-muted">
+-              Rendu interne 1080p (qualité maximale) ; peut présenter des
+-              micro-saccades selon la machine (repli automatique si trop lent).
++              Rendu interne 1080p : image la plus nette, lecture stable. Si la machine
++              ne suit pas, l'application baisse automatiquement la résolution de rendu.
+             </span>
+           </span>
+         </label>
+diff --git a/apps/desktop/src/pages/SettingsPage.tsx b/apps/desktop/src/pages/SettingsPage.tsx
+index a2c13af..6d9aadd 100644
+--- a/apps/desktop/src/pages/SettingsPage.tsx
++++ b/apps/desktop/src/pages/SettingsPage.tsx
+@@ -20,9 +20,13 @@ import { useActiveProfile } from "../profile/ActiveProfileContext";
+ import { privacyApi } from "../features/privacy/api";
+ import "./pages.css";
+ import { metadataApi } from "../features/settings/api";
+-import { playerApi, type SpatialLevel } from "../features/player/api";
++import { playerApi, type CinemaLevel, type SpatialLevel } from "../features/player/api";
+ import { usePlayer } from "../player/PlayerContext";
+-import { readPersistedTheme, writePersistedTheme } from "../theme/persistedCustomTheme";
++import {
++  readPersistedTheme,
++  writePersistedTheme,
++  TRANSPARENT_THEME_VARS,
++} from "../theme/persistedCustomTheme";
+ import { RenderQualitySection } from "./RenderQualitySection";
+ import { readCategoryBackdropHidden, CATEGORY_BACKDROP_EVENT } from "../hooks/useCategoryBackdropHidden";
+ 
+@@ -77,25 +81,7 @@ const THEME_PRESETS: Record<string, Record<string, string>> = {
+     "--radius-md": "10px",
+     "--radius-lg": "16px",
+   },
+-  transparent: {
+-    "--color-bg": "rgba(20, 22, 26, 0.75)",
+-    "--color-surface": "rgba(29, 32, 38, 0.65)",
+-    "--color-surface-hover": "rgba(36, 40, 48, 0.75)",
+-    "--color-border": "rgba(42, 46, 55, 0.5)",
+-    "--color-accent": "#7c5cff",
+-    "--color-accent-hover": "#6a4de0",
+-    "--color-text": "#eef0f3",
+-    "--color-text-muted": "#9aa0ab",
+-    "--color-sidebar": "rgba(16, 18, 22, 0.60)",
+-    "--color-card": "rgba(29, 32, 38, 0.55)",
+-    "--color-danger": "#f28b82",
+-    "--color-success": "#6ee7a8",
+-    "--color-warning": "#f5c04e",
+-    "--sidebar-width": "260px",
+-    "--radius-sm": "6px",
+-    "--radius-md": "10px",
+-    "--radius-lg": "16px",
+-  },
++  transparent: TRANSPARENT_THEME_VARS,
+   ocean: {
+     "--color-bg": "#0a1628",
+     "--color-surface": "#0f2035",
+@@ -842,7 +828,13 @@ function SystemInfoSection() {
+   );
+ }
+ 
+-const SPATIAL_LEVELS: { key: SpatialLevel; label: string; hint: string }[] = [
++interface LevelOption {
++  key: SpatialLevel;
++  label: string;
++  hint: string;
++}
++
++const SPATIAL_LEVELS: LevelOption[] = [
+   { key: "off", label: "Désactivée", hint: "Stéréo d'origine." },
+   {
+     key: "light",
+@@ -861,54 +853,86 @@ const SPATIAL_LEVELS: { key: SpatialLevel; label: string; hint: string }[] = [
+   },
+ ];
+ 
++const CINEMA_LEVELS: LevelOption[] = [
++  { key: "off", label: "Désactivée", hint: "Son d'origine." },
++  {
++    key: "light",
++    label: "Légère",
++    hint: "Graves un peu plus profonds et discrète réverbération de salle.",
++  },
++  {
++    key: "medium",
++    label: "Moyenne",
++    hint: "Graves marqués, clarté des voix et réverbération de salle perceptible.",
++  },
++  {
++    key: "strong",
++    label: "Forte",
++    hint: "Grande salle : graves puissants et réverbération prononcée.",
++  },
++];
++
++function isLevel(value: string): value is SpatialLevel {
++  return value === "off" || value === "light" || value === "medium" || value === "strong";
++}
++
+ /** Durée de chaque phase (A puis B) de la comparaison. */
+ const AB_PHASE_MS = 3000;
+ 
+ /**
+- * Spatialisation audio (virtualisation casque) — quatre niveaux, réglage
+- * global. Le moteur (Rust) applique le niveau avant CHAQUE chargement, quel
+- * que soit le chemin de lecture (fichier, AetherFy, TV) et dès le démarrage
+- * de l'application ; ici on ne fait que l'enregistrer et proposer une
+- * comparaison A/B (sans effet ↔ niveau choisi) sur le média en cours.
++ * Effets audio : spatialisation (virtualisation casque) et ambiance cinéma —
++ * deux réglages globaux à quatre niveaux, combinables. Le moteur (Rust)
++ * applique la combinaison avant CHAQUE chargement, quel que soit le chemin de
++ * lecture (fichier, AetherFy, TV) et dès le démarrage ; ici on enregistre les
++ * choix et on propose une comparaison A/B (sans effet ↔ réglages actuels) sur
++ * le média en cours.
+  */
+ function AudioSection() {
+   const { isPlaying } = usePlayer();
+-  const [level, setLevel] = useState<SpatialLevel>("off");
++  const [spatial, setSpatial] = useState<SpatialLevel>("off");
++  const [cinema, setCinema] = useState<CinemaLevel>("off");
+   const [loaded, setLoaded] = useState(false);
+   const [busy, setBusy] = useState(false);
+   const [error, setError] = useState<string | null>(null);
+   const [abPhase, setAbPhase] = useState<"A" | "B" | null>(null);
+-  // Niveau ENREGISTRÉ (identique à `level` : on l'enregistre à chaque choix).
+-  const levelRef = useRef<SpatialLevel>("off");
+-  levelRef.current = level;
++  // Niveaux ENREGISTRÉS (identiques à l'état : on enregistre à chaque choix).
++  const spatialRef = useRef<SpatialLevel>("off");
++  const cinemaRef = useRef<CinemaLevel>("off");
++  spatialRef.current = spatial;
++  cinemaRef.current = cinema;
+   // `true` tant qu'un aperçu A/B a pu modifier le moteur sans être enregistré :
+-  // on ne restaure le niveau enregistré QUE dans ce cas (jamais à un simple
+-  // montage/démontage — notamment avant que le réglage ait été chargé).
++  // on ne restaure les niveaux enregistrés QUE dans ce cas (jamais à un simple
++  // montage/démontage — notamment avant que les réglages aient été chargés).
+   const previewDirtyRef = useRef(false);
+ 
+   useEffect(() => {
+-    invoke<string>("get_audio_spatialization_level")
+-      .then((value) => {
+-        if (value === "off" || value === "light" || value === "medium" || value === "strong") {
+-          setLevel(value);
+-        }
++    Promise.all([
++      invoke<string>("get_audio_spatialization_level"),
++      invoke<string>("get_audio_cinema_level"),
++    ])
++      .then(([sp, ci]) => {
++        if (isLevel(sp)) setSpatial(sp);
++        if (isLevel(ci)) setCinema(ci);
+         setLoaded(true);
+       })
+       .catch(() => setLoaded(true));
+   }, []);
+ 
+-  const restoreSavedLevel = () => {
++  const restoreSaved = () => {
+     if (!previewDirtyRef.current) return;
+     previewDirtyRef.current = false;
+-    void playerApi.previewAudioSpatialization(levelRef.current).catch(() => {});
++    void playerApi.previewAudioEffects(spatialRef.current, cinemaRef.current).catch(() => {});
+   };
+ 
+-  // Comparaison A/B : alterne « sans effet » (A) et niveau choisi (B).
++  // Comparaison A/B : alterne « sans effet » (A) et réglages actuels (B).
+   useEffect(() => {
+     if (abPhase === null) return;
+     previewDirtyRef.current = true;
+     void playerApi
+-      .previewAudioSpatialization(abPhase === "A" ? "off" : levelRef.current)
++      .previewAudioEffects(
++        abPhase === "A" ? "off" : spatialRef.current,
++        abPhase === "A" ? "off" : cinemaRef.current
++      )
+       .catch(() => {});
+     const timer = window.setTimeout(
+       () => setAbPhase((p) => (p === "A" ? "B" : "A")),
+@@ -918,30 +942,36 @@ function AudioSection() {
+   }, [abPhase]);
+ 
+   // Plus de lecture → on arrête la comparaison ; en quittant la page, on
+-  // restaure toujours le réglage enregistré.
++  // restaure toujours les réglages enregistrés.
+   useEffect(() => {
+     if (!isPlaying && abPhase !== null) {
+       setAbPhase(null);
+-      restoreSavedLevel();
++      restoreSaved();
+     }
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [isPlaying]);
+-  useEffect(() => restoreSavedLevel, []);
++  useEffect(() => restoreSaved, []);
+ 
+   const stopAb = () => {
+     setAbPhase(null);
+-    restoreSavedLevel();
++    restoreSaved();
+   };
+ 
+-  const choose = async (next: SpatialLevel) => {
++  const choose = async (kind: "spatial" | "cinema", next: SpatialLevel) => {
+     if (abPhase !== null) stopAb();
+     setBusy(true);
+     setError(null);
+     try {
+       // Enregistre ET applique immédiatement au média en cours (côté Rust).
+-      await invoke("set_audio_spatialization_level", { level: next });
+-      setLevel(next);
+-      levelRef.current = next;
++      if (kind === "spatial") {
++        await invoke("set_audio_spatialization_level", { level: next });
++        setSpatial(next);
++        spatialRef.current = next;
++      } else {
++        await invoke("set_audio_cinema_level", { level: next });
++        setCinema(next);
++        cinemaRef.current = next;
++      }
+     } catch (err) {
+       setError(
+         typeof err === "string"
+@@ -955,37 +985,55 @@ function AudioSection() {
+     }
+   };
+ 
+-  const levelLabel = SPATIAL_LEVELS.find((l) => l.key === level)?.label ?? "";
+-  const canCompare = loaded && !busy && level !== "off" && isPlaying;
++  const describeCurrent = [
++    spatial !== "off" &&
++      `spatialisation ${SPATIAL_LEVELS.find((l) => l.key === spatial)?.label.toLowerCase()}`,
++    cinema !== "off" &&
++      `ambiance cinéma ${CINEMA_LEVELS.find((l) => l.key === cinema)?.label.toLowerCase()}`,
++  ]
++    .filter(Boolean)
++    .join(" + ");
++  const anyEffect = spatial !== "off" || cinema !== "off";
++  const canCompare = loaded && !busy && anyEffect && isPlaying;
++
++  const renderGroup = (
++    kind: "spatial" | "cinema",
++    legend: string,
++    options: LevelOption[],
++    value: SpatialLevel
++  ) => (
++    <fieldset
++      style={{ border: "none", padding: 0, margin: "0 0 12px 0" }}
++      disabled={!loaded || busy}
++    >
++      <legend>{legend}</legend>
++      {options.map((l) => (
++        <label
++          key={l.key}
++          style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "4px 0" }}
++        >
++          <input
++            type="radio"
++            name={`avm-audio-${kind}`}
++            checked={value === l.key}
++            onChange={() => void choose(kind, l.key)}
++          />
++          <span>
++            {l.label}
++            <span className="avm-settings-muted" style={{ display: "block" }}>
++              {l.hint}
++            </span>
++          </span>
++        </label>
++      ))}
++    </fieldset>
++  );
+ 
+   return (
+     <section className="avm-settings-section">
+       <h2>Audio</h2>
+-      <fieldset
+-        style={{ border: "none", padding: 0, margin: 0 }}
+-        disabled={!loaded || busy}
+-      >
+-        <legend>Spatialisation audio (virtualisation casque)</legend>
+-        {SPATIAL_LEVELS.map((l) => (
+-          <label
+-            key={l.key}
+-            style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "4px 0" }}
+-          >
+-            <input
+-              type="radio"
+-              name="avm-spatialization"
+-              checked={level === l.key}
+-              onChange={() => void choose(l.key)}
+-            />
+-            <span>
+-              {l.label}
+-              <span className="avm-settings-muted" style={{ display: "block" }}>
+-                {l.hint}
+-              </span>
+-            </span>
+-          </label>
+-        ))}
+-      </fieldset>
++      {renderGroup("spatial", "Spatialisation audio (virtualisation casque)", SPATIAL_LEVELS, spatial)}
++      {renderGroup("cinema", "Ambiance cinéma (son de salle)", CINEMA_LEVELS, cinema)}
+       <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 8 }}>
+         {abPhase === null ? (
+           <Button variant="secondary" disabled={!canCompare} onClick={() => setAbPhase("A")}>
+@@ -998,17 +1046,16 @@ function AudioSection() {
+         )}
+         <span role="status" aria-live="polite" className="avm-settings-muted">
+           {abPhase === "A" && "A — sans effet"}
+-          {abPhase === "B" && `B — ${levelLabel}`}
+-          {abPhase === null &&
+-            !canCompare &&
+-            level !== "off" &&
+-            "Lancez une lecture pour comparer."}
++          {abPhase === "B" && `B — ${describeCurrent}`}
++          {abPhase === null && !canCompare && anyEffect && "Lancez une lecture pour comparer."}
+         </span>
+       </div>
+       <p className="avm-settings-muted">
+         S'applique à toute lecture (fichiers, AetherFy, TV) ; effet immédiat sur le média en
+         cours. La comparaison alterne toutes les {AB_PHASE_MS / 1000} s entre « sans effet » et
+-        le niveau choisi ; un léger saut sonore au changement est normal.
++        vos réglages ; un léger saut sonore au changement est normal. L'ambiance cinéma simule
++        une salle (graves, voix, réverbération) : elle se règle à l'oreille, et le niveau
++        « Légère » est le plus prudent.
+       </p>
+       {error && <p className="avm-settings-error">{error}</p>}
+     </section>
+diff --git a/apps/desktop/src/player/renderQuality.ts b/apps/desktop/src/player/renderQuality.ts
+index 669191d..32d809f 100644
+--- a/apps/desktop/src/player/renderQuality.ts
++++ b/apps/desktop/src/player/renderQuality.ts
+@@ -4,8 +4,8 @@ import { playerApi } from "../features/player/api";
+  * 0.5.6 — Qualité de rendu du lecteur local (rendu logiciel libmpv → canvas).
+  * Deux modes proposés dans les Paramètres :
+  * - "fluid"  : rendu interne ≈720p puis upscale GPU vers l'écran
+- *              (fluidité garantie sur toutes les machines testées) ;
+- * - "native" : rendu interne 1080p (qualité maximale, mode test ;
++ *              (charge processeur réduite) ;
++ * - "native" : rendu interne 1080p (qualité maximale, stable ;
+  *              repli adaptatif automatique si la machine ne suit pas).
+  * Le choix est persisté en localStorage et appliqué immédiatement
+  * (commande `player_set_render_scale`) + diffusé aux lecteurs ouverts
+diff --git a/apps/desktop/src/theme/persistedCustomTheme.ts b/apps/desktop/src/theme/persistedCustomTheme.ts
+index 2794d75..ec7d5a0 100644
+--- a/apps/desktop/src/theme/persistedCustomTheme.ts
++++ b/apps/desktop/src/theme/persistedCustomTheme.ts
+@@ -24,22 +24,49 @@ export interface PersistedTheme {
+   vars: Record<string, string>;
+ }
+ 
++/** Variables du thème « Transparent » (source unique : aussi utilisée par
++ *  le preset de Paramètres → Thème). */
++export const TRANSPARENT_THEME_VARS: Record<string, string> = {
++  "--color-bg": "rgba(20, 22, 26, 0.75)",
++  "--color-surface": "rgba(29, 32, 38, 0.65)",
++  "--color-surface-hover": "rgba(36, 40, 48, 0.75)",
++  "--color-border": "rgba(42, 46, 55, 0.5)",
++  "--color-accent": "#7c5cff",
++  "--color-accent-hover": "#6a4de0",
++  "--color-text": "#eef0f3",
++  "--color-text-muted": "#9aa0ab",
++  "--color-sidebar": "rgba(16, 18, 22, 0.60)",
++  "--color-card": "rgba(29, 32, 38, 0.55)",
++  "--color-danger": "#f28b82",
++  "--color-success": "#6ee7a8",
++  "--color-warning": "#f5c04e",
++  "--sidebar-width": "260px",
++  "--radius-sm": "6px",
++  "--radius-md": "10px",
++  "--radius-lg": "16px",
++};
++
++/** Thème appliqué tant que l'utilisateur n'en a choisi aucun. */
++const DEFAULT_THEME: PersistedTheme = { preset: "transparent", vars: TRANSPARENT_THEME_VARS };
++
+ export function readPersistedTheme(): PersistedTheme | null {
+   if (typeof window === "undefined") return null;
+   try {
+     const raw = window.localStorage.getItem(STORAGE_KEY);
+-    if (!raw) return null;
++    // Rien d'enregistré : thème par défaut (Transparent). Un choix explicite
++    // de l'utilisateur — y compris « default » — est toujours enregistré et prime.
++    if (!raw) return DEFAULT_THEME;
+     const parsed = JSON.parse(raw) as unknown;
+     if (
+       !parsed ||
+       typeof parsed !== "object" ||
+       typeof (parsed as PersistedTheme).vars !== "object"
+     ) {
+-      return null;
++      return DEFAULT_THEME;
+     }
+     return parsed as PersistedTheme;
+   } catch {
+-    return null;
++    return DEFAULT_THEME;
+   }
+ }
+ 

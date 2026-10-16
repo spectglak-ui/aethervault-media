@@ -1,0 +1,167 @@
+diff --git a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+index dc3a988..4307db6 100644
+--- a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
++++ b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+@@ -29,6 +29,10 @@ pub struct PlayerStateEvent {
+     pub error: Option<String>,
+     /// 0.4.0 : fin du préchargement (timestamp absolu) pour la barre verte.
+     pub buffered_seconds: Option<f64>,
++    /// `paused-for-cache` de mpv : vrai SEULEMENT quand la lecture est
++    /// réellement suspendue faute de données (et non quand le tampon est
++    /// simplement court). Pilote l'indicateur « Mise en mémoire tampon… ».
++    pub buffering: Option<bool>,
+ }
+ 
+ #[derive(Clone, serde::Serialize)]
+@@ -445,6 +449,7 @@ impl PlaybackEngineHandle {
+         observe(&functions, mpv, "time-pos", MpvFormat::Double);
+         observe(&functions, mpv, "duration", MpvFormat::Double);
+         observe(&functions, mpv, "pause", MpvFormat::Flag);
++        observe(&functions, mpv, "paused-for-cache", MpvFormat::Flag);
+         observe(&functions, mpv, "demuxer-cache-time", MpvFormat::Double);
+         // Avance de tampon en secondes : pilote la start gate.
+         observe(&functions, mpv, "demuxer-cache-duration", MpvFormat::Double);
+@@ -1249,10 +1254,24 @@ impl PlaybackEngineHandle {
+                 CString::new("replace").unwrap_or_default(),
+                 CString::new("0").unwrap_or_default(),
+             ];
+-            // Même quoting `%n%` que `load_split` (virgule dans l'URL).
+-            let audio_opt = audio.map(|a| format!("audio-file=%{}%{}", a.len(), a));
+-            if let Some(opts) = &audio_opt {
+-                c_args.push(CString::new(opts.as_str()).unwrap_or_default());
++            // Options du loadfile. Même quoting `%n%` que `load_split` (virgule
++            // dans l'URL). La reprise passe par `start=` : un `seek` lancé
++            // juste après `loadfile` échoue (« error running command », fichier
++            // pas encore ouvert — vérifié sur mpv 0.37) et la lecture repartait
++            // de 0:00, tampon vide, à chaque attache de surface (PiP, plein écran…).
++            let mut opts: Vec<String> = Vec::new();
++            if let Some(a) = &audio {
++                opts.push(format!("audio-file=%{}%{}", a.len(), a));
++            }
++            if resume > 1.0 {
++                opts.push(format!("start={resume:.3}"));
++            }
++            log::info!(
++                "[playback] rechargement correctif : reprise à {resume:.1}s, audio externe={}",
++                audio.is_some()
++            );
++            if !opts.is_empty() {
++                c_args.push(CString::new(opts.join(",")).unwrap_or_default());
+             }
+             let mut ptrs: Vec<*const c_char> = c_args.iter().map(|a| a.as_ptr()).collect();
+             ptrs.push(std::ptr::null());
+@@ -1275,19 +1294,6 @@ impl PlaybackEngineHandle {
+                     (functions_for_reload.command)(mpv_ptr, uptrs.as_ptr());
+                 }
+             }
+-            if resume > 1.0 {
+-                let r = format!("{resume:.3}");
+-                let c_seek = vec![
+-                    CString::new("seek").unwrap_or_default(),
+-                    CString::new(r.as_str()).unwrap_or_default(),
+-                    CString::new("absolute").unwrap_or_default(),
+-                ];
+-                let mut sptrs: Vec<*const c_char> = c_seek.iter().map(|a| a.as_ptr()).collect();
+-                sptrs.push(std::ptr::null());
+-                unsafe {
+-                    (functions_for_reload.command)(mpv_ptr, sptrs.as_ptr());
+-                }
+-            }
+             // Filet de sécurité : un stop() a pu s'intercaler entre le
+             // contrôle ci-dessus et le loadfile (fenêtre de quelques µs).
+             // Dans ce cas on coupe immédiatement ce qu'on vient de relancer.
+@@ -1945,6 +1951,10 @@ fn run_event_thread(
+                         let flag = unsafe { *(prop.data as *const c_int) };
+                         payload.playing = Some(flag == 0);
+                     }
++                    "paused-for-cache" if prop.format == MpvFormat::Flag as c_int => {
++                        let flag = unsafe { *(prop.data as *const c_int) };
++                        payload.buffering = Some(flag != 0);
++                    }
+                     _ => continue,
+                 }
+                 // 0.5.3 : start gate — libère la lecture dès que la durée est
+diff --git a/apps/desktop/src/player/PlayerContext.tsx b/apps/desktop/src/player/PlayerContext.tsx
+index ded0f19..a5117f2 100644
+--- a/apps/desktop/src/player/PlayerContext.tsx
++++ b/apps/desktop/src/player/PlayerContext.tsx
+@@ -29,6 +29,8 @@ interface PlayerContextValue {
+   position: number;
+   duration: number;
+   buffered: number;
++  /** mpv est réellement en pause faute de données (`paused-for-cache`). */
++  isBuffering: boolean;
+   volume: number;
+   muted: boolean;
+   rate: number;
+@@ -173,6 +175,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
+   const [queue, setQueue] = useState<PlaybackQueueState>(EMPTY_QUEUE);
+   const [isPlaying, setIsPlaying] = useState(false);
+   const [buffered, setBuffered] = useState(0);
++  const [isBuffering, setIsBuffering] = useState(false);
+   const [position, setPosition] = useState(0);
+   const [duration, setDuration] = useState(0);
+   const [volume, setVolume] = useState(1);
+@@ -350,6 +353,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
+       const bufferedSeconds = (event.payload as { buffered_seconds?: number })
+         .buffered_seconds;
+       if (typeof bufferedSeconds === "number") setBuffered(bufferedSeconds);
++      const buffering = (event.payload as { buffering?: boolean | null }).buffering;
++      if (typeof buffering === "boolean") setIsBuffering(buffering);
+ 
+       const { position_seconds, duration_seconds, playing, ended, error } =
+         event.payload;
+@@ -402,6 +407,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
+         setIsPlaying(media !== null);
+         setPosition(0);
+         setDuration(0);
++        setIsBuffering(false);
+         setBuffered(0);
+         endedHandledRef.current = null;
+         userPausedRef.current = false;
+@@ -523,6 +529,7 @@ useEffect(() => {
+       position,
+       duration,
+       buffered,
++      isBuffering,
+       volume,
+       muted,
+       rate,
+@@ -724,6 +731,7 @@ useEffect(() => {
+       position,
+       duration,
+       buffered,
++      isBuffering,
+       volume,
+       muted,
+       rate,
+diff --git a/apps/desktop/src/player/PlayerSurface.tsx b/apps/desktop/src/player/PlayerSurface.tsx
+index c6b2c0e..96d9b24 100644
+--- a/apps/desktop/src/player/PlayerSurface.tsx
++++ b/apps/desktop/src/player/PlayerSurface.tsx
+@@ -41,7 +41,8 @@ interface ParsedFrame {
+  * - filet anti-écran-noir 500 ms inclus dans tous les chemins.
+  */
+ export function PlayerSurface({ className }: PlayerSurfaceProps) {
+-  const { currentMedia, displayMode, isPlaying, buffered, position, duration } = usePlayer();
++  const { currentMedia, displayMode, isPlaying, buffered, position, duration, isBuffering } =
++    usePlayer();
+   // Clé STABLE du média courant. L'effet d'attache ci-dessous en dépend (et non
+   // de l'identité de l'objet `currentMedia`) : chaque événement
+   // `player-queue-changed` — ajout à la file, réordonnancement, enrichissement
+@@ -569,8 +570,14 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
+ 
+   // 0.4.0 : indicateur de mise en mémoire tampon — PUREMENT VISUEL,
+   // ne bloque JAMAIS la lecture (mpv gère lui-même la reprise).
++  // Vrai tampon vide (`paused-for-cache` de mpv), OU démarrage : tout début de
++  // média encore sous le seuil de la start gate. L'ancien critère seul
++  // (« moins de 5 s d'avance ») assombrissait l'image et affichait le spinner
++  // alors que mpv lisait normalement.
+   const needsBuffering =
+-    isPlaying && duration > 0 && buffered > 0 && buffered - position < 5;
++    isPlaying &&
++    (isBuffering ||
++      (duration > 0 && position < 0.5 && buffered > 0 && buffered - position < 5));
+   return (
+     <div style={{ position: "relative", width: "100%", height: "100%" }}>
+       <style>{`@keyframes avm-spin { to { transform: rotate(360deg); } }`}</style>

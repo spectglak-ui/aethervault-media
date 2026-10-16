@@ -1683,6 +1683,58 @@
   cursor: pointer;
 }
 
+/* Barre de lecture à trois couches (voir AetherFyWatchPage) :
+   piste → préchargement (vert) → lecture (rose) → curseur natif transparent. */
+.afy-seek {
+  position: relative;
+  width: 100%;
+  height: 14px;
+  display: flex;
+  align-items: center;
+}
+.afy-seek__track,
+.afy-seek__buffered,
+.afy-seek__played {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 4px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  pointer-events: none;
+}
+.afy-seek__track {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.25);
+}
+.afy-seek__buffered {
+  background: rgba(74, 222, 128, 0.6);
+}
+.afy-seek__played {
+  background: #ff2e63;
+}
+.afy-seek .afy-seek__input {
+  position: relative;
+  margin: 0;
+  height: 14px;
+  background: transparent;
+}
+
+/* Avance du préchargement : rouge < 3 s, orange < 10 s, vert au-delà. */
+.afy-controls__ahead {
+  font-size: 11px;
+  font-weight: 600;
+}
+.afy-controls__ahead--low {
+  color: #ff6b6b;
+}
+.afy-controls__ahead--mid {
+  color: #ffb347;
+}
+.afy-controls__ahead--ok {
+  color: #4ade80;
+}
+
 .afy-controls__rate {
   background: rgba(255, 255, 255, 0.10);
   border: 1px solid rgba(255, 255, 255, 0.22);

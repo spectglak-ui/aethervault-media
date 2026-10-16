@@ -23,6 +23,7 @@ export const PAGE_TINTS = {
   stats: "245, 158, 11",
   share: "56, 189, 248",
   collections: "168, 85, 247",
+  watchlist: "236, 72, 153",
   explore: "46, 196, 182",
 } as const;
 

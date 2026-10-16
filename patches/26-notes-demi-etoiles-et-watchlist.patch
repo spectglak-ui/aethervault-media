@@ -1,0 +1,1425 @@
+diff --git a/apps/desktop/src-tauri/src/commands/mod.rs b/apps/desktop/src-tauri/src/commands/mod.rs
+index 471d4e8..210793e 100644
+--- a/apps/desktop/src-tauri/src/commands/mod.rs
++++ b/apps/desktop/src-tauri/src/commands/mod.rs
+@@ -34,4 +34,5 @@ pub mod nas;
+ pub mod friends;
+ pub mod private_tags;
+ pub mod reading;
+-pub mod tv;
+\ No newline at end of file
++pub mod tv;
++pub mod user_lists;
+diff --git a/apps/desktop/src-tauri/src/commands/user_lists.rs b/apps/desktop/src-tauri/src/commands/user_lists.rs
+new file mode 100644
+index 0000000..03a6f97
+--- /dev/null
++++ b/apps/desktop/src-tauri/src/commands/user_lists.rs
+@@ -0,0 +1,158 @@
++//! Notes personnelles (demi-étoiles) et Watchlist — PAR PROFIL (migration 0026).
++//!
++//! Distinct des Collections (listes globales et libres, `commands/title.rs`).
++//! Toutes les commandes agissent sur le profil actif.
++
++use serde::Serialize;
++
++use crate::db::repositories::{custom_image_repository, user_list_repository as repo};
++use crate::domain::title::TitleSummary;
++use crate::state::AppState;
++
++/// Note et statut de watchlist d'un titre pour le profil actif.
++#[derive(Debug, Clone, Serialize)]
++pub struct TitleUserState {
++    pub title_id: i64,
++    pub rating: Option<f64>,
++    pub watch_status: Option<String>,
++}
++
++/// Entrée de la watchlist : le titre, son statut, sa date d'ajout et la note.
++#[derive(Debug, Clone, Serialize)]
++pub struct WatchlistEntry {
++    pub title: TitleSummary,
++    pub status: String,
++    pub added_at: String,
++    pub rating: Option<f64>,
++}
++
++fn validate_status(status: &str) -> Result<(), String> {
++    if repo::WATCH_STATUSES.contains(&status) {
++        Ok(())
++    } else {
++        Err(format!("Statut de watchlist inconnu : {status}"))
++    }
++}
++
++/// Pose la note d'un titre (0,5 à 5 par pas de 0,5) ; `null` retire la note.
++#[tauri::command]
++pub fn set_title_rating(
++    state: tauri::State<AppState>,
++    title_id: i64,
++    rating: Option<f64>,
++) -> Result<(), String> {
++    if let Some(value) = rating {
++        if !repo::is_valid_rating(value) {
++            return Err("La note doit être comprise entre 0,5 et 5 par pas de 0,5.".to_string());
++        }
++    }
++    let profile_id = state.read_active_profile_id()?;
++    let conn = state.get_conn()?;
++    repo::set_rating(&conn, profile_id, title_id, rating).map_err(|e| e.to_string())
++}
++
++/// Note et statut de watchlist d'UN titre.
++#[tauri::command]
++pub fn get_title_user_state(
++    state: tauri::State<AppState>,
++    title_id: i64,
++) -> Result<TitleUserState, String> {
++    let profile_id = state.read_active_profile_id()?;
++    let conn = state.get_conn()?;
++    let (rating, watch_status) =
++        repo::user_state(&conn, profile_id, title_id).map_err(|e| e.to_string())?;
++    Ok(TitleUserState { title_id, rating, watch_status })
++}
++
++/// Notes et statuts de PLUSIEURS titres en une requête (grilles d'affiches).
++/// Seuls les titres notés ou présents dans la watchlist sont renvoyés.
++#[tauri::command]
++pub fn list_title_user_states(
++    state: tauri::State<AppState>,
++    title_ids: Vec<i64>,
++) -> Result<Vec<TitleUserState>, String> {
++    let profile_id = state.read_active_profile_id()?;
++    let conn = state.get_conn()?;
++    let rows = repo::user_states(&conn, profile_id, &title_ids).map_err(|e| e.to_string())?;
++    Ok(rows
++        .into_iter()
++        .map(|(title_id, rating, watch_status)| TitleUserState { title_id, rating, watch_status })
++        .collect())
++}
++
++#[tauri::command]
++pub fn watchlist_add(state: tauri::State<AppState>, title_id: i64) -> Result<(), String> {
++    let profile_id = state.read_active_profile_id()?;
++    let conn = state.get_conn()?;
++    repo::watchlist_add(&conn, profile_id, title_id).map_err(|e| e.to_string())
++}
++
++#[tauri::command]
++pub fn watchlist_remove(state: tauri::State<AppState>, title_id: i64) -> Result<(), String> {
++    let profile_id = state.read_active_profile_id()?;
++    let conn = state.get_conn()?;
++    repo::watchlist_remove(&conn, profile_id, title_id).map_err(|e| e.to_string())
++}
++
++/// Change le statut (`todo` | `in_progress` | `done`) ; ajoute le titre à la
++/// watchlist s'il n'y était pas.
++#[tauri::command]
++pub fn watchlist_set_status(
++    state: tauri::State<AppState>,
++    title_id: i64,
++    status: String,
++) -> Result<(), String> {
++    validate_status(&status)?;
++    let profile_id = state.read_active_profile_id()?;
++    let conn = state.get_conn()?;
++    repo::watchlist_set_status(&conn, profile_id, title_id, &status).map_err(|e| e.to_string())
++}
++
++/// Watchlist du profil actif, filtrable par catégorie et par statut.
++#[tauri::command]
++pub fn watchlist_list(
++    state: tauri::State<AppState>,
++    category_id: Option<i64>,
++    status: Option<String>,
++) -> Result<Vec<WatchlistEntry>, String> {
++    if let Some(s) = status.as_deref() {
++        validate_status(s)?;
++    }
++    let profile_id = state.read_active_profile_id()?;
++    let conn = state.get_conn()?;
++    let rows = repo::watchlist_list(&conn, profile_id, category_id, status.as_deref())
++        .map_err(|e| e.to_string())?;
++    let ids: Vec<i64> = rows.iter().map(|r| r.title_id).collect();
++    // Affiche personnalisée prioritaire, en une requête pour toute la liste.
++    let custom = custom_image_repository::get_batch_posters(&conn, &ids).map_err(|e| e.to_string())?;
++    Ok(rows
++        .into_iter()
++        .map(|r| WatchlistEntry {
++            title: TitleSummary {
++                id: r.title_id,
++                category_id: r.category_id,
++                kind: r.kind,
++                name: r.name,
++                year: r.year,
++                poster: custom.get(&r.title_id).cloned().or(r.poster_path),
++            },
++            status: r.status,
++            added_at: r.added_at,
++            rating: r.rating,
++        })
++        .collect())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::validate_status;
++
++    #[test]
++    fn status_validation() {
++        for ok in ["todo", "in_progress", "done"] {
++            assert!(validate_status(ok).is_ok());
++        }
++        assert!(validate_status("watching").is_err());
++        assert!(validate_status("").is_err());
++    }
++}
+diff --git a/apps/desktop/src-tauri/src/db/migrations/0026_ratings_watchlist.sql b/apps/desktop/src-tauri/src/db/migrations/0026_ratings_watchlist.sql
+new file mode 100644
+index 0000000..5a75541
+--- /dev/null
++++ b/apps/desktop/src-tauri/src/db/migrations/0026_ratings_watchlist.sql
+@@ -0,0 +1,33 @@
++-- Migration 0026 — Notes personnelles et Watchlist, PAR PROFIL.
++--
++-- Contrairement aux Collections (migration 0016, globales), ces deux tables
++-- sont rattachées à un profil : chaque profil a ses propres notes et sa
++-- propre liste « À regarder ». La suppression d'un profil ou d'un titre
++-- supprime en cascade les lignes correspondantes.
++--
++-- title_ratings : note de 0,5 à 5 étoiles par pas de 0,5 (demi-étoiles).
++--   Pas de ligne = pas de note ; retirer la note supprime la ligne.
++-- watchlist_items : titre à regarder, avec un statut manuel :
++--   'todo' (à voir), 'in_progress' (en cours), 'done' (vu).
++
++CREATE TABLE title_ratings (
++    profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
++    title_id   INTEGER NOT NULL REFERENCES titles(id)   ON DELETE CASCADE,
++    rating     REAL    NOT NULL
++        CHECK (rating >= 0.5 AND rating <= 5.0 AND rating * 2 = CAST(rating * 2 AS INTEGER)),
++    rated_at   TEXT    NOT NULL DEFAULT (datetime('now')),
++    PRIMARY KEY (profile_id, title_id)
++);
++CREATE INDEX idx_title_ratings_title_id ON title_ratings(title_id);
++
++CREATE TABLE watchlist_items (
++    profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
++    title_id   INTEGER NOT NULL REFERENCES titles(id)   ON DELETE CASCADE,
++    status     TEXT    NOT NULL DEFAULT 'todo'
++        CHECK (status IN ('todo', 'in_progress', 'done')),
++    added_at   TEXT    NOT NULL DEFAULT (datetime('now')),
++    updated_at TEXT    NOT NULL DEFAULT (datetime('now')),
++    PRIMARY KEY (profile_id, title_id)
++);
++CREATE INDEX idx_watchlist_profile_status ON watchlist_items(profile_id, status);
++CREATE INDEX idx_watchlist_title_id ON watchlist_items(title_id);
+diff --git a/apps/desktop/src-tauri/src/db/migrations/mod.rs b/apps/desktop/src-tauri/src/db/migrations/mod.rs
+index 7a72abd..9d6c406 100644
+--- a/apps/desktop/src-tauri/src/db/migrations/mod.rs
++++ b/apps/desktop/src-tauri/src/db/migrations/mod.rs
+@@ -158,6 +158,11 @@ pub const MIGRATIONS: &[Migration] = &[
+         description: "Catégorie TV — table tv_channels (flux IPTV/HLS publics)",
+         sql: include_str!("0025_tv_channels.sql"),
+     },
++    Migration {
++        version: 26,
++        description: "Notes personnelles (demi-étoiles) et Watchlist, par profil",
++        sql: include_str!("0026_ratings_watchlist.sql"),
++    },
+ ];
+ 
+ /// Applique, dans l'ordre, toutes les migrations dont la version est
+diff --git a/apps/desktop/src-tauri/src/db/repositories/mod.rs b/apps/desktop/src-tauri/src/db/repositories/mod.rs
+index 165c8f6..47b3106 100644
+--- a/apps/desktop/src-tauri/src/db/repositories/mod.rs
++++ b/apps/desktop/src-tauri/src/db/repositories/mod.rs
+@@ -22,4 +22,5 @@ pub mod settings_repository;
+ pub mod media_probe_repository;
+ pub mod segment_repository;
+ pub mod private_tag_repository;
+-pub mod reading_repository;
+\ No newline at end of file
++pub mod reading_repository;
++pub mod user_list_repository;
+diff --git a/apps/desktop/src-tauri/src/db/repositories/user_list_repository.rs b/apps/desktop/src-tauri/src/db/repositories/user_list_repository.rs
+new file mode 100644
+index 0000000..26fa1fc
+--- /dev/null
++++ b/apps/desktop/src-tauri/src/db/repositories/user_list_repository.rs
+@@ -0,0 +1,299 @@
++//! Notes personnelles et Watchlist (migration 0026) — PAR PROFIL.
++//!
++//! Seul endroit du code autorisé à écrire du SQL pour ces deux tables.
++
++use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
++
++/// Statuts valides d'un élément de watchlist (miroir du CHECK SQL).
++pub const WATCH_STATUSES: [&str; 3] = ["todo", "in_progress", "done"];
++
++/// Une note est valide si elle est comprise entre 0,5 et 5 par pas de 0,5.
++pub fn is_valid_rating(rating: f64) -> bool {
++    rating.is_finite() && (0.5..=5.0).contains(&rating) && (rating * 2.0).fract() == 0.0
++}
++
++/// Pose (ou remplace) la note d'un titre ; `None` retire la note.
++pub fn set_rating(
++    conn: &Connection,
++    profile_id: i64,
++    title_id: i64,
++    rating: Option<f64>,
++) -> rusqlite::Result<()> {
++    match rating {
++        Some(value) => {
++            conn.execute(
++                "INSERT INTO title_ratings (profile_id, title_id, rating)
++                 VALUES (?1, ?2, ?3)
++                 ON CONFLICT(profile_id, title_id)
++                 DO UPDATE SET rating = excluded.rating, rated_at = datetime('now')",
++                params![profile_id, title_id, value],
++            )?;
++        }
++        None => {
++            conn.execute(
++                "DELETE FROM title_ratings WHERE profile_id = ?1 AND title_id = ?2",
++                params![profile_id, title_id],
++            )?;
++        }
++    }
++    Ok(())
++}
++
++/// Ajoute un titre à la watchlist (sans effet s'il y est déjà : son statut
++/// est conservé).
++pub fn watchlist_add(conn: &Connection, profile_id: i64, title_id: i64) -> rusqlite::Result<()> {
++    conn.execute(
++        "INSERT OR IGNORE INTO watchlist_items (profile_id, title_id) VALUES (?1, ?2)",
++        params![profile_id, title_id],
++    )?;
++    Ok(())
++}
++
++pub fn watchlist_remove(conn: &Connection, profile_id: i64, title_id: i64) -> rusqlite::Result<()> {
++    conn.execute(
++        "DELETE FROM watchlist_items WHERE profile_id = ?1 AND title_id = ?2",
++        params![profile_id, title_id],
++    )?;
++    Ok(())
++}
++
++/// Change le statut d'un titre ; l'ajoute à la watchlist s'il n'y était pas.
++pub fn watchlist_set_status(
++    conn: &Connection,
++    profile_id: i64,
++    title_id: i64,
++    status: &str,
++) -> rusqlite::Result<()> {
++    conn.execute(
++        "INSERT INTO watchlist_items (profile_id, title_id, status)
++         VALUES (?1, ?2, ?3)
++         ON CONFLICT(profile_id, title_id)
++         DO UPDATE SET status = excluded.status, updated_at = datetime('now')",
++        params![profile_id, title_id, status],
++    )?;
++    Ok(())
++}
++
++/// (note, statut de watchlist) d'un titre pour un profil.
++pub fn user_state(
++    conn: &Connection,
++    profile_id: i64,
++    title_id: i64,
++) -> rusqlite::Result<(Option<f64>, Option<String>)> {
++    let rating: Option<f64> = conn
++        .query_row(
++            "SELECT rating FROM title_ratings WHERE profile_id = ?1 AND title_id = ?2",
++            params![profile_id, title_id],
++            |row| row.get(0),
++        )
++        .optional()?;
++    let status: Option<String> = conn
++        .query_row(
++            "SELECT status FROM watchlist_items WHERE profile_id = ?1 AND title_id = ?2",
++            params![profile_id, title_id],
++            |row| row.get(0),
++        )
++        .optional()?;
++    Ok((rating, status))
++}
++
++/// Notes et statuts de watchlist de plusieurs titres en UNE requête (grilles
++/// d'affiches : évite une requête par carte). Seuls les titres qui ont une
++/// note ou un statut sont renvoyés.
++pub fn user_states(
++    conn: &Connection,
++    profile_id: i64,
++    title_ids: &[i64],
++) -> rusqlite::Result<Vec<(i64, Option<f64>, Option<String>)>> {
++    let mut out = Vec::new();
++    // Par tranches : SQLite limite le nombre de paramètres d'une requête.
++    for chunk in title_ids.chunks(500) {
++        let placeholders = vec!["?"; chunk.len()].join(",");
++        let sql = format!(
++            "SELECT t.id, r.rating, w.status
++             FROM titles t
++             LEFT JOIN title_ratings r ON r.title_id = t.id AND r.profile_id = ?1
++             LEFT JOIN watchlist_items w ON w.title_id = t.id AND w.profile_id = ?1
++             WHERE t.id IN ({placeholders})
++               AND (r.rating IS NOT NULL OR w.status IS NOT NULL)"
++        );
++        let mut stmt = conn.prepare(&sql)?;
++        let mut args: Vec<i64> = Vec::with_capacity(chunk.len() + 1);
++        args.push(profile_id);
++        args.extend_from_slice(chunk);
++        let rows = stmt.query_map(params_from_iter(args.iter()), |row| {
++            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
++        })?;
++        for row in rows {
++            out.push(row?);
++        }
++    }
++    Ok(out)
++}
++
++/// Ligne de la watchlist : colonnes du Titre + statut, date d'ajout, note.
++pub struct WatchlistRow {
++    pub title_id: i64,
++    pub category_id: i64,
++    pub kind: String,
++    pub name: String,
++    pub year: Option<i64>,
++    pub poster_path: Option<String>,
++    pub status: String,
++    pub added_at: String,
++    pub rating: Option<f64>,
++}
++
++/// Watchlist d'un profil, de l'ajout le plus récent au plus ancien.
++/// `category_id` et `status` filtrent si renseignés.
++pub fn watchlist_list(
++    conn: &Connection,
++    profile_id: i64,
++    category_id: Option<i64>,
++    status: Option<&str>,
++) -> rusqlite::Result<Vec<WatchlistRow>> {
++    let mut stmt = conn.prepare(
++        "SELECT t.id, t.category_id, t.kind, t.name, t.year, t.poster_path,
++                w.status, w.added_at, r.rating
++         FROM watchlist_items w
++         JOIN titles t ON t.id = w.title_id
++         LEFT JOIN title_ratings r ON r.title_id = t.id AND r.profile_id = w.profile_id
++         WHERE w.profile_id = ?1
++           AND (?2 IS NULL OR t.category_id = ?2)
++           AND (?3 IS NULL OR w.status = ?3)
++         ORDER BY w.added_at DESC, t.id DESC",
++    )?;
++    let rows = stmt.query_map(params![profile_id, category_id, status], |row| {
++        Ok(WatchlistRow {
++            title_id: row.get(0)?,
++            category_id: row.get(1)?,
++            kind: row.get(2)?,
++            name: row.get(3)?,
++            year: row.get(4)?,
++            poster_path: row.get(5)?,
++            status: row.get(6)?,
++            added_at: row.get(7)?,
++            rating: row.get(8)?,
++        })
++    })?;
++    rows.collect()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// Base en mémoire : tables minimales (profiles, titles) + migration 0026,
++    /// clés étrangères actives comme en production.
++    fn db() -> Connection {
++        let conn = Connection::open_in_memory().unwrap();
++        conn.execute_batch(
++            "PRAGMA foreign_keys = ON;
++             CREATE TABLE profiles (id INTEGER PRIMARY KEY);
++             CREATE TABLE titles (
++                 id INTEGER PRIMARY KEY, category_id INTEGER NOT NULL DEFAULT 1,
++                 kind TEXT NOT NULL DEFAULT 'movie', name TEXT NOT NULL,
++                 year INTEGER, poster_path TEXT);
++             INSERT INTO profiles (id) VALUES (1), (2);
++             INSERT INTO titles (id, category_id, name) VALUES (10, 1, 'Alpha'), (11, 2, 'Beta'), (12, 1, 'Gamma');",
++        )
++        .unwrap();
++        conn.execute_batch(include_str!("../migrations/0026_ratings_watchlist.sql"))
++            .unwrap();
++        conn
++    }
++
++    #[test]
++    fn rating_validation_accepts_half_steps_only() {
++        for ok in [0.5, 1.0, 2.5, 4.5, 5.0] {
++            assert!(is_valid_rating(ok), "{ok}");
++        }
++        for bad in [0.0, 0.25, 5.5, -1.0, 3.3, f64::NAN, f64::INFINITY] {
++            assert!(!is_valid_rating(bad), "{bad}");
++        }
++    }
++
++    #[test]
++    fn rating_set_replace_and_clear() {
++        let conn = db();
++        set_rating(&conn, 1, 10, Some(3.5)).unwrap();
++        assert_eq!(user_state(&conn, 1, 10).unwrap().0, Some(3.5));
++        set_rating(&conn, 1, 10, Some(5.0)).unwrap();
++        assert_eq!(user_state(&conn, 1, 10).unwrap().0, Some(5.0));
++        set_rating(&conn, 1, 10, None).unwrap();
++        assert_eq!(user_state(&conn, 1, 10).unwrap().0, None);
++    }
++
++    #[test]
++    fn database_rejects_invalid_rating_and_status() {
++        let conn = db();
++        assert!(set_rating(&conn, 1, 10, Some(3.3)).is_err());
++        assert!(set_rating(&conn, 1, 10, Some(0.0)).is_err());
++        assert!(watchlist_set_status(&conn, 1, 10, "abandoned").is_err());
++        // Titre inexistant : la clé étrangère refuse.
++        assert!(set_rating(&conn, 1, 999, Some(4.0)).is_err());
++    }
++
++    #[test]
++    fn ratings_and_watchlist_are_per_profile() {
++        let conn = db();
++        set_rating(&conn, 1, 10, Some(4.0)).unwrap();
++        watchlist_add(&conn, 1, 10).unwrap();
++        assert_eq!(user_state(&conn, 2, 10).unwrap(), (None, None));
++        assert_eq!(user_state(&conn, 1, 10).unwrap(), (Some(4.0), Some("todo".into())));
++        assert!(watchlist_list(&conn, 2, None, None).unwrap().is_empty());
++    }
++
++    #[test]
++    fn watchlist_add_keeps_status_and_set_status_upserts() {
++        let conn = db();
++        watchlist_set_status(&conn, 1, 10, "in_progress").unwrap();
++        watchlist_add(&conn, 1, 10).unwrap(); // sans effet : le statut est conservé
++        assert_eq!(user_state(&conn, 1, 10).unwrap().1.as_deref(), Some("in_progress"));
++        watchlist_set_status(&conn, 1, 10, "done").unwrap();
++        assert_eq!(user_state(&conn, 1, 10).unwrap().1.as_deref(), Some("done"));
++        watchlist_remove(&conn, 1, 10).unwrap();
++        assert_eq!(user_state(&conn, 1, 10).unwrap().1, None);
++    }
++
++    #[test]
++    fn watchlist_list_filters_by_category_and_status() {
++        let conn = db();
++        watchlist_add(&conn, 1, 10).unwrap(); // catégorie 1, todo
++        watchlist_set_status(&conn, 1, 11, "done").unwrap(); // catégorie 2
++        watchlist_set_status(&conn, 1, 12, "in_progress").unwrap(); // catégorie 1
++        set_rating(&conn, 1, 11, Some(4.5)).unwrap();
++
++        assert_eq!(watchlist_list(&conn, 1, None, None).unwrap().len(), 3);
++        let cat1 = watchlist_list(&conn, 1, Some(1), None).unwrap();
++        assert_eq!(cat1.len(), 2);
++        let done = watchlist_list(&conn, 1, None, Some("done")).unwrap();
++        assert_eq!(done.len(), 1);
++        assert_eq!(done[0].name, "Beta");
++        assert_eq!(done[0].rating, Some(4.5));
++        assert_eq!(watchlist_list(&conn, 1, Some(2), Some("todo")).unwrap().len(), 0);
++    }
++
++    #[test]
++    fn user_states_returns_only_titles_with_a_note_or_status() {
++        let conn = db();
++        set_rating(&conn, 1, 10, Some(2.5)).unwrap();
++        watchlist_add(&conn, 1, 11).unwrap();
++        let mut states = user_states(&conn, 1, &[10, 11, 12]).unwrap();
++        states.sort_by_key(|s| s.0);
++        assert_eq!(states.len(), 2);
++        assert_eq!(states[0], (10, Some(2.5), None));
++        assert_eq!(states[1], (11, None, Some("todo".to_string())));
++        assert!(user_states(&conn, 1, &[]).unwrap().is_empty());
++    }
++
++    #[test]
++    fn deleting_a_title_or_profile_cascades() {
++        let conn = db();
++        set_rating(&conn, 1, 10, Some(3.0)).unwrap();
++        watchlist_add(&conn, 2, 10).unwrap();
++        conn.execute("DELETE FROM titles WHERE id = 10", []).unwrap();
++        assert_eq!(user_state(&conn, 1, 10).unwrap(), (None, None));
++        assert_eq!(user_state(&conn, 2, 10).unwrap(), (None, None));
++    }
++}
+diff --git a/apps/desktop/src-tauri/src/lib.rs b/apps/desktop/src-tauri/src/lib.rs
+index b738fe8..e7cb9b3 100644
+--- a/apps/desktop/src-tauri/src/lib.rs
++++ b/apps/desktop/src-tauri/src/lib.rs
+@@ -251,6 +251,13 @@ pub fn run() {
+             commands::settings::set_quick_access_enabled,
+             commands::settings::get_audio_spatialization_level,
+             commands::settings::set_audio_spatialization_level,
++            commands::user_lists::set_title_rating,
++            commands::user_lists::get_title_user_state,
++            commands::user_lists::list_title_user_states,
++            commands::user_lists::watchlist_add,
++            commands::user_lists::watchlist_remove,
++            commands::user_lists::watchlist_set_status,
++            commands::user_lists::watchlist_list,
+             commands::settings::get_audio_cinema_level,
+             commands::settings::set_audio_cinema_level,
+             commands::security::get_vault_status,
+diff --git a/apps/desktop/src/components/ModernPageHeader.tsx b/apps/desktop/src/components/ModernPageHeader.tsx
+index e854b55..0302fc7 100644
+--- a/apps/desktop/src/components/ModernPageHeader.tsx
++++ b/apps/desktop/src/components/ModernPageHeader.tsx
+@@ -23,6 +23,7 @@ export const PAGE_TINTS = {
+   stats: "245, 158, 11",
+   share: "56, 189, 248",
+   collections: "168, 85, 247",
++  watchlist: "236, 72, 153",
+   explore: "46, 196, 182",
+ } as const;
+ 
+diff --git a/apps/desktop/src/components/StarRating.css b/apps/desktop/src/components/StarRating.css
+new file mode 100644
+index 0000000..bf83845
+--- /dev/null
++++ b/apps/desktop/src/components/StarRating.css
+@@ -0,0 +1,83 @@
++.avm-stars {
++  display: inline-flex;
++  align-items: center;
++  gap: 2px;
++  outline: none;
++}
++.avm-stars--interactive:focus-visible {
++  outline: 2px solid var(--color-accent);
++  outline-offset: 3px;
++  border-radius: 6px;
++}
++.avm-stars__star {
++  position: relative;
++  display: inline-block;
++  width: var(--star-size);
++  height: var(--star-size);
++  line-height: 0;
++}
++.avm-stars__empty {
++  color: rgba(255, 255, 255, 0.28);
++}
++.avm-stars__fill {
++  position: absolute;
++  top: 0;
++  left: 0;
++  height: 100%;
++  overflow: hidden;
++}
++.avm-stars__full {
++  color: #f5b301;
++  fill: #f5b301;
++}
++.avm-stars__half {
++  position: absolute;
++  top: 0;
++  height: 100%;
++  width: 50%;
++  cursor: pointer;
++}
++.avm-stars__half--left {
++  left: 0;
++}
++.avm-stars__half--right {
++  right: 0;
++}
++.avm-stars__value {
++  margin-left: 8px;
++  font-size: 0.85rem;
++  font-weight: 600;
++  color: var(--color-text-muted);
++}
++
++/* Pastille « ★ 4,5 » + marque-page affichées sur les affiches. */
++.avm-userbadges {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  padding: 0.15rem 0.6rem 0.5rem;
++  font-size: 0.8rem;
++  min-height: 1.4rem;
++}
++.avm-userbadges__rating {
++  display: inline-flex;
++  align-items: center;
++  gap: 3px;
++  color: #f5b301;
++  font-weight: 600;
++}
++.avm-userbadges__rating svg {
++  fill: #f5b301;
++}
++.avm-userbadges__watch {
++  display: inline-flex;
++  align-items: center;
++  gap: 3px;
++  color: var(--color-accent);
++}
++.avm-userbadges__watch--in_progress {
++  color: #f59e0b;
++}
++.avm-userbadges__watch--done {
++  color: #6ee7a8;
++}
+diff --git a/apps/desktop/src/components/StarRating.tsx b/apps/desktop/src/components/StarRating.tsx
+new file mode 100644
+index 0000000..5945ca6
+--- /dev/null
++++ b/apps/desktop/src/components/StarRating.tsx
+@@ -0,0 +1,100 @@
++import { useState } from "react";
++import type { KeyboardEvent } from "react";
++import { Star } from "lucide-react";
++import "./StarRating.css";
++
++interface StarRatingProps {
++  /** Note courante (0,5 à 5 par pas de 0,5) ; `null` = pas de note. */
++  value: number | null;
++  /** Absent = affichage seul. `null` = retirer la note. */
++  onChange?: (value: number | null) => void;
++  /** Taille d'une étoile en pixels. */
++  size?: number;
++  /** Affiche la valeur numérique à droite des étoiles. */
++  showValue?: boolean;
++  label?: string;
++}
++
++/**
++ * Note en étoiles avec demi-étoiles : chaque étoile se clique par moitiés
++ * (moitié gauche = x,5 ; moitié droite = x entier). Recliquer sur la note
++ * courante la retire. Au clavier : flèches ±0,5, chiffres 1–5, Suppr/Retour
++ * arrière pour retirer.
++ */
++export function StarRating({
++  value,
++  onChange,
++  size = 20,
++  showValue = false,
++  label = "Ma note",
++}: StarRatingProps) {
++  const [hover, setHover] = useState<number | null>(null);
++  const interactive = onChange !== undefined;
++  const shown = hover ?? value ?? 0;
++
++  const commit = (next: number) => onChange?.(next === value ? null : next);
++
++  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
++    if (!onChange) return;
++    const current = value ?? 0;
++    if (event.key === "ArrowRight" || event.key === "ArrowUp") {
++      onChange(Math.min(5, current + 0.5));
++    } else if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
++      onChange(current - 0.5 < 0.5 ? null : current - 0.5);
++    } else if (/^[1-5]$/.test(event.key)) {
++      onChange(Number(event.key));
++    } else if (event.key === "Delete" || event.key === "Backspace") {
++      onChange(null);
++    } else {
++      return;
++    }
++    event.preventDefault();
++  };
++
++  return (
++    <div
++      className={`avm-stars${interactive ? " avm-stars--interactive" : ""}`}
++      role={interactive ? "slider" : "img"}
++      aria-label={label}
++      aria-valuemin={interactive ? 0 : undefined}
++      aria-valuemax={interactive ? 5 : undefined}
++      aria-valuenow={interactive ? (value ?? 0) : undefined}
++      aria-valuetext={value ? `${value} sur 5` : "Pas de note"}
++      tabIndex={interactive ? 0 : undefined}
++      onKeyDown={interactive ? onKeyDown : undefined}
++      onMouseLeave={interactive ? () => setHover(null) : undefined}
++      style={{ ["--star-size" as string]: `${size}px` }}
++    >
++      {[1, 2, 3, 4, 5].map((i) => {
++        const fill = shown >= i ? 100 : shown >= i - 0.5 ? 50 : 0;
++        return (
++          <span key={i} className="avm-stars__star">
++            <Star size={size} className="avm-stars__empty" aria-hidden="true" />
++            {fill > 0 && (
++              <span className="avm-stars__fill" style={{ width: `${fill}%` }}>
++                <Star size={size} className="avm-stars__full" aria-hidden="true" />
++              </span>
++            )}
++            {interactive && (
++              <>
++                <span
++                  className="avm-stars__half avm-stars__half--left"
++                  onMouseEnter={() => setHover(i - 0.5)}
++                  onClick={() => commit(i - 0.5)}
++                />
++                <span
++                  className="avm-stars__half avm-stars__half--right"
++                  onMouseEnter={() => setHover(i)}
++                  onClick={() => commit(i)}
++                />
++              </>
++            )}
++          </span>
++        );
++      })}
++      {showValue && (
++        <span className="avm-stars__value">{value ? value.toFixed(1) : "—"}</span>
++      )}
++    </div>
++  );
++}
+diff --git a/apps/desktop/src/features/userlists/TitleUserBadges.tsx b/apps/desktop/src/features/userlists/TitleUserBadges.tsx
+new file mode 100644
+index 0000000..a73abb4
+--- /dev/null
++++ b/apps/desktop/src/features/userlists/TitleUserBadges.tsx
+@@ -0,0 +1,27 @@
++import { Bookmark, Star } from "lucide-react";
++import { WATCH_STATUS_LABELS, type TitleUserState } from "./api";
++
++/**
++ * Pastille de la note personnelle (« ★ 4,5 ») et marque-page de watchlist
++ * affichés sous une affiche. Ne rend rien si le titre n'a ni note ni statut.
++ */
++export function TitleUserBadges({ state }: { state?: TitleUserState }) {
++  if (!state || (state.rating === null && state.watch_status === null)) return null;
++  return (
++    <div className="avm-userbadges">
++      {state.rating !== null && (
++        <span className="avm-userbadges__rating" title={`Ma note : ${state.rating} sur 5`}>
++          <Star size={13} aria-hidden="true" /> {state.rating.toFixed(1).replace(".", ",")}
++        </span>
++      )}
++      {state.watch_status !== null && (
++        <span
++          className={`avm-userbadges__watch avm-userbadges__watch--${state.watch_status}`}
++          title={`Watchlist : ${WATCH_STATUS_LABELS[state.watch_status]}`}
++        >
++          <Bookmark size={13} aria-hidden="true" /> {WATCH_STATUS_LABELS[state.watch_status]}
++        </span>
++      )}
++    </div>
++  );
++}
+diff --git a/apps/desktop/src/features/userlists/TitleUserPanel.tsx b/apps/desktop/src/features/userlists/TitleUserPanel.tsx
+new file mode 100644
+index 0000000..fba112a
+--- /dev/null
++++ b/apps/desktop/src/features/userlists/TitleUserPanel.tsx
+@@ -0,0 +1,93 @@
++import { useCallback, useEffect, useState } from "react";
++import { Bookmark, BookmarkCheck, BookmarkX } from "lucide-react";
++import { Button } from "@aethervault/ui-kit";
++import { StarRating } from "../../components/StarRating";
++import {
++  userListsApi,
++  WATCH_STATUS_LABELS,
++  type TitleUserState,
++  type WatchStatus,
++} from "./api";
++
++/**
++ * Note personnelle (demi-étoiles) et watchlist d'un titre, pour le profil
++ * actif — affichés sur la page du titre.
++ */
++export function TitleUserPanel({ titleId }: { titleId: number }) {
++  const [state, setState] = useState<TitleUserState | null>(null);
++  const [error, setError] = useState<string | null>(null);
++
++  const refresh = useCallback(() => {
++    userListsApi
++      .getState(titleId)
++      .then((s) => {
++        setState(s);
++        setError(null);
++      })
++      .catch((err) => setError(typeof err === "string" ? err : "Chargement impossible."));
++  }, [titleId]);
++
++  useEffect(() => {
++    setState(null);
++    refresh();
++  }, [refresh]);
++
++  const run = async (action: () => Promise<void>) => {
++    setError(null);
++    try {
++      await action();
++      refresh();
++    } catch (err) {
++      setError(typeof err === "string" ? err : err instanceof Error ? err.message : "Échec.");
++    }
++  };
++
++  if (state === null) return error ? <p className="avm-settings-error">{error}</p> : null;
++
++  const status = state.watch_status;
++  return (
++    <div className="avm-user-panel">
++      <div className="avm-user-panel__row">
++        <span className="avm-user-panel__label">Ma note</span>
++        <StarRating
++          value={state.rating}
++          size={24}
++          showValue
++          onChange={(next) => void run(() => userListsApi.setRating(titleId, next))}
++        />
++      </div>
++      <div className="avm-user-panel__row">
++        <span className="avm-user-panel__label">Watchlist</span>
++        {status === null ? (
++          <Button variant="secondary" onClick={() => void run(() => userListsApi.watchlistAdd(titleId))}>
++            <Bookmark size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
++            Ajouter à ma watchlist
++          </Button>
++        ) : (
++          <>
++            <BookmarkCheck size={16} aria-hidden="true" />
++            <select
++              className="avm-user-panel__select"
++              aria-label="Statut dans la watchlist"
++              value={status}
++              onChange={(e) =>
++                void run(() => userListsApi.watchlistSetStatus(titleId, e.target.value as WatchStatus))
++              }
++            >
++              {(Object.keys(WATCH_STATUS_LABELS) as WatchStatus[]).map((s) => (
++                <option key={s} value={s}>
++                  {WATCH_STATUS_LABELS[s]}
++                </option>
++              ))}
++            </select>
++            <Button variant="secondary" onClick={() => void run(() => userListsApi.watchlistRemove(titleId))}>
++              <BookmarkX size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
++              Retirer
++            </Button>
++          </>
++        )}
++      </div>
++      {error && <p className="avm-settings-error">{error}</p>}
++    </div>
++  );
++}
+diff --git a/apps/desktop/src/features/userlists/api.ts b/apps/desktop/src/features/userlists/api.ts
+new file mode 100644
+index 0000000..aa54589
+--- /dev/null
++++ b/apps/desktop/src/features/userlists/api.ts
+@@ -0,0 +1,46 @@
++import { invoke } from "@tauri-apps/api/core";
++import type { TitleSummary } from "@aethervault/shared-types";
++
++/** Statut manuel d'un titre de la watchlist. */
++export type WatchStatus = "todo" | "in_progress" | "done";
++
++export const WATCH_STATUS_LABELS: Record<WatchStatus, string> = {
++  todo: "À voir",
++  in_progress: "En cours",
++  done: "Vu",
++};
++
++/** Note (0,5 à 5 par pas de 0,5) et statut de watchlist d'un titre, pour le profil actif. */
++export interface TitleUserState {
++  title_id: number;
++  rating: number | null;
++  watch_status: WatchStatus | null;
++}
++
++export interface WatchlistEntry {
++  title: TitleSummary;
++  status: WatchStatus;
++  added_at: string;
++  rating: number | null;
++}
++
++/** Notes personnelles et watchlist — par profil (voir `commands/user_lists.rs`). */
++export const userListsApi = {
++  getState: (titleId: number) =>
++    invoke<TitleUserState>("get_title_user_state", { titleId }),
++  /** Plusieurs titres en une requête ; seuls les titres notés/listés sont renvoyés. */
++  listStates: (titleIds: number[]) =>
++    invoke<TitleUserState[]>("list_title_user_states", { titleIds }),
++  /** `null` retire la note. */
++  setRating: (titleId: number, rating: number | null) =>
++    invoke<void>("set_title_rating", { titleId, rating }),
++  watchlistAdd: (titleId: number) => invoke<void>("watchlist_add", { titleId }),
++  watchlistRemove: (titleId: number) => invoke<void>("watchlist_remove", { titleId }),
++  watchlistSetStatus: (titleId: number, status: WatchStatus) =>
++    invoke<void>("watchlist_set_status", { titleId, status }),
++  watchlistList: (categoryId?: number | null, status?: WatchStatus | null) =>
++    invoke<WatchlistEntry[]>("watchlist_list", {
++      categoryId: categoryId ?? null,
++      status: status ?? null,
++    }),
++};
+diff --git a/apps/desktop/src/features/userlists/useTitleUserStates.ts b/apps/desktop/src/features/userlists/useTitleUserStates.ts
+new file mode 100644
+index 0000000..600c442
+--- /dev/null
++++ b/apps/desktop/src/features/userlists/useTitleUserStates.ts
+@@ -0,0 +1,38 @@
++import { useEffect, useState } from "react";
++import { userListsApi, type TitleUserState } from "./api";
++
++/**
++ * Notes et statuts de watchlist d'une liste de titres (grilles d'affiches),
++ * récupérés en UNE requête et indexés par id de titre. Les titres sans note ni
++ * statut sont simplement absents de la table.
++ */
++export function useTitleUserStates(titleIds: number[] | null): Record<number, TitleUserState> {
++  const [states, setStates] = useState<Record<number, TitleUserState>>({});
++  // Clé stable : l'effet ne se relance que si la LISTE d'ids change réellement.
++  const key = titleIds === null ? "" : titleIds.join(",");
++
++  useEffect(() => {
++    if (titleIds === null || titleIds.length === 0) {
++      setStates({});
++      return;
++    }
++    let alive = true;
++    userListsApi
++      .listStates(titleIds)
++      .then((rows) => {
++        if (!alive) return;
++        const map: Record<number, TitleUserState> = {};
++        for (const row of rows) map[row.title_id] = row;
++        setStates(map);
++      })
++      .catch(() => {
++        if (alive) setStates({});
++      });
++    return () => {
++      alive = false;
++    };
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [key]);
++
++  return states;
++}
+diff --git a/apps/desktop/src/layout/Sidebar.tsx b/apps/desktop/src/layout/Sidebar.tsx
+index d6fd186..4093d98 100644
+--- a/apps/desktop/src/layout/Sidebar.tsx
++++ b/apps/desktop/src/layout/Sidebar.tsx
+@@ -4,6 +4,7 @@ import {
+   Home,
+   Compass,
+   Layers,
++  Bookmark,
+   Users,
+   Settings,
+   Share2,
+@@ -23,6 +24,7 @@ import { categoryIcon } from "../lib/categoryIcon";
+ const SECONDARY_NAV_ITEMS = [
+   { path: "/explore", label: "Explorer", icon: Compass },
+   { path: "/collections", label: "Collections", icon: Layers },
++  { path: "/watchlist", label: "Watchlist", icon: Bookmark },
+   { path: "/share", label: "Partage", icon: Share2 },
+   { path: "/stats", label: "Time Capsule", icon: BarChart3 },
+   { path: "/profiles", label: "Profils", icon: Users },
+diff --git a/apps/desktop/src/pages/CategoryPage.tsx b/apps/desktop/src/pages/CategoryPage.tsx
+index c0d1a7b..29e4515 100644
+--- a/apps/desktop/src/pages/CategoryPage.tsx
++++ b/apps/desktop/src/pages/CategoryPage.tsx
+@@ -26,6 +26,8 @@ import { ScanProgressBar } from "../components/ScanProgressBar";
+ import { TitleRoulette } from "../components/TitleRoulette";
+ import { usePlayer } from "../player/PlayerContext";
+ import { assetUrl } from "../lib/assetUrl";
++import { TitleUserBadges } from "../features/userlists/TitleUserBadges";
++import { useTitleUserStates } from "../features/userlists/useTitleUserStates";
+ import { useAnimatedBackdropActive } from "../hooks/useAnimatedBackdropActive";
+ import "./pages.css";
+ 
+@@ -63,6 +65,8 @@ export function CategoryPage() {
+   const hideCategoryBackdrop = useCategoryBackdropHidden();
+   const [category, setCategory] = useState<Category | null | undefined>(undefined);
+   const [titles, setTitles] = useState<TitleSummary[] | null>(null);
++  // Notes personnelles et watchlist du profil actif, en une requête pour toute la grille.
++  const userStates = useTitleUserStates(titles ? titles.map((t) => t.id) : null);
+   const [libraries, setLibraries] = useState<Library[]>([]);
+   const [modalOpen, setModalOpen] = useState(false);
+   const [deleteTarget, setDeleteTarget] = useState<TitleSummary | null>(null);
+@@ -357,7 +361,9 @@ export function CategoryPage() {
+                       }
+                 }
+                 deleteLabel={`Supprimer « ${title.name} »`}
+-              />
++              >
++                <TitleUserBadges state={userStates[title.id]} />
++              </Card>
+             ))}
+           </div>
+         )}
+diff --git a/apps/desktop/src/pages/TitleDetailPage.tsx b/apps/desktop/src/pages/TitleDetailPage.tsx
+index fb48ee7..9aa3eba 100644
+--- a/apps/desktop/src/pages/TitleDetailPage.tsx
++++ b/apps/desktop/src/pages/TitleDetailPage.tsx
+@@ -19,6 +19,7 @@ import { useAnimatedBackdropActive } from "../hooks/useAnimatedBackdropActive";
+ import { libraryApi } from "../features/library/api";
+ import { PersonalizableImage } from "../features/personalization/PersonalizableImage";
+ import { CastRow, GenreRow } from "../components/TitleRows";
++import { TitleUserPanel } from "../features/userlists/TitleUserPanel";
+ import { usePlayer } from "../player/PlayerContext";
+ import { assetUrl } from "../lib/assetUrl";
+ import "./pages.css";
+@@ -472,6 +473,7 @@ export function TitleDetailPage() {
+               ))}
+             </div>
+           )}
++          <TitleUserPanel titleId={title.id} />
+           {title.directors.length > 0 && (
+             <p>
+               <strong>Réalisation : </strong> {title.directors.join(", ")}
+diff --git a/apps/desktop/src/pages/WatchlistPage.tsx b/apps/desktop/src/pages/WatchlistPage.tsx
+new file mode 100644
+index 0000000..f62a710
+--- /dev/null
++++ b/apps/desktop/src/pages/WatchlistPage.tsx
+@@ -0,0 +1,229 @@
++import { useCallback, useEffect, useMemo, useState } from "react";
++import { useNavigate } from "react-router-dom";
++import { Bookmark, X } from "lucide-react";
++import { EmptyState, IconButton } from "@aethervault/ui-kit";
++import type { Category } from "@aethervault/shared-types";
++import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
++import { StarRating } from "../components/StarRating";
++import { categoryApi } from "../features/category/api";
++import {
++  userListsApi,
++  WATCH_STATUS_LABELS,
++  type WatchStatus,
++  type WatchlistEntry,
++} from "../features/userlists/api";
++import { assetUrl } from "../lib/assetUrl";
++import "./pages.css";
++
++type StatusFilter = "all" | WatchStatus;
++type SortKey = "added" | "rating" | "name";
++
++const STATUS_TABS: { key: StatusFilter; label: string }[] = [
++  { key: "all", label: "Tous" },
++  { key: "todo", label: WATCH_STATUS_LABELS.todo },
++  { key: "in_progress", label: WATCH_STATUS_LABELS.in_progress },
++  { key: "done", label: WATCH_STATUS_LABELS.done },
++];
++
++const SORT_LABELS: Record<SortKey, string> = {
++  added: "Ajout récent",
++  rating: "Ma note",
++  name: "Titre (A → Z)",
++};
++
++/**
++ * Watchlist du profil actif : titres « à voir », « en cours » et « vus »,
++ * filtrables par statut et par catégorie, triables par date d'ajout, note ou
++ * titre. Distincte des Collections (listes libres et globales). On y change le
++ * statut et la note directement depuis chaque affiche.
++ */
++export function WatchlistPage() {
++  const navigate = useNavigate();
++  const [entries, setEntries] = useState<WatchlistEntry[] | null>(null);
++  const [categories, setCategories] = useState<Category[]>([]);
++  const [status, setStatus] = useState<StatusFilter>("all");
++  const [categoryId, setCategoryId] = useState<number | null>(null);
++  const [sort, setSort] = useState<SortKey>("added");
++  const [error, setError] = useState<string | null>(null);
++
++  const refresh = useCallback(() => {
++    userListsApi
++      .watchlistList()
++      .then((rows) => {
++        setEntries(rows);
++        setError(null);
++      })
++      .catch((err) => {
++        setEntries([]);
++        setError(typeof err === "string" ? err : "Chargement impossible.");
++      });
++  }, []);
++
++  useEffect(() => {
++    refresh();
++    categoryApi.list().then(setCategories).catch(() => {});
++  }, [refresh]);
++
++  const run = async (action: () => Promise<void>) => {
++    setError(null);
++    try {
++      await action();
++      refresh();
++    } catch (err) {
++      setError(typeof err === "string" ? err : err instanceof Error ? err.message : "Échec.");
++    }
++  };
++
++  // Catégories réellement présentes dans la watchlist (le filtre n'offre pas de choix vides).
++  const presentCategories = useMemo(() => {
++    const ids = new Set((entries ?? []).map((e) => e.title.category_id));
++    return categories.filter((c) => ids.has(c.id));
++  }, [entries, categories]);
++
++  const inCategory = useMemo(
++    () => (entries ?? []).filter((e) => categoryId === null || e.title.category_id === categoryId),
++    [entries, categoryId]
++  );
++
++  const counts = useMemo(() => {
++    const c: Record<StatusFilter, number> = { all: inCategory.length, todo: 0, in_progress: 0, done: 0 };
++    for (const e of inCategory) c[e.status] += 1;
++    return c;
++  }, [inCategory]);
++
++  const visible = useMemo(() => {
++    const list = inCategory.filter((e) => status === "all" || e.status === status);
++    const copy = [...list];
++    if (sort === "rating") {
++      // Les titres non notés passent après les notés.
++      copy.sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1) || a.title.name.localeCompare(b.title.name));
++    } else if (sort === "name") {
++      copy.sort((a, b) => a.title.name.localeCompare(b.title.name, "fr"));
++    }
++    return copy; // « added » : ordre renvoyé par le backend (ajout le plus récent d'abord)
++  }, [inCategory, status, sort]);
++
++  const openTitle = (entry: WatchlistEntry) => {
++    const category = categories.find((c) => c.id === entry.title.category_id);
++    if (category) navigate(`/category/${category.key}/title/${entry.title.id}`);
++  };
++
++  return (
++    <div>
++      <ModernPageHeader
++        icon={<Bookmark size={26} />}
++        tint={PAGE_TINTS.watchlist}
++        kicker="Votre liste"
++        title="Watchlist"
++        description="Ce que vous voulez voir, ce que vous regardez, et ce que vous avez vu — avec votre note."
++      />
++
++      <div className="avm-watchlist__bar">
++        <div className="avm-watchlist__tabs" role="tablist" aria-label="Statut">
++          {STATUS_TABS.map((t) => (
++            <button
++              key={t.key}
++              type="button"
++              role="tab"
++              aria-selected={status === t.key}
++              className={`avm-watchlist__tab${status === t.key ? " avm-watchlist__tab--active" : ""}`}
++              onClick={() => setStatus(t.key)}
++            >
++              {t.label} <span className="avm-watchlist__count">{counts[t.key]}</span>
++            </button>
++          ))}
++        </div>
++        <div className="avm-watchlist__filters">
++          <label>
++            Catégorie{" "}
++            <select
++              className="avm-user-panel__select"
++              value={categoryId ?? ""}
++              onChange={(e) => setCategoryId(e.target.value === "" ? null : Number(e.target.value))}
++            >
++              <option value="">Toutes</option>
++              {presentCategories.map((c) => (
++                <option key={c.id} value={c.id}>
++                  {c.name}
++                </option>
++              ))}
++            </select>
++          </label>
++          <label>
++            Trier par{" "}
++            <select
++              className="avm-user-panel__select"
++              value={sort}
++              onChange={(e) => setSort(e.target.value as SortKey)}
++            >
++              {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
++                <option key={k} value={k}>
++                  {SORT_LABELS[k]}
++                </option>
++              ))}
++            </select>
++          </label>
++        </div>
++      </div>
++
++      {error && <p className="avm-settings-error">{error}</p>}
++
++      {entries === null ? (
++        <p>Chargement…</p>
++      ) : entries.length === 0 ? (
++        <EmptyState
++          icon={<Bookmark size={32} />}
++          title="Votre watchlist est vide"
++          description="Ajoutez des titres depuis leur page (bouton « Ajouter à ma watchlist »)."
++        />
++      ) : visible.length === 0 ? (
++        <EmptyState title="Aucun titre ici" description="Changez de statut ou de catégorie." />
++      ) : (
++        <div className="avm-category-grid avm-category-grid--posters">
++          {visible.map((entry) => (
++            <div key={entry.title.id} className="avm-collections__cardwrap avm-watchlist__card">
++              <button className="avm-explore-card" onClick={() => openTitle(entry)}>
++                {assetUrl(entry.title.poster) ? (
++                  <img src={assetUrl(entry.title.poster)} alt="" loading="lazy" />
++                ) : (
++                  <div className="avm-card__placeholder" aria-hidden="true" />
++                )}
++                <span className="avm-explore-card__name">{entry.title.name}</span>
++              </button>
++              <IconButton
++                label="Retirer de la watchlist"
++                onClick={() => void run(() => userListsApi.watchlistRemove(entry.title.id))}
++              >
++                <X size={14} />
++              </IconButton>
++              <div className="avm-watchlist__controls">
++                <select
++                  className="avm-user-panel__select"
++                  aria-label={`Statut de ${entry.title.name}`}
++                  value={entry.status}
++                  onChange={(e) =>
++                    void run(() =>
++                      userListsApi.watchlistSetStatus(entry.title.id, e.target.value as WatchStatus)
++                    )
++                  }
++                >
++                  {(Object.keys(WATCH_STATUS_LABELS) as WatchStatus[]).map((s) => (
++                    <option key={s} value={s}>
++                      {WATCH_STATUS_LABELS[s]}
++                    </option>
++                  ))}
++                </select>
++                <StarRating
++                  value={entry.rating}
++                  size={16}
++                  label={`Ma note pour ${entry.title.name}`}
++                  onChange={(next) => void run(() => userListsApi.setRating(entry.title.id, next))}
++                />
++              </div>
++            </div>
++          ))}
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/apps/desktop/src/pages/pages.css b/apps/desktop/src/pages/pages.css
+index 8b7ac4c..7de561d 100644
+--- a/apps/desktop/src/pages/pages.css
++++ b/apps/desktop/src/pages/pages.css
+@@ -1518,4 +1518,89 @@ opacity: 1 !important;
+ .avm-cast-card { flex: 0 0 110px; display: flex; flex-direction: column; align-items: center; gap: 6px; background: none; border: 0; color: inherit; cursor: pointer; text-align: center; }
+ .avm-cast-card img, .avm-cast-card__fallback { width: 110px; height: 150px; object-fit: cover; border-radius: 10px; }
+ .avm-cast-card__fallback { display: flex; align-items: center; justify-content: center; font-size: 40px; background: var(--color-surface-hover, #26262d); color: var(--color-text-muted, #9a9aa5); }
+-.avm-cast-card__name { font-size: 12px; font-weight: 600; }
+\ No newline at end of file
++.avm-cast-card__name { font-size: 12px; font-weight: 600; }
++/* ---- Notes personnelles et Watchlist (par profil) --------------------- */
++.avm-user-panel {
++  display: flex;
++  flex-direction: column;
++  gap: 0.6rem;
++  margin: 0.6rem 0;
++}
++.avm-user-panel__row {
++  display: flex;
++  align-items: center;
++  gap: 0.75rem;
++  flex-wrap: wrap;
++}
++.avm-user-panel__label {
++  min-width: 5.5rem;
++  font-weight: 600;
++  color: var(--color-text-muted);
++}
++.avm-user-panel__select {
++  background: var(--color-surface);
++  color: var(--color-text);
++  border: 1px solid var(--color-border);
++  border-radius: var(--radius-sm);
++  padding: 0.3rem 0.5rem;
++  font: inherit;
++}
++.avm-user-panel__select option {
++  background: #14161a;
++  color: var(--color-text);
++}
++
++.avm-watchlist__bar {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  justify-content: space-between;
++  gap: 0.75rem 1.5rem;
++  margin: 0 0 1rem;
++}
++.avm-watchlist__tabs {
++  display: flex;
++  gap: 0.25rem;
++  flex-wrap: wrap;
++}
++.avm-watchlist__tab {
++  background: none;
++  border: 1px solid var(--color-border);
++  border-radius: 999px;
++  color: var(--color-text-muted);
++  padding: 0.35rem 0.9rem;
++  font: inherit;
++  font-weight: 600;
++  cursor: pointer;
++}
++.avm-watchlist__tab:hover {
++  color: var(--color-text);
++}
++.avm-watchlist__tab--active {
++  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
++  border-color: var(--color-accent);
++  color: var(--color-accent);
++}
++.avm-watchlist__count {
++  opacity: 0.7;
++  font-weight: 500;
++  margin-left: 0.2rem;
++}
++.avm-watchlist__filters {
++  display: flex;
++  gap: 1rem;
++  flex-wrap: wrap;
++  color: var(--color-text-muted);
++  font-size: 0.9rem;
++}
++.avm-watchlist__card {
++  display: flex;
++  flex-direction: column;
++  gap: 0.4rem;
++}
++.avm-watchlist__controls {
++  display: flex;
++  flex-direction: column;
++  gap: 0.35rem;
++  padding: 0 0.1rem;
++}
+diff --git a/apps/desktop/src/router.tsx b/apps/desktop/src/router.tsx
+index 930aedb..e16c026 100644
+--- a/apps/desktop/src/router.tsx
++++ b/apps/desktop/src/router.tsx
+@@ -14,6 +14,7 @@ import { LibraryPage } from "./pages/LibraryPage";
+ import { LibraryDetailPage } from "./pages/LibraryDetailPage";
+ import { ExplorePage } from "./pages/ExplorePage";
+ import { CollectionsPage } from "./pages/CollectionsPage";
++import { WatchlistPage } from "./pages/WatchlistPage";
+ import { SharePage } from "./pages/SharePage";
+ import { StatsPage } from "./pages/StatsPage";
+ import { ProfilesPage } from "./pages/ProfilesPage";
+@@ -98,6 +99,7 @@ export const router = createHashRouter([
+       { path: "/libraries/:id", element: <LibraryDetailPage /> },
+       { path: "/explore", element: <ExplorePage /> },
+       { path: "/collections", element: <CollectionsPage /> },
++      { path: "/watchlist", element: <WatchlistPage /> },
+       { path: "/share", element: <SharePage /> },
+       { path: "/stats", element: <StatsPage /> },
+       { path: "/profiles", element: <ProfilesPage /> },
