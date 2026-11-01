@@ -33,6 +33,12 @@
 ### 🌐 Site web
 Découvrez le projet en détail : **[aethervault-website](https://spectglak-ui.github.io/aethervault-website/#/)**
 
+### Présentation du logiciel
+
+[![AetherVault Media - présentation](https://img.youtube.com/vi/T4IK7yfUuhk/maxresdefault.jpg)](https://youtu.be/T4IK7yfUuhk)
+
+Cliquez sur l’image pour regarder la vidéo de démonstration.
+
 ---
 
 ## ✨ Caractéristiques
