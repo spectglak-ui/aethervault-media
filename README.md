@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![AetherVault Media](https://github.com/user-attachments/assets/9152b0d9-8d67-4511-b3d8-588f48f80259)
+![AetherVault Media](https://github.com/user-attachments/assets/7e06c1df-64e5-432f-8955-c7d7f95c328f)
 
 **Centre multimédia personnel, local-first, entièrement contrôlé par vous**
 
