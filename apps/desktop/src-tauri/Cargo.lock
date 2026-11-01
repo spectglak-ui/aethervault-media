@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "aethervault-media"
-version = "0.7.0"
+version = "0.7.5"
 dependencies = [
  "aes-gcm",
  "argon2",

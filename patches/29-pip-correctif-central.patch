@@ -1,0 +1,231 @@
+diff --git a/apps/desktop/src-tauri/src/commands/playback.rs b/apps/desktop/src-tauri/src/commands/playback.rs
+index b900ae7..6f8ca7f 100644
+--- a/apps/desktop/src-tauri/src/commands/playback.rs
++++ b/apps/desktop/src-tauri/src/commands/playback.rs
+@@ -158,6 +158,12 @@ pub fn player_stop(state: tauri::State<AppState>) -> Result<(), String> {
+ /// `width` / `height` sont déjà en pixels PHYSIQUES (le frontend applique
+ /// `window.devicePixelRatio` avant l'appel — voir `PlayerSurface.tsx`),
+ /// exactement comme avant la migration.
++///
++/// Patch 29 (PiP réel) — signature et appelants INCHANGÉS : c'est
++/// `PlaybackEngineHandle::attach_surface` qui décide seule, côté Rust,
++/// entre une bascule à chaud (même lecture déjà en cours, ex. bascule vers
++/// le PiP) et le chemin froid historique (nouveau chargement). Le frontend
++/// n'a rien à savoir de cette distinction.
+ #[tauri::command]
+ pub fn player_attach_surface(
+     state: tauri::State<AppState>,
+diff --git a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+index dd838ce..f11ea65 100644
+--- a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
++++ b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+@@ -76,6 +76,18 @@ struct SurfaceState {
+     render_thread: Option<std::thread::JoinHandle<()>>,
+     size: Arc<(AtomicI32, AtomicI32)>,
+     in_flight_frames: Arc<AtomicI32>,
++    /// Patch 29 (PiP réel) — destinataire des trames, désormais INTERCHANGEABLE
++    /// sans recréer ni le thread de rendu ni le contexte mpv (`sw_render::run`
++    /// lit ce verrou à chaque image au lieu de posséder un `Channel` figé).
++    /// C'est ce qui permet une bascule fenêtre principale ↔ PiP sans recharger
++    /// la source (voir `attach_surface`, branche "bascule à chaud").
++    sink: Arc<Mutex<Channel<InvokeResponseBody>>>,
++    /// Génération de CHARGEMENT (`PlaybackEngineHandle::load_generation`) sous
++    /// laquelle cette surface a été créée — sert à distinguer une simple
++    /// bascule de fenêtre (même lecture, même génération → bascule à chaud)
++    /// d'un vrai nouveau chargement (génération différente → chemin froid
++    /// existant, avec recréation du contexte et rechargement correctif).
++    load_generation: u64,
+ }
+ 
+ /// 0.5.3 : « start gate » — pour les flux réseau, la lecture reste en
+@@ -383,6 +395,13 @@ pub struct PlaybackEngineHandle {
+     /// moment de son lancement et s'annule si elle a changé — sinon il
+     /// relançait le flux (et le son) APRÈS le stop, sans image visible.
+     stop_epoch: Arc<AtomicU64>,
++    /// Patch 29 (PiP réel) — génération de CHARGEMENT : incrémentée
++    /// uniquement par un vrai nouveau chargement (`load_inner`) ou un arrêt
++    /// (`stop`), JAMAIS par une simple bascule de fenêtre. `attach_surface`
++    /// compare cette valeur à celle mémorisée par la `SurfaceState` existante
++    /// pour décider bascule à chaud (même génération, pas de rechargement) vs
++    /// chemin froid (génération différente, comportement historique inchangé).
++    load_generation: Arc<AtomicU64>,
+     /// Niveau de spatialisation VOULU (`SpatialLevel as u8`) — source de
+     /// vérité côté moteur : appliqué avant CHAQUE `loadfile`, quel que soit
+     /// le chemin de chargement (fichier, AetherFy, TV, changement de qualité).
+@@ -561,6 +580,7 @@ impl PlaybackEngineHandle {
+             pot_cache: Mutex::new(None),
+             gate: gate.clone(),
+             stop_epoch: Arc::new(AtomicU64::new(0)),
++            load_generation: Arc::new(AtomicU64::new(0)),
+             spatial_level: AtomicU8::new(SpatialLevel::Off.as_u8()),
+             cinema_level: AtomicU8::new(CinemaLevel::Off.as_u8()),
+             audio_applied: AtomicU8::new(SPATIAL_UNKNOWN),
+@@ -599,6 +619,11 @@ impl PlaybackEngineHandle {
+     }
+ 
+     fn load_inner(&self, path: &str) -> Result<(), String> {
++        // Patch 29 (PiP réel) — un vrai nouveau chargement ferme la fenêtre
++        // d'éligibilité à la bascule à chaud : la PROCHAINE `attach_surface`
++        // (quelle que soit la fenêtre) empruntera forcément le chemin froid,
++        // comme avant ce patch.
++        self.load_generation.fetch_add(1, Ordering::SeqCst);
+         if path.starts_with("http://") || path.starts_with("https://") {
+             return self.load_url(path);
+         }
+@@ -1252,6 +1277,12 @@ impl PlaybackEngineHandle {
+         //    (ou déjà en attente) rechargeait `last_source` 300 ms plus
+         //    tard et relançait l'audio après le stop.
+         self.stop_epoch.fetch_add(1, Ordering::SeqCst);
++        // Patch 29 (PiP réel) — défensif : `detach_internal()` (juste plus
++        // bas) vide déjà entièrement `self.surface`, donc la prochaine
++        // `attach_surface` repart de toute façon à froid (`guard` est `None`).
++        // Cet incrément garde malgré tout `load_generation` cohérente avec
++        // `stop_epoch` si cette logique évolue un jour.
++        self.load_generation.fetch_add(1, Ordering::SeqCst);
+         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) = None;
+         // 1. Pause immédiate : coupe l'audio avant même que le stop
+         //    n'ait fini de démonter le démuxeur.
+@@ -1288,7 +1319,39 @@ impl PlaybackEngineHandle {
+         width: i32,
+         height: i32,
+     ) -> Result<(), String> {
++        let current_gen = self.load_generation.load(Ordering::SeqCst);
+         let mut guard = self.surface.lock().unwrap_or_else(|p| p.into_inner());
++        // Patch 29 (PiP réel) — BASCULE À CHAUD : une surface est déjà vivante
++        // (thread de rendu + contexte mpv en place) pour CETTE MÊME lecture
++        // (génération de chargement identique, donc aucun `load`/`stop` ne
++        // s'est produit entre-temps) → on redirige simplement les PROCHAINES
++        // trames vers le nouveau `channel` (nouvelle fenêtre/canvas), sans
++        // toucher au thread ni au contexte mpv, et SANS le rechargement
++        // correctif 300 ms ci-dessous (qui n'a de sens que pour une toute
++        // première attache — voir son commentaire). C'est précisément ce qui
++        // rend la bascule fenêtre principale ↔ PiP instantanée, sans
++        // rechargement réseau ni perte de tampon (plus de « mise en mémoire
++        // tampon » au toggle PiP — voir `paused-for-cache`/`isBuffering`,
++        // patch 21 : c'était un VRAI re-tampon dû au `loadfile` ci-dessous,
++        // pas un artefact visuel).
++        if let Some(state) = guard.as_ref() {
++            if state.load_generation == current_gen {
++                *state.sink.lock().unwrap_or_else(|p| p.into_inner()) = channel;
++                state.size.0.store(width, Ordering::Relaxed);
++                state.size.1.store(height, Ordering::Relaxed);
++                // Les trames en vol vers l'ANCIEN destinataire ne seront
++                // jamais accusées (la fenêtre qui les attendait a changé) :
++                // on repart de 0 pour ne pas brider artificiellement le
++                // nouveau destinataire — exactement ce que fait déjà le
++                // chemin froid pour une toute nouvelle `SurfaceState`.
++                state.in_flight_frames.store(0, Ordering::Relaxed);
++                log::info!(
++                    "[playback] attach_surface {width}x{height} — bascule à chaud (génération {current_gen}), aucun rechargement"
++                );
++                return Ok(());
++            }
++        }
++        // ---- Chemin froid (comportement historique, inchangé) ----
+         if let Some(mut previous) = guard.take() {
+             previous.stop_flag.store(true, Ordering::Relaxed);
+             if let Some(render_thread) = previous.render_thread.take() {
+@@ -1301,16 +1364,22 @@ impl PlaybackEngineHandle {
+         let size = Arc::new((AtomicI32::new(width), AtomicI32::new(height)));
+         let stop_flag = Arc::new(AtomicBool::new(false));
+         let in_flight_frames = Arc::new(AtomicI32::new(0));
++        // Patch 29 (PiP réel) — le canal n'est plus possédé directement par
++        // le thread de rendu : il est derrière ce verrou partagé, pour
++        // pouvoir être remplacé plus tard par une bascule à chaud (ci-dessus)
++        // sans jamais recréer ce thread ni le contexte mpv qu'il porte.
++        let sink = Arc::new(Mutex::new(channel));
+         let functions = self.functions.clone();
+         let mpv = sw_render::MpvHandlePtr(self.mpv.0);
+         let render_stop_flag = stop_flag.clone();
+         let render_size = size.clone();
+         let render_in_flight = in_flight_frames.clone();
++        let render_sink = sink.clone();
+         let render_thread = std::thread::spawn(move || {
+             sw_render::run(
+                 functions,
+                 mpv,
+-                channel,
++                render_sink,
+                 render_stop_flag,
+                 render_size,
+                 render_in_flight,
+@@ -1321,6 +1390,8 @@ impl PlaybackEngineHandle {
+             render_thread: Some(render_thread),
+             size,
+             in_flight_frames,
++            sink,
++            load_generation: current_gen,
+         });
+         // 0.5.0 (correctif écran noir) : le VO libmpv de mpv a pu démarrer
+         // AVANT que ce contexte de rendu existe → rechargement complet de
+diff --git a/apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs b/apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs
+index b1fc0d3..d362e45 100644
+--- a/apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs
++++ b/apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs
+@@ -281,7 +281,8 @@ pub fn set_render_scale(percent: u32) {
+ }
+ 
+ /// Boucle de rendu logicielle : tourne jusqu'à `stop_flag`, pousse chaque
+-/// image décodée dans `channel` sous forme d'un message binaire brut
++/// image décodée dans `sink` (verrou autour d'un `Channel`, remplaçable à
++/// chaud — voir plus bas) sous forme d'un message binaire brut
+ /// `[largeur:u32 LE][hauteur:u32 LE][pts_ms:f64 LE][pixels RGB0,
+ /// largeur*hauteur*4 octets]`.
+ ///
+@@ -297,10 +298,17 @@ pub fn set_render_scale(percent: u32) {
+ /// `in_flight` : compteur de contre-pression partagé avec
+ /// `PlaybackEngineHandle::ack_frame` — voir `MAX_IN_FLIGHT_FRAMES`
+ /// ci-dessus pour le détail du correctif.
++/// Patch 29 (PiP réel) — `sink` remplace l'ancien `channel` possédé par
++/// valeur : le DESTINATAIRE des trames peut désormais être remplacé en
++/// cours de route (bascule fenêtre principale ↔ PiP) par
++/// `PlaybackEngineHandle::attach_surface` SANS jamais relancer cette
++/// fonction — donc sans recréer `render_ctx` (mpv_render_context_create)
++/// ci-dessous, qui reste vivant pour toute la durée de la lecture tant que
++/// la bascule reste « à chaud » (voir `attach_surface`).
+ pub fn run(
+     functions: Arc<MpvFunctions>,
+     mpv: MpvHandlePtr,
+-    channel: Channel<InvokeResponseBody>,
++    sink: Arc<Mutex<Channel<InvokeResponseBody>>>,
+     stop_flag: Arc<AtomicBool>,
+     size: Arc<(AtomicI32, AtomicI32)>,
+     in_flight: Arc<AtomicI32>,
+@@ -656,10 +664,17 @@ pub fn run(
+             // une nouvelle allocation est faite à l'image suivante pour CE
+             // buffer de transport. `render_target`, lui, est déjà réutilisé
+             // d'une image à l'autre (voir plus haut).
+-            if channel
+-                .send(InvokeResponseBody::Raw(std::mem::take(&mut buffer)))
+-                .is_err()
+-            {
++            //
++            // Patch 29 (PiP réel) : `sink` est relu à CHAQUE image (verrou
++            // tenu seulement le temps de l'appel `send`) plutôt que capturé
++            // une fois pour toute la durée du thread — c'est ce qui permet à
++            // `attach_surface` de rediriger les trames vers une autre fenêtre
++            // sans jamais relancer ce thread.
++            let send_result = sink
++                .lock()
++                .unwrap_or_else(|p| p.into_inner())
++                .send(InvokeResponseBody::Raw(std::mem::take(&mut buffer)));
++            if send_result.is_err() {
+                 // La fenêtre destinataire a probablement disparu (fermeture de
+                 // la fenêtre détachée, navigation...) — ce n'est pas une erreur
+                 // du moteur de lecture lui-même, `detach_internal` positionnera
+@@ -678,10 +693,11 @@ pub fn run(
+             // Si les accusés reprennent, le régime normal redémarre de
+             // lui-même ; sinon cette trame isolée ne crée aucune file.
+             in_flight.store(MAX_IN_FLIGHT_FRAMES - 1, Ordering::Relaxed);
+-            if channel
+-                .send(InvokeResponseBody::Raw(std::mem::take(&mut buffer)))
+-                .is_ok()
+-            {
++            let probe_result = sink
++                .lock()
++                .unwrap_or_else(|p| p.into_inner())
++                .send(InvokeResponseBody::Raw(std::mem::take(&mut buffer)));
++            if probe_result.is_ok() {
+                 in_flight.fetch_add(1, Ordering::Relaxed);
+                 last_frame_sent = Some(Instant::now());
+                 stat_sent += 1;

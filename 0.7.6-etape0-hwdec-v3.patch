@@ -1,0 +1,601 @@
+diff --git a/apps/desktop/src-tauri/src/commands/playback.rs b/apps/desktop/src-tauri/src/commands/playback.rs
+index b900ae7..c0803db 100644
+--- a/apps/desktop/src-tauri/src/commands/playback.rs
++++ b/apps/desktop/src-tauri/src/commands/playback.rs
+@@ -441,2 +441,74 @@ pub fn player_set_render_scale(percent: u32) -> Result<(), String> {
+ 
++// ---- Décodage vidéo matériel (0.7.6, étape 1 du plan GPU) --------------
++//
++// Réglage global à deux modes, enregistré dans la table `settings` (même
++// patron que la spatialisation audio) et poussé dans le moteur au
++// démarrage (voir `lib.rs`) :
++// - `off`  → `hwdec=no` (décodage logiciel) ;
++// - `auto` → `hwdec=auto-copy` (décodage matériel avec recopie en mémoire
++//   système, seule forme compatible avec le rendu logiciel).
++// Aucun réglage enregistré = comportement historique (`auto-safe`, qui
++// revient en pratique au décodage logiciel avec ce backend de rendu).
++
++const HWDEC_MODE_KEY: &str = "player_hwdec_mode";
++
++/// Mode enregistré (`auto` | `off`), ou `None` si aucun réglage valide.
++pub fn read_hwdec_mode(conn: &rusqlite::Connection) -> Option<String> {
++    crate::db::repositories::settings_repository::get(conn, HWDEC_MODE_KEY)
++        .ok()
++        .flatten()
++        .filter(|mode| crate::services::playback_engine::hwdec_value_for_mode(mode).is_some())
++}
++
++#[derive(serde::Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct HwdecStatus {
++    /// `default` (aucun réglage enregistré), `auto` ou `off`.
++    pub mode: String,
++    /// Valeur `hwdec` actuellement demandée à mpv.
++    pub requested: String,
++    /// `hwdec-current` : méthode réellement active (`no` = logiciel).
++    pub current: String,
++    /// Valeur forcée par la variable d'environnement `AVM_HWDEC`, le cas échéant.
++    pub env_override: Option<String>,
++}
++
++fn build_hwdec_status(state: &AppState, mode: Option<String>) -> Result<HwdecStatus, String> {
++    let live = state.playback_engine.handle()?.hwdec_live();
++    Ok(HwdecStatus {
++        mode: mode.unwrap_or_else(|| "default".to_string()),
++        requested: live.requested,
++        current: live.current,
++        env_override: crate::services::playback_engine::hwdec_env_override(),
++    })
++}
++
++#[tauri::command]
++pub fn player_get_hwdec_status(state: tauri::State<AppState>) -> Result<HwdecStatus, String> {
++    let mode = {
++        let conn = state.get_conn()?;
++        read_hwdec_mode(&conn)
++    };
++    build_hwdec_status(&state, mode)
++}
++
++/// Applique le mode au moteur PUIS l'enregistre : un mode refusé par la
++/// version de libmpv installée n'est jamais persisté.
++#[tauri::command]
++pub fn player_set_hwdec_mode(
++    state: tauri::State<AppState>,
++    mode: String,
++) -> Result<HwdecStatus, String> {
++    if crate::services::playback_engine::hwdec_value_for_mode(&mode).is_none() {
++        return Err(format!("Mode de décodage inconnu : {mode}"));
++    }
++    state.playback_engine.handle()?.apply_hwdec_mode(&mode)?;
++    {
++        let conn = state.get_conn()?;
++        crate::db::repositories::settings_repository::set(&conn, HWDEC_MODE_KEY, &mode)
++            .map_err(|e| e.to_string())?;
++    }
++    build_hwdec_status(&state, Some(mode))
++}
++
+ // ---- Visualiseur audio AetherFy (0.6.0) --------------------------------
+diff --git a/apps/desktop/src-tauri/src/lib.rs b/apps/desktop/src-tauri/src/lib.rs
+index e7cb9b3..c651f79 100644
+--- a/apps/desktop/src-tauri/src/lib.rs
++++ b/apps/desktop/src-tauri/src/lib.rs
+@@ -170,3 +170,17 @@ pub fn run() {
+ 
+-                        // 0.6.1 : lance la synchronisation automatique VaultTube (toutes les 6h)
++            // Décodage vidéo (0.7.6) : le mode persisté dans Paramètres → Qualité de
++            // rendu est appliqué dès le démarrage, sans aucune vidéo chargée. Sans
++            // réglage enregistré, le comportement historique est conservé.
++            {
++                let state = app.state::<AppState>();
++                if let (Ok(engine), Ok(conn)) = (state.playback_engine.handle(), state.get_conn()) {
++                    if let Some(mode) = commands::playback::read_hwdec_mode(&conn) {
++                        if let Err(err) = engine.apply_hwdec_mode(&mode) {
++                            log::warn!("Décodage vidéo : mode « {mode} » non appliqué : {err}");
++                        }
++                    }
++                }
++            }
++
++            // 0.6.1 : lance la synchronisation automatique VaultTube (toutes les 6h)
+             {
+@@ -380,2 +394,4 @@ pub fn run() {
+             commands::playback::player_set_render_scale,
++            commands::playback::player_get_hwdec_status,
++            commands::playback::player_set_hwdec_mode,
+             commands::playback::visualizer_start,
+diff --git a/apps/desktop/src-tauri/src/services/playback_engine/bench.rs b/apps/desktop/src-tauri/src/services/playback_engine/bench.rs
+new file mode 100644
+index 0000000..dc9cab7
+--- /dev/null
++++ b/apps/desktop/src-tauri/src/services/playback_engine/bench.rs
+@@ -0,0 +1,56 @@
++//! Mesures du pipeline de rendu logiciel (mode benchmark, 0.7.6).
++//!
++//! Isolé dans son propre module pour que `sw_render.rs` ne porte que les
++//! points de mesure eux-mêmes (voir `AVM_BENCH`).
++
++use std::time::Instant;
++
++/// 0.7.6 (étape 0 du plan GPU) : mode benchmark. Quand `AVM_BENCH` est défini
++/// (et ≠ `0`), la boucle de rendu mesure la durée de chaque étape et en
++/// publie un résumé toutes les 2 s (ligne `[AV-DIAG] étapes 2 s`). Hors de ce
++/// mode, aucune mesure n'est faite : comportement et coût inchangés.
++pub(super) fn bench_enabled() -> bool {
++    std::env::var("AVM_BENCH")
++        .map(|v| !v.is_empty() && v != "0")
++        .unwrap_or(false)
++}
++
++/// Échantillons de durée (ms) d'une étape sur la fenêtre de 2 s courante.
++#[derive(Default)]
++pub(super) struct StageTimer {
++    samples_ms: Vec<f32>,
++}
++
++impl StageTimer {
++    pub(super) fn record(&mut self, started: Instant) {
++        self.samples_ms.push(started.elapsed().as_secs_f32() * 1000.0);
++    }
++
++    /// `p50/p95/max` en ms, puis remise à zéro de la fenêtre.
++    pub(super) fn summary(&mut self) -> String {
++        if self.samples_ms.is_empty() {
++            return "-".to_string();
++        }
++        self.samples_ms.sort_by(|a, b| a.total_cmp(b));
++        let n = self.samples_ms.len();
++        let p50 = self.samples_ms[n / 2];
++        let p95 = self.samples_ms[((n * 95) / 100).min(n - 1)];
++        let max = self.samples_ms[n - 1];
++        self.samples_ms.clear();
++        format!("{p50:.2}/{p95:.2}/{max:.2}")
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::StageTimer;
++
++    #[test]
++    fn stage_timer_summary_reports_percentiles_and_resets() {
++        let mut timer = StageTimer::default();
++        assert_eq!(timer.summary(), "-");
++        timer.samples_ms.extend((1..=100).map(|v| v as f32));
++        assert_eq!(timer.summary(), "51.00/96.00/100.00");
++        assert!(timer.samples_ms.is_empty());
++    }
++}
+diff --git a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+index dd838ce..d2b39e5 100644
+--- a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
++++ b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+@@ -5,2 +5,3 @@
+ pub(crate) mod mpv_ffi;
++mod bench;
+ mod sw_render;
+@@ -477,9 +478,13 @@ impl PlaybackEngineHandle {
+         // via l'API SW de libmpv et retombe sur le décodage CPU).
+-        let hwdec = std::env::var("AVM_HWDEC")
+-            .ok()
+-            .map(|v| v.trim().to_string())
+-            .filter(|v| !v.is_empty())
+-            .unwrap_or_else(|| "auto-safe".to_string());
++        let hwdec = hwdec_env_override().unwrap_or_else(|| "auto-safe".to_string());
+         log::info!("[playback] hwdec demandé : {hwdec}");
+-        set_option(&functions, mpv, "hwdec", &hwdec)?;
++        if let Err(err) = set_option(&functions, mpv, "hwdec", &hwdec) {
++            // 0.7.6 : une valeur refusée par CETTE version de libmpv ne doit
++            // plus empêcher le moteur de démarrer (avant : `?` fatal).
++            log::warn!(
++                "[playback] hwdec « {hwdec} » refusé par libmpv ({err}) — \
++                 repli sur « no » (décodage logiciel)"
++            );
++            set_option(&functions, mpv, "hwdec", "no")?;
++        }
+         // 0.5.3 : SUPPRIMÉ `video-timing-offset=0.150` (décalait la vidéo
+@@ -567,2 +572,3 @@ impl PlaybackEngineHandle {
+         });
++        handle.log_runtime_versions();
+         std::thread::spawn(move || run_event_thread(functions, mpv, app_handle, gate));
+@@ -1616,2 +1622,102 @@ impl PlaybackEngineHandle {
+ 
++/// 0.7.6 : valeur `hwdec` forcée par la variable d'environnement développeur
++/// `AVM_HWDEC` (ex. `auto-copy`). Prioritaire sur le réglage des Paramètres.
++pub fn hwdec_env_override() -> Option<String> {
++    std::env::var("AVM_HWDEC")
++        .ok()
++        .map(|v| v.trim().to_string())
++        .filter(|v| !v.is_empty())
++}
++
++/// Modes de décodage vidéo proposés dans Paramètres → Qualité de rendu.
++pub const HWDEC_MODE_AUTO: &str = "auto";
++pub const HWDEC_MODE_OFF: &str = "off";
++
++/// Valeur `hwdec` de mpv correspondant à un mode de Paramètres.
++/// `auto-copy` est la seule forme compatible avec le rendu logiciel de
++/// l'application : le décodeur matériel recopie les images en mémoire
++/// système (les formes sans copie sont refusées par le backend SW de
++/// libmpv, qui retombe alors silencieusement sur le décodage CPU).
++pub fn hwdec_value_for_mode(mode: &str) -> Option<&'static str> {
++    match mode {
++        HWDEC_MODE_AUTO => Some("auto-copy"),
++        HWDEC_MODE_OFF => Some("no"),
++        _ => None,
++    }
++}
++
++/// État du décodage vu par mpv (voir `PlaybackEngineHandle::hwdec_live`).
++#[derive(Clone, Default, serde::Serialize)]
++pub struct HwdecLive {
++    /// Valeur de l'option `hwdec` actuellement demandée à mpv.
++    pub requested: String,
++    /// `hwdec-current` : méthode réellement active (`no` = logiciel).
++    /// Vide ou `no` tant qu'aucune vidéo n'est chargée.
++    pub current: String,
++}
++
++impl PlaybackEngineHandle {
++    /// 0.7.6 (étape 0) : journalise les versions de mpv et de FFmpeg
++    /// réellement chargées. Sans elles, impossible de savoir quels `hwdec`
++    /// ou quelles options existent dans la `libmpv-2.dll` embarquée.
++    fn log_runtime_versions(&self) {
++        let mpv_version = self
++            .get_property_string("mpv-version")
++            .unwrap_or_else(|e| format!("indisponible ({e})"));
++        let ffmpeg_version = self
++            .get_property_string("ffmpeg-version")
++            .unwrap_or_else(|e| format!("indisponible ({e})"));
++        log::info!("[playback] versions chargées : {mpv_version} · FFmpeg {ffmpeg_version}");
++    }
++
++    /// Applique un mode de décodage (`auto` | `off`) au moteur en marche.
++    /// Renvoie la valeur `hwdec` effectivement retenue : celle de
++    /// `AVM_HWDEC` si elle est définie (prioritaire, essais développeur),
++    /// sinon la valeur correspondant au mode. Un décodeur déjà actif peut
++    /// être réinitialisé par mpv au changement (courte interruption).
++    pub fn apply_hwdec_mode(&self, mode: &str) -> Result<String, String> {
++        if let Some(forced) = hwdec_env_override() {
++            log::info!(
++                "[playback] hwdec : AVM_HWDEC={forced} prioritaire sur le réglage « {mode} »"
++            );
++            return Ok(forced);
++        }
++        let value = hwdec_value_for_mode(mode)
++            .ok_or_else(|| format!("mode de décodage inconnu : {mode}"))?;
++        self.set_property_string("hwdec", value)?;
++        log::info!("[playback] hwdec appliqué : {value} (mode « {mode} »)");
++        Ok(value.to_string())
++    }
++
++    /// Valeur demandée et méthode réellement active, lues dans mpv.
++    pub fn hwdec_live(&self) -> HwdecLive {
++        HwdecLive {
++            requested: self.get_property_string_opt("hwdec").unwrap_or_default(),
++            current: self
++                .get_property_string_opt("hwdec-current")
++                .unwrap_or_default(),
++        }
++    }
++
++    fn set_property_string(&self, name: &str, value: &str) -> Result<(), String> {
++        let cname = CString::new(name).map_err(|e| e.to_string())?;
++        let cvalue = CString::new(value).map_err(|e| e.to_string())?;
++        // MPV_FORMAT_STRING : `data` pointe vers un `char *`.
++        let mut raw: *mut c_char = cvalue.as_ptr() as *mut c_char;
++        let rc = unsafe {
++            (self.functions.set_property)(
++                self.mpv.0,
++                cname.as_ptr(),
++                MpvFormat::String as c_int,
++                &mut raw as *mut _ as *mut c_void,
++            )
++        };
++        if rc < 0 {
++            Err(error_string(&self.functions, rc))
++        } else {
++            Ok(())
++        }
++    }
++}
++
+ fn set_option(
+@@ -2307,2 +2413,12 @@ mod tests {
+     }
++
++    #[test]
++    fn hwdec_modes_map_to_mpv_values() {
++        // Seul `auto-copy` (recopie en mémoire système) est compatible avec
++        // le rendu logiciel : jamais de forme sans copie depuis le réglage.
++        assert_eq!(super::hwdec_value_for_mode("auto"), Some("auto-copy"));
++        assert_eq!(super::hwdec_value_for_mode("off"), Some("no"));
++        assert_eq!(super::hwdec_value_for_mode("auto-safe"), None);
++        assert_eq!(super::hwdec_value_for_mode(""), None);
++    }
+ }
+diff --git a/apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs b/apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs
+index b1fc0d3..8ffb2ff 100644
+--- a/apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs
++++ b/apps/desktop/src-tauri/src/services/playback_engine/sw_render.rs
+@@ -421,2 +421,16 @@ pub fn run(
+     let mut stat_skipped: u32 = 0;
++    // 0.7.6 : mesures par étape (AVM_BENCH uniquement).
++    let bench = super::bench::bench_enabled();
++    if bench {
++        log::info!(
++            "[playback_engine] [AV-DIAG] mode benchmark actif (AVM_BENCH) : durées par étape \
++             publiées toutes les 2 s"
++        );
++    }
++    let mut t_zero = super::bench::StageTimer::default();
++    let mut t_render = super::bench::StageTimer::default();
++    let mut t_pack = super::bench::StageTimer::default();
++    let mut t_latest = super::bench::StageTimer::default();
++    let mut t_send = super::bench::StageTimer::default();
++    let mut t_loop = super::bench::StageTimer::default();
+     while !stop_flag.load(Ordering::Relaxed) {
+@@ -454,2 +468,3 @@ pub fn run(
+         }
++        let t_loop0 = bench.then(Instant::now);
+         let raw_width = size.0.load(Ordering::Relaxed).max(1) as usize;
+@@ -499,2 +514,3 @@ pub fn run(
+         // (un remplissage à zéro, pas une nouvelle allocation).
++        let t_zero0 = bench.then(Instant::now);
+         unsafe {
+@@ -502,2 +518,5 @@ pub fn run(
+         }
++        if let Some(t) = t_zero0 {
++            t_zero.record(t);
++        }
+         let mut sw_size: [c_int; 2] = [width as c_int, height as c_int];
+@@ -527,4 +546,8 @@ pub fn run(
+         ];
++        let t_render0 = bench.then(Instant::now);
+         let render_rc =
+             unsafe { (functions.render_context_render)(render_ctx, render_params.as_mut_ptr()) };
++        if let Some(t) = t_render0 {
++            t_render.record(t);
++        }
+         // Correctif désync A/V (voir `MIN_REPORT_SWAP_INTERVAL`) : l'image
+@@ -593,2 +616,3 @@ pub fn run(
+         // à changer pour ce correctif.
++        let t_pack0 = bench.then(Instant::now);
+         let row_bytes = width * BYTES_PER_PIXEL;
+@@ -603,2 +627,6 @@ pub fn run(
+         }
++        if let Some(t) = t_pack0 {
++            t_pack.record(t);
++        }
++        let frame_bytes = buffer.len();
+         // ⚠️ Repli PiP (canal Tauri muet dans les fenêtres secondaires,
+@@ -607,3 +635,10 @@ pub fn run(
+         // « tire » ce buffer au lieu de le recevoir par le canal.
++        let t_latest0 = bench.then(Instant::now);
+         *LATEST_FRAME.lock().unwrap_or_else(|p| p.into_inner()) = buffer.clone();
++        if let Some(t) = t_latest0 {
++            t_latest.record(t);
++        }
++        // Chronomètre du bloc d'envoi (journal de diagnostic, éventuel dump
++        // et `channel.send`) : arrêté plus bas, avant le bilan de 2 s.
++        let t_send0 = bench.then(Instant::now);
+         if !first_frame_logged {
+@@ -704,2 +739,8 @@ pub fn run(
+         // - rendues ≈ 2× le fps du fichier → normal (doublons mpv).
++        if let Some(t) = t_send0 {
++            t_send.record(t);
++        }
++        if let Some(t) = t_loop0 {
++            t_loop.record(t);
++        }
+         if stat_window_start.elapsed() >= Duration::from_secs(2) {
+@@ -710,2 +751,17 @@ pub fn run(
+             );
++            if bench {
++                log::info!(
++                    "[playback_engine] [AV-DIAG] étapes 2 s (ms p50/p95/max) : zero={} render={} \
++                     pack={} latest={} send={} boucle={} · image {}x{} = {} octets",
++                    t_zero.summary(),
++                    t_render.summary(),
++                    t_pack.summary(),
++                    t_latest.summary(),
++                    t_send.summary(),
++                    t_loop.summary(),
++                    width,
++                    height,
++                    frame_bytes
++                );
++            }
+             stat_window_start = Instant::now();
+diff --git a/apps/desktop/src/features/player/api.ts b/apps/desktop/src/features/player/api.ts
+index cc312f2..26c23be 100644
+--- a/apps/desktop/src/features/player/api.ts
++++ b/apps/desktop/src/features/player/api.ts
+@@ -9,2 +9,17 @@ export type CinemaLevel = SpatialLevel;
+ 
++/** Modes de décodage vidéo (miroir de `HWDEC_MODE_*` côté Rust). */
++export type HwdecMode = "auto" | "off";
++
++/** État du décodage vidéo (miroir de `HwdecStatus`, commands/playback.rs). */
++export interface HwdecStatus {
++  /** `default` = aucun réglage enregistré (comportement historique, décodage logiciel). */
++  mode: "default" | HwdecMode;
++  /** Valeur `hwdec` actuellement demandée à mpv. */
++  requested: string;
++  /** `hwdec-current` : méthode réellement active (`no` = logiciel). */
++  current: string;
++  /** Valeur forcée par la variable d'environnement développeur `AVM_HWDEC`. */
++  envOverride: string | null;
++}
++
+ export interface ExtractedMedia {
+@@ -57,2 +72,5 @@ export const playerApi = {
+ 	setRenderScale: (percent: number) => invoke<void>("player_set_render_scale", { percent }),
++  // Décodage vidéo matériel (0.7.6) : réglage Paramètres → Qualité de rendu.
++  getHwdecStatus: () => invoke<HwdecStatus>("player_get_hwdec_status"),
++  setHwdecMode: (mode: HwdecMode) => invoke<HwdecStatus>("player_set_hwdec_mode", { mode }),
+   // Effets audio — APERÇU (comparaison A/B de Paramètres → Audio) : applique
+diff --git a/apps/desktop/src/pages/RenderQualitySection.tsx b/apps/desktop/src/pages/RenderQualitySection.tsx
+index ebfc99b..e890f7e 100644
+--- a/apps/desktop/src/pages/RenderQualitySection.tsx
++++ b/apps/desktop/src/pages/RenderQualitySection.tsx
+@@ -1,4 +1,153 @@
+-import { useState } from "react";
++import { useCallback, useEffect, useState } from "react";
++import { playerApi, type HwdecMode, type HwdecStatus } from "../features/player/api";
+ import { getRenderQuality, setRenderQuality, type RenderQuality } from "../player/renderQuality";
+ 
++/**
++ * Nom du moteur WebGL réellement utilisé par la webview (ex. « ANGLE (Intel,
++ * … Direct3D11 …) »). Un nom contenant SwiftShader / Basic Render Driver /
++ * llvmpipe signale un WebGL logiciel : l'upload des images se fait alors sur
++ * le processeur et le gain d'un décodage matériel est annulé.
++ */
++function webglRendererLabel(): string {
++  try {
++    const canvas = document.createElement("canvas");
++    const gl = (canvas.getContext("webgl") ||
++      canvas.getContext("experimental-webgl")) as WebGLRenderingContext | null;
++    if (!gl) return "WebGL indisponible";
++    const info = gl.getExtension("WEBGL_debug_renderer_info");
++    const renderer = String(
++      info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)
++    );
++    gl.getExtension("WEBGL_lose_context")?.loseContext();
++    return renderer;
++  } catch {
++    return "inconnu";
++  }
++}
++
++const SOFTWARE_WEBGL = /swiftshader|basic render|llvmpipe|software/i;
++
++/**
++ * Paramètres → Qualité de rendu → Décodage vidéo (0.7.6, étape 1 du plan GPU).
++ * « Logiciel » = comportement historique ; « Matériel avec recopie » demande à
++ * mpv `hwdec=auto-copy` (décodage sur la carte graphique, images recopiées en
++ * mémoire système). Le rendu reste logiciel dans les deux cas.
++ */
++function HwdecBlock() {
++  const [status, setStatus] = useState<HwdecStatus | null>(null);
++  const [error, setError] = useState<string | null>(null);
++  const [busy, setBusy] = useState(false);
++  const [webgl] = useState(() => webglRendererLabel());
++
++  const refresh = useCallback(() => {
++    playerApi
++      .getHwdecStatus()
++      .then((s) => {
++        setStatus(s);
++        setError(null);
++      })
++      .catch((e) => setError(String(e)));
++  }, []);
++  useEffect(() => {
++    refresh();
++  }, [refresh]);
++
++  const selected: HwdecMode = status?.mode === "auto" ? "auto" : "off";
++  const choose = async (mode: HwdecMode) => {
++    setBusy(true);
++    try {
++      setStatus(await playerApi.setHwdecMode(mode));
++      setError(null);
++    } catch (e) {
++      setError(String(e));
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  return (
++    <div style={{ marginTop: 24 }}>
++      <h3>Décodage vidéo</h3>
++      <p className="avm-settings-muted">
++        Le décodage matériel soulage le processeur (surtout en 4K, HEVC 10 bits, AV1). Il ne
++        change pas le rendu, qui reste logiciel. S'applique à la prochaine lecture ; la vidéo en
++        cours peut être brièvement interrompue.
++      </p>
++      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
++        <label style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
++          <input
++            type="radio"
++            name="avm-hwdec"
++            checked={selected === "off"}
++            disabled={busy}
++            onChange={() => void choose("off")}
++          />
++          <span>
++            <strong>Logiciel — stable (par défaut)</strong>
++            <br />
++            <span className="avm-settings-muted">
++              Décodage sur le processeur : comportement actuel, le plus éprouvé.
++            </span>
++          </span>
++        </label>
++        <label style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
++          <input
++            type="radio"
++            name="avm-hwdec"
++            checked={selected === "auto"}
++            disabled={busy}
++            onChange={() => void choose("auto")}
++          />
++          <span>
++            <strong>Matériel avec recopie — expérimental</strong>
++            <br />
++            <span className="avm-settings-muted">
++              Décodage sur la carte graphique (d3d11va, VideoToolbox ou VA-API selon le
++              système), si votre version de libmpv le permet. En cas de problème, revenez à
++              « Logiciel ».
++            </span>
++          </span>
++        </label>
++      </div>
++      {error && (
++        <p role="alert" style={{ color: "var(--danger, #e5484d)" }}>
++          {error}
++        </p>
++      )}
++      {status && (
++        <p className="avm-settings-muted" style={{ marginTop: 12 }}>
++          Demandé à mpv : <code>{status.requested || "—"}</code> · Méthode active :{" "}
++          <code>
++            {status.current && status.current !== "no"
++              ? status.current
++              : status.current === "no"
++                ? "no (logiciel)"
++                : "aucune lecture en cours"}
++          </code>{" "}
++          <button type="button" onClick={refresh}>
++            Actualiser
++          </button>
++          {status.envOverride && (
++            <>
++              <br />
++              Forcé par la variable d'environnement <code>AVM_HWDEC={status.envOverride}</code> :
++              le réglage ci-dessus est enregistré mais n'a pas d'effet.
++            </>
++          )}
++        </p>
++      )}
++      <p className="avm-settings-muted">
++        WebGL de la webview : <code>{webgl}</code>
++        {SOFTWARE_WEBGL.test(webgl) && (
++          <>
++            {" "}
++            — <strong>WebGL logiciel détecté</strong> : l'affichage des images sollicite le
++            processeur, ce qui limite l'intérêt du décodage matériel.
++          </>
++        )}
++      </p>
++    </div>
++  );
++}
++
+ /**
+@@ -54,2 +203,3 @@ export function RenderQualitySection() {
+       </div>
++      <HwdecBlock />
+     </section>

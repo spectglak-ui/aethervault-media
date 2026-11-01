@@ -17,7 +17,7 @@
   width: 70vmin;
   height: 70vmin;
   border-radius: 50%;
-  background: radial-gradient(closest-side, rgba(246, 161, 60, 0.16), transparent 70%);
+  background: radial-gradient(closest-side, rgba(124, 92, 255, 0.22), rgba(46, 196, 182, 0.06) 55%, transparent 72%);
   animation: avm-intro-pulse 2.6s ease-in-out infinite;
 }
 
@@ -28,9 +28,9 @@
 
 .avm-intro__logo {
   position: relative;
-  width: min(34vmin, 220px);
+  width: min(44vmin, 300px);
   height: auto;
-  filter: drop-shadow(0 0 24px rgba(246, 161, 60, 0.35));
+  filter: drop-shadow(0 0 28px rgba(124, 92, 255, 0.45));
 }
 
 .avm-intro__name {
