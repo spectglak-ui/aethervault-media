@@ -38,7 +38,36 @@
   min-height: 32px;
 }
 
+.avm-sidebar__brandwrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.avm-sidebar__logo {
+  height: 22px;
+  width: auto;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+/* Repliée (76 px) : le logo passe au-dessus du bouton de dépliage. */
+.avm-sidebar__header--collapsed {
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.6rem;
+  padding-bottom: 0.75rem;
+}
+
+/* « AetherVault » au-dessus de « Media », à côté du logo : le nom sur une
+   seule ligne ne tient plus dans les 240 px avec le logo et le bouton de repli. */
+.avm-sidebar__brand-media {
+  display: block;
+}
+
 .avm-sidebar__brand {
+  line-height: 1.2;
   font-weight: 700;
   font-size: 1.1rem;
   letter-spacing: 0.02em;

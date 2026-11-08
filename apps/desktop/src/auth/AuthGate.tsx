@@ -19,6 +19,7 @@ import logoUrl from "../assets/logo.png";
 import { applyNearMax } from "../window/nearMax";
 import { metadataApi } from "../features/settings/api";
 import { StarfieldBackdrop } from "../components/StarfieldBackdrop";
+import { playUiSound } from "../features/sound/uiSounds";
 import "./auth.css";
 
 interface LoginProfile {
@@ -397,6 +398,7 @@ function Onboarding({ onDone }: { onDone: () => void }) {
     if (!recoveryCode) return;
     try {
       await navigator.clipboard.writeText(recoveryCode);
+      playUiSound("copy");
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -738,7 +740,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, []);
 
   const finishIntro = useCallback(() => setStage("gate"), []);
-  const authenticated = useCallback(() => setReady(true), []);
+  const authenticated = useCallback(() => {
+    playUiSound("welcome");
+    setReady(true);
+  }, []);
 
   if (ready)
     return (

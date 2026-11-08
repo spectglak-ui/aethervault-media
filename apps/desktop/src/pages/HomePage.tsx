@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { Info, Play } from "lucide-react";
+import { Info, Play, Volume2, VolumeX } from "lucide-react";
 import { Button, PageHeader } from "@aethervault/ui-kit";
 import type { Category, TitleDetails, TitleSummary } from "@aethervault/shared-types";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -15,6 +15,9 @@ import "./home/home-modern.css";
 import { HomeStats } from "./home/HomeStats";
 import { HomeUniverses } from "./home/HomeUniverses";
 import { HomeWelcome } from "./home/HomeWelcome";
+import { HeroTrailer } from "../features/trailer/HeroTrailer";
+import { useHeroTrailerKeys } from "../features/trailer/useHeroTrailerKeys";
+import { getHeroTrailerEnabled, subscribeHeroTrailerEnabled } from "../features/trailer/heroTrailerSetting";
 
 /**
  * Accueil v2 : héro « à la une », tuiles catégories 16:9, rangées
@@ -38,6 +41,12 @@ export function HomePage() {
   const [recent, setRecent] = useState<TitleSummary[] | null>(null);
   const [continueItems, setContinueItems] = useState<ContinueWatchingItem[] | null>(null);
   const [hero, setHero] = useState<TitleDetails | null>(null);
+  // 0.7.8 — bande-annonce à la place de la bannière du Héro (réglage Paramètres).
+  const [trailerOn, setTrailerOn] = useState(() => getHeroTrailerEnabled());
+  const [trailerMuted, setTrailerMuted] = useState(true);
+  const [trailerPlaying, setTrailerPlaying] = useState(false);
+  useEffect(() => subscribeHeroTrailerEnabled(setTrailerOn), []);
+  useEffect(() => setTrailerPlaying(false), [hero?.id, trailerOn]);
   const [starting, setStarting] = useState(false);
   const [homeBackdrop, setHomeBackdrop] = useState<string | null>(null);
   const [hidePrivate, setHidePrivate] = useState<boolean>(() => {
@@ -93,6 +102,7 @@ export function HomePage() {
 
   const heroCategory =
     hero && categories ? categories.find((c) => c.id === hero.category_id) : undefined;
+  const trailerKeys = useHeroTrailerKeys(hero?.id ?? null, hero?.name ?? null, trailerOn);
 
   const handleContinuePlay = (item: ContinueWatchingItem) => {
     play({ id: item.mediaFileId, title: item.label, path: item.path, libraryId: item.libraryId });
@@ -146,6 +156,26 @@ export function HomePage() {
         {hero && assetUrl(hero.banner) ? (
           <section className="avm-home-hero">
             <img src={assetUrl(hero.banner)} alt="" />
+            {trailerKeys && trailerKeys.length > 0 && (
+              <HeroTrailer
+                key={`${hero.id}-${trailerKeys.join(",")}`}
+                keys={trailerKeys}
+                muted={trailerMuted}
+                onPlaying={() => setTrailerPlaying(true)}
+              />
+            )}
+            {trailerPlaying && (
+              <button
+                type="button"
+                className="avm-home-hero__sound"
+                data-sound="select"
+                onClick={() => setTrailerMuted((muted) => !muted)}
+                aria-label={trailerMuted ? "Activer le son de la bande-annonce" : "Couper le son de la bande-annonce"}
+                title={trailerMuted ? "Activer le son" : "Couper le son"}
+              >
+                {trailerMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+              </button>
+            )}
             <div className="avm-home-hero__overlay" />
             <div className="avm-home-hero__content">
               <span className="avm-hx-pill">À la une</span>

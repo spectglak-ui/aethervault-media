@@ -1435,7 +1435,7 @@ impl PlaybackEngineHandle {
             // 0.5.6 : borne basse STRICTE — un accusé ne doit JAMAIS faire
             // descendre in_flight sous 0 (double-ack frontend, ack d'une
             // trame tirée par le polling…).
-            let _ = state.in_flight_frames.fetch_update(
+            let _ = state.in_flight_frames.try_update(
                 Ordering::Relaxed,
                 Ordering::Relaxed,
                 |v| if v > 0 { Some(v - 1) } else { None },

@@ -11,6 +11,7 @@ import {
   VolumeX,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { loadYouTubeApi } from "../features/trailer/youtubeApi";
 import { Menu, CheckMenuItem } from "@tauri-apps/api/menu";
 import { Button, EmptyState, IconButton, Modal, PageHeader } from "@aethervault/ui-kit";
 import type { TitleDetails } from "@aethervault/shared-types";
@@ -32,25 +33,6 @@ function formatDuration(totalSeconds: number): string {
   const minutes = Math.round((totalSeconds % 3600) / 60);
   if (hours === 0) return `${minutes} min`;
   return `${hours} h ${String(minutes).padStart(2, "0")} min`;
-}
-
-/** Charge une seule fois le script API IFrame YouTube (0.3.0). */
-function loadYouTubeApi(): Promise<any> {
-  return new Promise((resolve) => {
-    const w = window as any;
-    if (w.YT && w.YT.Player) {
-      resolve(w.YT);
-      return;
-    }
-    const previous = w.onYouTubeIframeAPIReady;
-    w.onYouTubeIframeAPIReady = () => {
-      previous?.();
-      resolve(w.YT);
-    };
-    const script = document.createElement("script");
-    script.src = "https://www.youtube.com/iframe_api";
-    document.head.appendChild(script);
-  });
 }
 
 /**

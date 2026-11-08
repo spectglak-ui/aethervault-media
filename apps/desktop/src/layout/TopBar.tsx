@@ -2,10 +2,18 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from
 import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { Film } from "lucide-react";
+import { Film, SlidersHorizontal } from "lucide-react";
 import { Avatar, SearchInput } from "@aethervault/ui-kit";
-import type { TitleSearchResult } from "@aethervault/shared-types";
+import type { TitleSearchQuery, TitleSearchResult } from "@aethervault/shared-types";
 import { titleApi } from "../features/title/api";
+import { ActiveFilterChips, TitleFilters } from "../features/search/TitleFilters";
+import { useFacetCounts } from "../features/search/useFacetCounts";
+import {
+  countActiveFilters,
+  emptyQuery,
+  paramsToQuery,
+  queryToParams,
+} from "../features/search/queryParams";
 import { useActiveProfile } from "../profile/ActiveProfileContext";
 import { WindowControls } from "../components/WindowControls";
 import { AetherFyQuickMenu } from "./AetherFyQuickMenu";
@@ -41,6 +49,17 @@ export function TopBar() {
   const [suggestions, setSuggestions] = useState<TitleSearchResult[]>([]);
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(-1);
+  // Recherche avancée : filtres (type de média, genre, année, acteur,
+  // réalisateur, saga, résolution, codec, langue) dans un panneau flottant
+  // ouvert depuis le bouton à droite du champ. Le texte reste dans `query`.
+  const [filters, setFilters] = useState<TitleSearchQuery>(() => emptyQuery());
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [matchCount, setMatchCount] = useState<number | null>(null);
+  const facets = useFacetCounts([], filtersOpen);
+  const activeFilterCount = countActiveFilters(filters);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Vrai juste après une synchro depuis l'URL : évite de rouvrir les suggestions.
+  const skipSuggestRef = useRef(false);
   const navigate = useNavigate();
   const location = useLocation();
   const { activeProfile } = useActiveProfile();
@@ -53,10 +72,10 @@ export function TopBar() {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [anchor, setAnchor] = useState<{ top: number; left: number; width: number } | null>(null);
   const [dropdownFont, setDropdownFont] = useState<string | null>(null);
-  const showDropdown = open && suggestions.length > 0;
+  const showDropdown = open && suggestions.length > 0 && !filtersOpen;
 
   useLayoutEffect(() => {
-    if (!showDropdown) return;
+    if (!showDropdown && !filtersOpen) return;
     const place = () => {
       const root = rootRef.current;
       if (!root) return;
@@ -70,7 +89,7 @@ export function TopBar() {
     if (host) setDropdownFont(window.getComputedStyle(host).fontFamily);
     window.addEventListener("resize", place);
     return () => window.removeEventListener("resize", place);
-  }, [showDropdown]);
+  }, [showDropdown, filtersOpen]);
 
   useEffect(() => {
     if (!activeProfile) return;
@@ -92,9 +111,15 @@ export function TopBar() {
 
   // 0.4.0 : recherche debouncée — 2 caractères minimum, 250 ms.
   useEffect(() => {
+    if (skipSuggestRef.current) {
+      skipSuggestRef.current = false;
+      return;
+    }
     const trimmed = query.trim();
-    if (trimmed.length < 2) {
+    const hasText = trimmed.length >= 2;
+    if (!hasText && activeFilterCount === 0) {
       setSuggestions([]);
+      setMatchCount(null);
       setOpen(false);
       setHighlight(-1);
       return;
@@ -102,9 +127,10 @@ export function TopBar() {
     const timeout = window.setTimeout(() => {
       const id = ++requestIdRef.current;
       titleApi
-        .search({ q: trimmed })
+        .search({ ...filters, q: hasText ? trimmed : "" })
         .then((results) => {
           if (requestIdRef.current !== id) return;
+          setMatchCount(results.length);
           setSuggestions(results.slice(0, 8));
           setOpen(results.length > 0);
           setHighlight(results.length > 0 ? 0 : -1);
@@ -112,12 +138,23 @@ export function TopBar() {
         .catch(() => {
           if (requestIdRef.current === id) {
             setSuggestions([]);
+            setMatchCount(null);
             setOpen(false);
           }
         });
     }, 250);
     return () => window.clearTimeout(timeout);
-  }, [query]);
+  }, [query, filters, activeFilterCount]);
+
+  // Sur la page de recherche, la barre reflète l'URL (texte + filtres) :
+  // les deux restent cohérents quel que soit l'endroit où on les modifie.
+  useEffect(() => {
+    if (location.pathname !== "/search") return;
+    const parsed = paramsToQuery(new URLSearchParams(location.search));
+    skipSuggestRef.current = true;
+    setQuery(parsed.q ?? "");
+    setFilters({ ...parsed, q: "" });
+  }, [location.pathname, location.search]);
 
   // 0.4.0 : fermeture au clic hors du dropdown.
   useEffect(() => {
@@ -125,8 +162,14 @@ export function TopBar() {
       const target = e.target as Node;
       // Le menu est dans un portail (hors de rootRef) : un mousedown sur une
       // suggestion ne doit PAS le fermer avant que le clic ne soit traité.
-      if (rootRef.current?.contains(target) || dropdownRef.current?.contains(target)) return;
+      if (
+        rootRef.current?.contains(target) ||
+        dropdownRef.current?.contains(target) ||
+        panelRef.current?.contains(target)
+      )
+        return;
       setOpen(false);
+      setFiltersOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -135,6 +178,7 @@ export function TopBar() {
   // 0.4.0 : fermeture à chaque navigation.
   useEffect(() => {
     setOpen(false);
+    setFiltersOpen(false);
     setHighlight(-1);
   }, [location.pathname, location.search]);
 
@@ -146,7 +190,19 @@ export function TopBar() {
     navigate(`/category/${r.category_key}/title/${r.id}`);
   };
 
+  const launchSearch = () => {
+    const params = queryToParams({ ...filters, q: query.trim() });
+    if (params.toString().length === 0) return;
+    setOpen(false);
+    setFiltersOpen(false);
+    navigate(`/search?${params.toString()}`);
+  };
+
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Escape" && filtersOpen) {
+      setFiltersOpen(false);
+      return;
+    }
     if (!open || suggestions.length === 0) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -163,23 +219,68 @@ export function TopBar() {
   return (
     <header className="avm-topbar" data-tauri-drag-region>
       <div ref={rootRef} style={{ position: "relative" }} onKeyDown={handleKeyDown}>
-        <SearchInput
-          value={query}
-          onChange={setQuery}
-          placeholder="Rechercher un film, une série, un acteur…"
-          onSubmit={() => {
-            // Entrée : suggestion surlignée → fiche directe ; sinon Explore.
-            if (open && highlight >= 0 && suggestions[highlight]) {
-              goToTitle(suggestions[highlight]);
-              return;
-            }
-            const trimmed = query.trim();
-            if (trimmed.length > 0) {
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Rechercher un film, une série, un acteur…"
+            onSubmit={() => {
+              // Entrée : suggestion surlignée → fiche directe ; sinon page de
+              // recherche avancée (texte + filtres choisis dans le panneau).
+              if (open && highlight >= 0 && suggestions[highlight] && !filtersOpen) {
+                goToTitle(suggestions[highlight]);
+                return;
+              }
+              launchSearch();
+            }}
+          />
+          <button
+            type="button"
+            className={`avm-topbar__filters${filtersOpen || activeFilterCount > 0 ? " avm-topbar__filters--on" : ""}`}
+            onClick={() => {
               setOpen(false);
-              navigate(`/explore?q=${encodeURIComponent(trimmed)}`);
-            }
-          }}
-        />
+              setFiltersOpen((v) => !v);
+            }}
+            title="Recherche avancée : type de média, genre, année, acteur, réalisateur, saga, qualité…"
+            aria-label="Recherche avancée"
+            aria-expanded={filtersOpen}
+          >
+            <SlidersHorizontal size={16} />
+            {activeFilterCount > 0 && <span className="avm-topbar__filters-badge">{activeFilterCount}</span>}
+          </button>
+        </div>
+        {filtersOpen && anchor && createPortal(
+          <div
+            ref={panelRef}
+            className="avm-topbar__filters-panel"
+            style={{
+              top: anchor.top,
+              left: anchor.left,
+              width: Math.min(880, Math.max(anchor.width, 640), window.innerWidth - anchor.left - 16),
+              fontFamily: dropdownFont ?? "inherit",
+            }}
+          >
+            <TitleFilters
+              layout="grid"
+              query={filters}
+              facets={facets}
+              onChange={(patch) => setFilters((f) => ({ ...f, ...patch }))}
+              onReset={() => setFilters(emptyQuery())}
+            />
+            <ActiveFilterChips query={filters} onChange={(patch) => setFilters((f) => ({ ...f, ...patch }))} />
+            <div className="avm-topbar__filters-footer">
+              <span className="avm-topbar__filters-count">
+                {matchCount === null
+                  ? "Choisissez un filtre ou tapez un terme"
+                  : `${matchCount} résultat${matchCount > 1 ? "s" : ""}`}
+              </span>
+              <button type="button" className="avm-topbar__filters-go" onClick={launchSearch}>
+                Afficher les résultats
+              </button>
+            </div>
+          </div>,
+          document.body
+        )}
         {showDropdown && anchor && createPortal(
           <div
             ref={dropdownRef}

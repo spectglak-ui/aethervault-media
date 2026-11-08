@@ -1,6 +1,6 @@
 import { TvPage } from "./pages/TvPage";
 import { TvWatchPage } from "./pages/TvWatchPage";
-import { createHashRouter } from "react-router-dom";
+import { createHashRouter, Navigate, useLocation } from "react-router-dom";
 import { AppShell } from "./layout/AppShell";
 import { HomePage } from "./pages/HomePage";
 import { CategoryPage } from "./pages/CategoryPage";
@@ -12,7 +12,7 @@ import { PrivateImageLibraryPage } from "./pages/PrivateImageLibraryPage";
 import { PrivateVideoLibraryPage } from "./pages/PrivateVideoLibraryPage";
 import { LibraryPage } from "./pages/LibraryPage";
 import { LibraryDetailPage } from "./pages/LibraryDetailPage";
-import { ExplorePage } from "./pages/ExplorePage";
+import { SearchPage } from "./pages/SearchPage";
 import { CollectionsPage } from "./pages/CollectionsPage";
 import { WatchlistPage } from "./pages/WatchlistPage";
 import { SharePage } from "./pages/SharePage";
@@ -64,6 +64,13 @@ fond animé global `AppBackdrop` reste visible — il est monté au-dessus
 du routeur dans `App.tsx`). L'import mort `BookReaderPage` a été
 supprimé (fichier absent du dossier `features/reader`).
 */
+/** L'ancienne page « Explorer » n'existe plus : ses liens (`/explore?q=…`)
+    arrivent sur la recherche avancée, paramètres conservés. */
+function ExploreRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={`/search${search}`} replace />;
+}
+
 export const router = createHashRouter([
   {
     element: <AppShell />,
@@ -97,7 +104,9 @@ export const router = createHashRouter([
       },
       { path: "/libraries", element: <LibraryPage /> },
       { path: "/libraries/:id", element: <LibraryDetailPage /> },
-      { path: "/explore", element: <ExplorePage /> },
+      { path: "/search", element: <SearchPage /> },
+      // Ancienne page « Explorer » : redirige vers la recherche avancée (liens et favoris existants).
+      { path: "/explore", element: <ExploreRedirect /> },
       { path: "/collections", element: <CollectionsPage /> },
       { path: "/watchlist", element: <WatchlistPage /> },
       { path: "/share", element: <SharePage /> },

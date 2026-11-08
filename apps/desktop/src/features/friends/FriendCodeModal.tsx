@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Copy, Check, UserPlus } from "lucide-react";
 import { Button, Modal } from "@aethervault/ui-kit";
 import { friendsApi, type RemoteFriend } from "./api";
+import { playUiSound } from "../sound/uiSounds";
 
 interface Props {
   open: boolean;
@@ -39,6 +40,7 @@ export function FriendCodeModal({ open, onClose, onAdded }: Props) {
     if (!myCode) return;
     try {
       await navigator.clipboard.writeText(myCode);
+      playUiSound("copy");
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
     } catch {

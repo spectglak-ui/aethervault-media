@@ -39,6 +39,7 @@ import { privateTagsApi, type PrivateTag } from "../features/privateTags/api";
 import { usePlayer } from "../player/PlayerContext";
 import { PersonalizableImage } from "../features/personalization/PersonalizableImage";
 import { assetUrl } from "../lib/assetUrl";
+import { playUiSound } from "../features/sound/uiSounds";
 import "./privateGallery.css";
 import "./private-modern.css";
 
@@ -377,6 +378,7 @@ export function PrivatePage() {
   const handleLock = async () => {
     try {
       await privacyApi.lockVault();
+      playUiSound("lock");
       setSelected(null);
       setData(EMPTY_DATA);
       setAllTags([]);
@@ -1344,6 +1346,7 @@ function VaultUnlockPanel({ onUnlocked }: { onUnlocked: () => void }) {
     setError(null);
     try {
       await privacyApi.unlockVault(secret);
+      playUiSound("unlock");
       setSecret("");
       onUnlocked();
     } catch (err) {

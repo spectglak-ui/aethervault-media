@@ -9,6 +9,7 @@ import {
   ImageUp,
   RefreshCw,
   RotateCcw,
+  SlidersHorizontal,
   Square,
   Trash2,
   X,
@@ -17,7 +18,7 @@ import { Button, Card, EmptyState, IconButton, Modal } from "@aethervault/ui-kit
 import { ModernPageHeader } from "../components/ModernPageHeader";
 import { categoryIcon } from "../lib/categoryIcon";
 import { tintFor } from "./home/homeTheme";
-import type { Category, Library, TitleSummary } from "@aethervault/shared-types";
+import type { Category, Library, TitleSearchQuery, TitleSummary } from "@aethervault/shared-types";
 import { categoryApi } from "../features/category/api";
 import { titleApi } from "../features/title/api";
 import { libraryApi } from "../features/library/api";
@@ -29,6 +30,9 @@ import { assetUrl } from "../lib/assetUrl";
 import { TitleUserBadges } from "../features/userlists/TitleUserBadges";
 import { useTitleUserStates } from "../features/userlists/useTitleUserStates";
 import { useAnimatedBackdropActive } from "../hooks/useAnimatedBackdropActive";
+import { ActiveFilterChips, TitleFilters } from "../features/search/TitleFilters";
+import { useFacetCounts } from "../features/search/useFacetCounts";
+import { countActiveFilters, emptyQuery, isQueryActive } from "../features/search/queryParams";
 import "./pages.css";
 
 /**
@@ -78,6 +82,15 @@ export function CategoryPage() {
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [rouletteOpen, setRouletteOpen] = useState(false);
+  // Filtres de recherche de la catégorie (mêmes critères que la recherche
+  // globale : genre, année, acteur, réalisateur, saga, résolution, codec,
+  // langue). `filteredIds` = null tant qu'aucun filtre n'est actif.
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filters, setFilters] = useState<TitleSearchQuery>(() => emptyQuery());
+  const [filteredIds, setFilteredIds] = useState<Set<number> | null>(null);
+  const facets = useFacetCounts(category ? [category.key] : [], filtersOpen && !!category);
+  const activeFilters = countActiveFilters(filters);
+  const filtersActive = isQueryActive(filters);
   const { play } = usePlayer();
 
   const refresh = useCallback(() => {
@@ -105,7 +118,34 @@ export function CategoryPage() {
     setSelectionMode(false);
     setSelectedIds(new Set());
     setBulkError(null);
+    setFilters(emptyQuery());
+    setFilteredIds(null);
+    setFiltersOpen(false);
   }, [key]);
+
+  // Filtres actifs → le moteur de recherche renvoie les Titres de CETTE
+  // catégorie qui correspondent ; la grille n'affiche que ceux-là.
+  useEffect(() => {
+    if (!category || !filtersActive) {
+      setFilteredIds(null);
+      return;
+    }
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      titleApi
+        .search({ ...filters, category_keys: [category.key] })
+        .then((found) => {
+          if (!cancelled) setFilteredIds(new Set(found.map((result) => result.id)));
+        })
+        .catch(() => {
+          if (!cancelled) setFilteredIds(new Set());
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [category, filters, filtersActive]);
 
   // Le Metadata Service tourne en tâche de fond juste après chaque scan
   // (voir commands::library::trigger_scan côté Rust) : ces deux événements
@@ -151,11 +191,16 @@ export function CategoryPage() {
     });
   };
 
-  const allSelected = (titles?.length ?? 0) > 0 && selectedIds.size === titles?.length;
+  // Titres réellement affichés (tous, ou ceux qui passent les filtres).
+  const visibleTitles =
+    titles && filteredIds ? titles.filter((title) => filteredIds.has(title.id)) : titles;
+
+  const allSelected =
+    (visibleTitles?.length ?? 0) > 0 && !!visibleTitles?.every((title) => selectedIds.has(title.id));
 
   const toggleSelectAll = () => {
-    if (!titles) return;
-    setSelectedIds(allSelected ? new Set() : new Set(titles.map((title) => title.id)));
+    if (!visibleTitles) return;
+    setSelectedIds(allSelected ? new Set() : new Set(visibleTitles.map((title) => title.id)));
   };
 
   const handleBulkDelete = async () => {
@@ -273,6 +318,14 @@ export function CategoryPage() {
           actions={
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               {titles !== null && titles.length > 0 && (
+                <Button variant="secondary" onClick={() => setFiltersOpen((open) => !open)}>
+                  <span className="avm-filters-toggle">
+                    <SlidersHorizontal size={14} /> Filtres
+                    {activeFilters > 0 && <span className="avm-filters-toggle__badge">{activeFilters}</span>}
+                  </span>
+                </Button>
+              )}
+              {titles !== null && titles.length > 0 && (
                 <IconButton
                   label="Roulette : un titre au hasard"
                   onClick={() => setRouletteOpen(true)}
@@ -339,8 +392,42 @@ export function CategoryPage() {
           />
         )}
         {titles !== null && titles.length > 0 && (
+          <div className={`avm-filtered-layout${filtersOpen ? " avm-filtered-layout--open" : ""}`}>
+            {filtersOpen && (
+              <aside className="avm-filtered-layout__filters">
+                <TitleFilters
+                  query={filters}
+                  facets={facets}
+                  showMediaType={false}
+                  showTextSearch
+                  textPlaceholder={`Rechercher dans ${category.name}…`}
+                  onChange={(patch) => setFilters((current) => ({ ...current, ...patch }))}
+                  onReset={() => setFilters(emptyQuery())}
+                />
+              </aside>
+            )}
+            <div>
+              {filtersActive && (
+                <>
+                  <ActiveFilterChips
+                    query={filters}
+                    showMediaType={false}
+                    onChange={(patch) => setFilters((current) => ({ ...current, ...patch }))}
+                  />
+                  <p className="avm-results-count">
+                    <strong>{visibleTitles?.length ?? 0}</strong> sur {titles.length} titre
+                    {titles.length > 1 ? "s" : ""}
+                  </p>
+                </>
+              )}
+              {filtersActive && visibleTitles !== null && visibleTitles.length === 0 && (
+                <EmptyState
+                  title="Aucun titre ne correspond"
+                  description="Retirez un filtre ou réinitialisez-les pour revoir toute la catégorie."
+                />
+              )}
           <div className="avm-category-grid avm-category-grid--posters">
-            {titles.map((title) => (
+            {(visibleTitles ?? titles).map((title) => (
               <Card
                 key={title.id}
                 title={title.name}
@@ -365,6 +452,8 @@ export function CategoryPage() {
                 <TitleUserBadges state={userStates[title.id]} />
               </Card>
             ))}
+          </div>
+            </div>
           </div>
         )}
         {categoryLibraries.length > 0 && (

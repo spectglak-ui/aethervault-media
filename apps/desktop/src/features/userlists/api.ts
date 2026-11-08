@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { TitleSummary } from "@aethervault/shared-types";
+import { playUiSound } from "../sound/uiSounds";
 
 /** Statut manuel d'un titre de la watchlist. */
 export type WatchStatus = "todo" | "in_progress" | "done";
@@ -33,8 +34,11 @@ export const userListsApi = {
     invoke<TitleUserState[]>("list_title_user_states", { titleIds }),
   /** `null` retire la note. */
   setRating: (titleId: number, rating: number | null) =>
-    invoke<void>("set_title_rating", { titleId, rating }),
-  watchlistAdd: (titleId: number) => invoke<void>("watchlist_add", { titleId }),
+    invoke<void>("set_title_rating", { titleId, rating }).then(() => {
+      if (rating !== null) playUiSound("favorite");
+    }),
+  watchlistAdd: (titleId: number) =>
+    invoke<void>("watchlist_add", { titleId }).then(() => playUiSound("favorite")),
   watchlistRemove: (titleId: number) => invoke<void>("watchlist_remove", { titleId }),
   watchlistSetStatus: (titleId: number, status: WatchStatus) =>
     invoke<void>("watchlist_set_status", { titleId, status }),

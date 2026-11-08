@@ -215,6 +215,23 @@ pub struct TmdbDetails {
     pub poster_path: Option<String>,
     pub banner_path: Option<String>,
     pub imdb_id: Option<String>,
+    /// Saga TMDB du film (`belongs_to_collection`) : (id, nom). Toujours
+    /// `None` pour une série.
+    pub saga: Option<(i64, String)>,
+}
+
+/// Extrait `belongs_to_collection` d'une fiche film TMDB.
+fn parse_saga(v: &serde_json::Value) -> Option<(i64, String)> {
+    let collection = v.get("belongs_to_collection")?;
+    if collection.is_null() {
+        return None;
+    }
+    let id = collection.get("id")?.as_i64()?;
+    let name = collection.get("name")?.as_str()?.trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    Some((id, name))
 }
 
 impl TmdbClient {
@@ -356,8 +373,22 @@ impl TmdbClient {
             title_repository::attach_credit(conn, title_id, name, "director", None, index as i64)
                 .map_err(|e| e.to_string())?;
         }
+        title_repository::set_saga(
+            conn,
+            title_id,
+            details.saga.as_ref().map(|(id, name)| (*id, name.as_str())),
+        )
+        .map_err(|e| e.to_string())?;
         title_repository::set_online_ids(conn, title_id, tmdb_id, details.imdb_id.as_deref())
             .map_err(|e| e.to_string())
+    }
+
+    /// Saga d'un film déjà enrichi, SANS retélécharger fiche ni images.
+    /// `None` = échec réseau (on réessaiera) ; `Some(None)` = le film
+    /// n'appartient à aucune saga.
+    pub fn fetch_saga(&self, tmdb_id: i64) -> Option<Option<(i64, String)>> {
+        let v = get_json(&self.url(&format!("/movie/{tmdb_id}"), "", &self.lang))?;
+        Some(parse_saga(&v))
     }
 
     /// Fiche détaillée + crédits + IDs externes ; images téléchargées en
@@ -437,6 +468,7 @@ impl TmdbClient {
                 (cast, directors)
             })
             .unwrap_or_default();
+        let saga = if kind == "movie" { parse_saga(&v) } else { None };
         let imdb_id = v
             .get("external_ids")
             .and_then(|e| e.get("imdb_id"))
@@ -467,6 +499,7 @@ impl TmdbClient {
             poster_path,
             banner_path,
             imdb_id,
+            saga,
         })
     }
     /// 0.6.0 : crédits d'un titre (12 premiers acteurs) avec photos de
@@ -729,4 +762,80 @@ pub fn enrich_library(app: &AppHandle, pool: &DbPool, data_dir: &str, library_id
     log::info!(
         "[tmdb] bibliothèque {library_id} : {enriched} titre(s) enrichi(s), {failed} échec(s)."
     );
+}
+
+/// Détection rétroactive des sagas (Collections intelligentes) : interroge
+/// TMDB pour chaque film déjà enrichi dont la saga n'a jamais été vérifiée.
+/// Best-effort, throttlée, n'écrit que `saga_*` ; un échec réseau laisse le
+/// film « à vérifier » pour la prochaine fois.
+fn detect_sagas(app: &AppHandle, pool: &DbPool) {
+    let Ok(conn) = pool.get() else { return };
+    let settings = load_settings(&conn);
+    if settings.api_key.is_empty() {
+        return;
+    }
+    let todo = match title_repository::list_titles_to_check_saga(&conn) {
+        Ok(todo) => todo,
+        Err(e) => {
+            log::error!("[tmdb] lecture des films à vérifier (sagas) impossible : {e}");
+            return;
+        }
+    };
+    if todo.is_empty() {
+        return;
+    }
+    log::info!("[tmdb] détection des sagas : {} film(s) à vérifier.", todo.len());
+    let client = TmdbClient {
+        api_key: settings.api_key,
+        lang: settings.language,
+    };
+    let total = todo.len();
+    let mut found = 0u32;
+    for (index, (title_id, tmdb_id)) in todo.into_iter().enumerate() {
+        if let Some(saga) = client.fetch_saga(tmdb_id) {
+            if saga.is_some() {
+                found += 1;
+            }
+            let _ = title_repository::set_saga(
+                &conn,
+                title_id,
+                saga.as_ref().map(|(id, name)| (*id, name.as_str())),
+            );
+        }
+        if (index + 1) % 10 == 0 {
+            let _ = app.emit(
+                "collections:sagas-progress",
+                serde_json::json!({ "processed": index + 1, "total": total }),
+            );
+        }
+        std::thread::sleep(THROTTLE);
+    }
+    let _ = app.emit(
+        "collections:sagas-updated",
+        serde_json::json!({ "checked": total, "found": found }),
+    );
+    log::info!("[tmdb] détection des sagas terminée : {found} film(s) rattaché(s) à une saga.");
+}
+
+static SAGA_DETECTION_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Lance la détection des sagas dans un thread dédié (jamais deux en même
+/// temps). Retourne `false` si une détection est déjà en cours.
+pub fn spawn_saga_detection(app: AppHandle, pool: DbPool) -> bool {
+    use std::sync::atomic::Ordering;
+    if SAGA_DETECTION_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return false;
+    }
+    std::thread::spawn(move || {
+        detect_sagas(&app, &pool);
+        SAGA_DETECTION_RUNNING.store(false, Ordering::SeqCst);
+    });
+    true
+}
+
+pub fn saga_detection_running() -> bool {
+    SAGA_DETECTION_RUNNING.load(std::sync::atomic::Ordering::SeqCst)
 }

@@ -2,6 +2,23 @@
 
 Toutes les modifications notables apportées à ce projet seront documentées dans ce fichier.
 
+## [0.7.8 « Orbite »] - 2026-11-05
+
+### Ajouté
+- **Sons d'interface** : 19 sons doux et « premium » (clic, bouton principal, interrupteur on/off, navigation, ouverture/fermeture de fenêtres, succès, erreur, notification, favori, suppression, copie, verrouillage/déverrouillage du coffre, lecture, signature à la connexion) déclenchés automatiquement sur les boutons, liens, onglets, cases à cocher, dialogues et messages, et sur les événements de l'application (analyse terminée, demande d'ami). Atténués pendant une lecture. **Paramètres → Sons de l'interface** : interrupteur général, volume, tic discret au survol, signature de connexion, boutons d'écoute. Les sons sont synthétisés par `scripts/generate-ui-sounds.py` (aucun échantillon externe) et rejoués via Web Audio, à faible latence.
+- **Thème Transparent — couleurs personnalisables** (Paramètres) : couleur d'accentuation, teinte ET opacité du fond, des panneaux et de la barre latérale, couleur du texte, 7 ambiances prêtes à l'emploi (Violet nuit, Océan, Forêt, Crépuscule, Ambre, Rouge cinéma, Graphite), aperçu en direct, avertissement de lisibilité et retour aux couleurs d'origine. L'opacité est conservée (l'éditeur détaillé de couleurs la perdait).
+- **Bandes annonces dans le Héro de l'accueil** (Paramètres, désactivé par défaut) : la bande-annonce du titre à la une remplace l'image de bannière (muette, en boucle, bouton pour activer le son, pause hors de l'écran). Sans bande-annonce ou hors ligne, la bannière reste affichée.
+- **Recherche avancée dans la barre de recherche globale** : un bouton « Filtres » à droite du champ ouvre un panneau (type de média Film / Série / Anime / Documentaire, genre, année ou décennie, acteur, réalisateur, saga, résolution, codec, langue audio) avec compteurs et nombre de résultats en direct ; « Afficher les résultats » ouvre la page de résultats `/search`. La recherche libre couvre désormais aussi les acteurs, les réalisateurs et les sagas.
+- **Filtres sur chaque page de catégorie** (Films, Séries, Animés, Documentaires) : panneau de filtres à cases à cocher avec compteurs, pastilles de filtres actifs retirables et compteur « N sur M titres ».
+- **Collections intelligentes** (onglet « Intelligentes » de la page Collections) : collections automatiques par saga, genre, réalisateur, acteur, studio, décennie, qualité d'image et « mieux notés », mises à jour seules.
+- **Sagas** (migration 27) : la saga TMDB (`belongs_to_collection`) est mémorisée à l'enrichissement ; les films déjà présents sont analysés en tâche de fond au premier affichage des Collections (clé API TMDB requise).
+- **Logo** dans la barre latérale, à côté du nom.
+
+### Changé
+- La page **Explorer** est retirée de la barre latérale : sa recherche multicritère vit dans la barre globale et dans `/search` (l'ancienne adresse `/explore` redirige).
+- Nouveau logo : icônes de l'application, images de l'installateur, écran d'intro (halo et ombre passés de l'orange au violet/teal).
+- **Version** : 0.7.8 « Orbite »
+
 ## [0.7.5 « Orbite »] - 2026-10-15
 
 ### Ajouté

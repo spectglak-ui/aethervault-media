@@ -7,6 +7,7 @@ import { TopBar } from "./TopBar";
 import { PlayerDock } from "./PlayerDock";
 import { useSidebarCollapsed } from "./useSidebarCollapsed";
 import { usePlayer } from "../player/PlayerContext";
+import { useUiSounds } from "../features/sound/useUiSounds";
 import { AudioPlayerOverlay } from "../player/AudioPlayerOverlay";
 import { VideoWatchLayout } from "../player/VideoWatchLayout";
 import "./layout.css";
@@ -14,7 +15,9 @@ import "./layout.css";
 export function AppShell() {
   const location = useLocation();
   const { collapsed, isForced, toggleCollapsed } = useSidebarCollapsed();
-  const { immersiveMode, immersiveOpen } = usePlayer();
+  const { immersiveMode, immersiveOpen, isPlaying } = usePlayer();
+  // Sons d'interface (0.7.8) : discrets pendant une lecture.
+  useUiSounds({ ducked: isPlaying });
 
   useEffect(() => {
     void applyNearMax();

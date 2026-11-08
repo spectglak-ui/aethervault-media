@@ -1,10 +1,11 @@
 import type { CSSProperties, MouseEvent, ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowUpRight, Tv } from "lucide-react";
+import { ArrowUpRight, BookmarkCheck, FolderHeart, Tv } from "lucide-react";
 import type { Category } from "@aethervault/shared-types";
 import { assetUrl } from "../../lib/assetUrl";
 import { categoryIcon } from "../../lib/categoryIcon";
 import { categoryRoute } from "../../lib/categoryRoute";
+import { PAGE_TINTS } from "../../components/ModernPageHeader";
 import { CountUp } from "./CountUp";
 import { tintFor } from "./homeTheme";
 
@@ -50,6 +51,26 @@ function buildPortals(categories: Category[], hidePrivate: boolean): Portal[] {
     subtitle: "Chaînes en direct",
     variant: "tv",
   };
+  // 0.7.8 : portails Collections & Watchlist — mêmes teintes que leurs pages
+  // (PAGE_TINTS de ModernPageHeader) pour une identité visuelle cohérente.
+  const collections: Portal = {
+    id: "collections",
+    route: "/collections",
+    name: "Collections",
+    tint: PAGE_TINTS.collections,
+    icon: <FolderHeart size={18} />,
+    ghost: <FolderHeart size={120} />,
+    subtitle: "Vos listes personnalisées",
+  };
+  const watchlist: Portal = {
+    id: "watchlist",
+    route: "/watchlist",
+    name: "Watchlist",
+    tint: PAGE_TINTS.watchlist,
+    icon: <BookmarkCheck size={18} />,
+    ghost: <BookmarkCheck size={120} />,
+    subtitle: "À regarder plus tard",
+  };
 
   // Tuile TV : après Privé, ou à la place d'une éventuelle catégorie « tv »
   // (même règle qu'avant la refonte) ; sinon en dernier recours à la fin.
@@ -84,6 +105,11 @@ function buildPortals(categories: Category[], hidePrivate: boolean): Portal[] {
   }
   if (!categories.some(isAnimeCategory)) out.push(aetherfy);
   placeTv();
+
+  // Ajoute Collections et Watchlist à la fin
+  out.push(collections);
+  out.push(watchlist);
+
   return out;
 }
 

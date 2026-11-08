@@ -5,6 +5,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AppStatus, VaultStatus } from "@aethervault/shared-types";
 import { Button, IconButton, useTheme } from "@aethervault/ui-kit";
+import { HeroTrailerSection, TransparentThemeSection, UiSoundsSection } from "./settings/NewSettingsSections";
 import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
 import { Settings as SettingsIcon } from "lucide-react";
 import {
@@ -1525,8 +1526,10 @@ export function SettingsPage() {
       <ProfileAvatarSection />
       <QuickAccessSection />
       <HomeBackdropSection />
+      <HeroTrailerSection />
       <AnimatedBackdropSection />
       <ThemeCustomizerSection />
+      <TransparentThemeSection />
       <TypographySection />
       <SkipSettingsSection />
 	  <RenderQualitySection />
@@ -1534,6 +1537,7 @@ export function SettingsPage() {
       <HidePrivateSection />
 	  <CategoryBackdropSection />
       <AudioSection />
+      <UiSoundsSection />
       <SecuritySection />
       <ExperimentalPlayerSection />
       <SystemInfoSection />

@@ -290,6 +290,51 @@ pub fn search_facets(pool: &DbPool) -> Result<SearchFacets, String> {
     })
 }
 
+// ---- Facettes avec compteurs & Collections intelligentes -----------------
+
+/// Compteurs de facettes (genres, décennies, résolutions, codecs, langues,
+/// sagas, réalisateurs, acteurs) pour les catégories demandées — liste vide
+/// = tout le catalogue public. Alimente les panneaux de filtres.
+pub fn facet_counts(
+    pool: &DbPool,
+    category_keys: Vec<String>,
+) -> Result<title_repository::FacetCounts, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    title_repository::facet_counts(&conn, &category_keys).map_err(|e| e.to_string())
+}
+
+pub fn list_smart_collections(
+    pool: &DbPool,
+) -> Result<Vec<title_repository::SmartCollection>, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    title_repository::list_smart_collections(&conn).map_err(|e| e.to_string())
+}
+
+/// Titres d'une collection intelligente, avec l'affiche effective
+/// (personnalisée si elle existe) comme partout ailleurs.
+pub fn smart_collection_titles(
+    pool: &DbPool,
+    kind: &str,
+    key: &str,
+) -> Result<Vec<TitleSummary>, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let rows = title_repository::smart_collection_titles(&conn, kind, key).map_err(|e| e.to_string())?;
+    let mut summaries = Vec::with_capacity(rows.len());
+    for (id, category_id, title_kind, name, year, poster_path) in rows {
+        let custom_poster = custom_image_repository::get(&conn, ENTITY_TYPE, id, POSTER_PURPOSE)
+            .map_err(|e| e.to_string())?;
+        summaries.push(TitleSummary {
+            id,
+            category_id,
+            kind: title_kind,
+            name,
+            year,
+            poster: custom_poster.or(poster_path),
+        });
+    }
+    Ok(summaries)
+}
+
 // ---- Informations techniques agrégées (Étape 7, lot 4) ----------------
 
 /// Agrège les infos techniques (résolution, codec, langues) depuis tous

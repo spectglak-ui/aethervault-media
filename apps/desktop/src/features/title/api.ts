@@ -1,7 +1,10 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
   EpisodeSummary,
+  FacetCounts,
+  SagaStatus,
   SearchFacets,
+  SmartCollection,
   TitleDetails,
   TitleSearchQuery,
   TitleSearchResult,
@@ -102,6 +105,15 @@ export const titleApi = {
   search: (query: Partial<TitleSearchQuery>) =>
     invoke<TitleSearchResult[]>("search_titles", { query }),
   facets: () => invoke<SearchFacets>("search_facets"),
+  /** Compteurs de facettes pour les filtres (liste vide = catalogue public). */
+  facetCounts: (categoryKeys: string[]) =>
+    invoke<FacetCounts>("search_facet_counts", { categoryKeys }),
+  /** Collections intelligentes (saga, genre, réalisateur, acteur, studio, décennie, qualité…). */
+  smartCollections: () => invoke<SmartCollection[]>("list_smart_collections"),
+  smartCollectionTitles: (kind: string, key: string) =>
+    invoke<TitleSummary[]>("list_smart_collection_titles", { kind, key }),
+  sagaStatus: () => invoke<SagaStatus>("get_saga_status"),
+  detectSagas: () => invoke<boolean>("detect_sagas"),
       /** Time Capsule (Étape 8). */
   watchStats: () => invoke<WatchStats>("get_watch_stats"),
   topGenres: (limit = 6) => invoke<[string, number][]>("get_top_genres", { limit }),

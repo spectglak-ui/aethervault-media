@@ -163,6 +163,11 @@ pub const MIGRATIONS: &[Migration] = &[
         description: "Notes personnelles (demi-étoiles) et Watchlist, par profil",
         sql: include_str!("0026_ratings_watchlist.sql"),
     },
+    Migration {
+        version: 27,
+        description: "Sagas (TMDB belongs_to_collection) pour les Collections intelligentes",
+        sql: include_str!("0027_sagas.sql"),
+    },
 ];
 
 /// Applique, dans l'ordre, toutes les migrations dont la version est

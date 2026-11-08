@@ -28,7 +28,7 @@
 - **Bibliothèque universelle** : films, séries, anime, documentaires, manga, webtoons, bandes dessinées et romans
 - **Open Source** : MIT License
 
-**Version actuelle** : 0.7.5 « Orbite »
+**Version actuelle** : 0.7.8 « Orbite »
 
 ### 🌐 Site web
 Découvrez le projet en détail : **[aethervault-website](https://spectglak-ui.github.io/aethervault-website/#/)**
@@ -61,10 +61,10 @@ Découvrez le projet en détail : **[aethervault-website](https://spectglak-ui.g
 - Modes de lecture : plein écran, fenêtre flottante, interface intégrée
 - Informations techniques en direct : résolution, codecs, langues audio/sous-titres
 
-### 🔍 Exploration et recherche intelligente
-- **Explorateur multicritère** : titre, catégorie, année, genre, acteur, réalisateur, résolution, codec, langue
-- Facettes dynamiques avec compteurs en temps réel
-- Barre de recherche globale avec raccourci shell
+### 🔍 Recherche intelligente et collections automatiques
+- **Recherche avancée** dans la barre globale : texte libre (titre, acteur, réalisateur, saga) et filtres — type de média, genre, année, acteur, réalisateur, saga, résolution, codec, langue — avec compteurs et résultats en direct
+- **Filtres sur chaque page de catégorie** (Films, Séries, Animés, Documentaires) avec compteurs en temps réel
+- **Collections intelligentes** automatiques : sagas (TMDB), genres, réalisateurs, acteurs, studios, décennies, qualité d'image, mieux notés
 - Fonds d'écran dynamiques : bannières TMDB automatiquement appliquées
 
 ### 🎨 Interface utilisateur moderne
@@ -72,6 +72,9 @@ Découvrez le projet en détail : **[aethervault-website](https://spectglak-ui.g
 - Fenêtre frameless avec draggable sans barre de titre native
 - Thème sombre cohérent avec scrollbars personnalisées
 - Animations fluides via Framer Motion
+- **Sons d'interface** doux et discrets (clics, interrupteurs, navigation, confirmations), réglables : volume, survol, signature de connexion — synthétisés par script, aucun échantillon externe
+- **Thème Transparent personnalisable** : couleur d'accentuation, teinte et opacité du fond, des panneaux et de la barre latérale, ambiances prêtes à l'emploi
+- **Bande-annonce dans le héro de l'accueil** (option, désactivée par défaut) à la place de la bannière
 - Maximisée au démarrage pour expérience immersive
 
 ### 🔐 Partage sécurisé
@@ -170,7 +173,7 @@ Produit selon la plateforme :
 
 **Windows** :
 ```
-apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.7.5_x64-setup.exe
+apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.7.8_x64-setup.exe
 ```
 - ✅ Sélection de langue (FR/EN)
 - ✅ Installation par utilisateur (sans UAC)
@@ -180,7 +183,7 @@ apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.7.5_x64-se
 
 **macOS** :
 ```
-apps/desktop/src-tauri/target/release/bundle/dmg/AetherVault Media_0.7.5_x64.dmg
+apps/desktop/src-tauri/target/release/bundle/dmg/AetherVault Media_0.7.8_x64.dmg
 ```
 - ✅ Drag & drop vers /Applications
 - ✅ Intégration Dock
@@ -188,10 +191,10 @@ apps/desktop/src-tauri/target/release/bundle/dmg/AetherVault Media_0.7.5_x64.dmg
 **Linux** :
 ```
 # Debian/Ubuntu
-apps/desktop/src-tauri/target/release/bundle/deb/aethervault-media_0.7.5_amd64.deb
+apps/desktop/src-tauri/target/release/bundle/deb/aethervault-media_0.7.8_amd64.deb
 
 # AppImage
-apps/desktop/src-tauri/target/release/bundle/appimage/AetherVault Media_0.7.5_amd64.AppImage
+apps/desktop/src-tauri/target/release/bundle/appimage/AetherVault Media_0.7.8_amd64.AppImage
 ```
 - ✅ Installation via `dpkg -i` (DEB)
 - ✅ Exécution directe (AppImage)

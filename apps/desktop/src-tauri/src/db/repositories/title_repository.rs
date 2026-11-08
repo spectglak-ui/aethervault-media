@@ -367,6 +367,10 @@ pub fn clear_provider_associations(conn: &Connection, title_id: i64) -> rusqlite
         "DELETE FROM title_credits WHERE title_id = ?1",
         rusqlite::params![title_id],
     )?;
+    conn.execute(
+        "UPDATE titles SET saga_tmdb_id = NULL, saga_name = NULL, saga_checked = 0 WHERE id = ?1",
+        rusqlite::params![title_id],
+    )?;
     Ok(())
 }
 
@@ -415,6 +419,8 @@ pub struct TitleSearchQuery {
     pub resolutions: Vec<String>,
     pub codecs: Vec<String>,
     pub audio_langs: Vec<String>,
+    /// Sagas (collections TMDB) — OU interne, comparées au nom de saga.
+    pub sagas: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -452,8 +458,22 @@ pub fn search_titles(
     let mut values: Vec<rusqlite::types::Value> = Vec::new();
 
     if let Some(q) = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-        sql.push_str(" AND t.name LIKE ?");
-        values.push(rusqlite::types::Value::Text(format!("%{q}%")));
+        // Recherche libre : titre, saga, ou nom d'une personne du casting
+        // (acteur / réalisateur) — la barre globale promet « un acteur… ».
+        sql.push_str(
+            " AND (t.name LIKE ? OR t.saga_name LIKE ?
+                   OR EXISTS (SELECT 1 FROM title_credits qc JOIN people qp ON qp.id = qc.person_id
+                              WHERE qc.title_id = t.id AND qp.name LIKE ?))",
+        );
+        for _ in 0..3 {
+            values.push(rusqlite::types::Value::Text(format!("%{q}%")));
+        }
+    }
+    if !query.sagas.is_empty() {
+        sql.push_str(&format!(" AND t.saga_name IN ({})", placeholders(query.sagas.len())));
+        for saga in &query.sagas {
+            values.push(rusqlite::types::Value::Text(saga.clone()));
+        }
     }
     if !query.category_keys.is_empty() {
         sql.push_str(&format!(" AND c.key IN ({})", placeholders(query.category_keys.len())));
@@ -526,7 +546,9 @@ pub fn search_titles(
         inner.push(')');
         sql.push_str(&inner);
     }
-    sql.push_str(" ORDER BY t.name COLLATE NOCASE LIMIT 500");
+    // 2000 : assez pour filtrer toute une catégorie (les pages Catégorie
+    // s'appuient sur ce moteur) sans jamais tronquer silencieusement.
+    sql.push_str(" ORDER BY t.name COLLATE NOCASE LIMIT 2000");
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(values), |row| {
@@ -711,4 +733,652 @@ pub fn list_titles_by_tmdb_ids(
         ))
     })?;
     rows.collect()
+}
+
+// ---- Sagas (migration 0027) ----------------------------------------------
+
+/// Enregistre la saga TMDB d'un Titre (`None` = « interrogé, aucune saga »).
+/// Dans les deux cas `saga_checked` passe à 1 : la détection rétroactive ne
+/// reposera jamais la question pour ce Titre.
+pub fn set_saga(conn: &Connection, title_id: i64, saga: Option<(i64, &str)>) -> rusqlite::Result<()> {
+    match saga {
+        Some((saga_id, saga_name)) => conn.execute(
+            "UPDATE titles SET saga_tmdb_id = ?1, saga_name = ?2, saga_checked = 1 WHERE id = ?3",
+            rusqlite::params![saga_id, saga_name, title_id],
+        )?,
+        None => conn.execute(
+            "UPDATE titles SET saga_tmdb_id = NULL, saga_name = NULL, saga_checked = 1 WHERE id = ?1",
+            rusqlite::params![title_id],
+        )?,
+    };
+    Ok(())
+}
+
+/// Films enrichis par TMDB dont la saga n'a jamais été interrogée :
+/// (id du Titre, tmdb_id).
+pub fn list_titles_to_check_saga(conn: &Connection) -> rusqlite::Result<Vec<(i64, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, tmdb_id FROM titles
+         WHERE kind = 'movie' AND tmdb_id IS NOT NULL AND saga_checked = 0
+         ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect()
+}
+
+pub fn count_titles_to_check_saga(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM titles WHERE kind = 'movie' AND tmdb_id IS NOT NULL AND saga_checked = 0",
+        [],
+        |row| row.get(0),
+    )
+}
+
+// ---- Facettes avec compteurs (filtres des pages Catégorie / Recherche) ----
+
+/// Catégories visibles par la recherche et les Collections intelligentes :
+/// le catalogue public, jamais le Privé, la TV ni la Lecture.
+pub const PUBLIC_CATEGORY_KEYS: [&str; 4] = ["movies", "series", "anime", "documentaries"];
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FacetCount {
+    pub value: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct FacetCounts {
+    pub total: i64,
+    pub year_min: Option<i64>,
+    pub year_max: Option<i64>,
+    pub genres: Vec<FacetCount>,
+    pub decades: Vec<FacetCount>,
+    pub resolutions: Vec<FacetCount>,
+    pub codecs: Vec<FacetCount>,
+    pub audio_langs: Vec<FacetCount>,
+    pub sagas: Vec<FacetCount>,
+    pub directors: Vec<FacetCount>,
+    pub actors: Vec<FacetCount>,
+}
+
+/// `?{start}, ?{start+1}, …` : placeholders numérotés, pour pouvoir
+/// réutiliser librement `?1` (la clé) dans la même requête.
+fn scope_in(start: usize, count: usize) -> String {
+    let list: Vec<String> = (start..start + count).map(|i| format!("?{i}")).collect();
+    format!("c.key IN ({})", list.join(", "))
+}
+
+/// Restreint aux catégories publiques ; une liste vide = tout le public.
+fn public_scope(category_keys: &[String]) -> Vec<String> {
+    let allowed: Vec<String> = category_keys
+        .iter()
+        .filter(|key| PUBLIC_CATEGORY_KEYS.contains(&key.as_str()))
+        .cloned()
+        .collect();
+    if allowed.is_empty() {
+        PUBLIC_CATEGORY_KEYS.iter().map(|key| key.to_string()).collect()
+    } else {
+        allowed
+    }
+}
+
+fn scope_values(scope: &[String]) -> Vec<rusqlite::types::Value> {
+    scope.iter().map(|key| rusqlite::types::Value::Text(key.clone())).collect()
+}
+
+/// Exécute une requête `SELECT <valeur texte>, <compte>` contenant `{scope}`.
+fn count_rows(conn: &Connection, sql: &str, scope: &[String]) -> rusqlite::Result<Vec<FacetCount>> {
+    let full = sql.replace("{scope}", &scope_in(1, scope.len()));
+    let mut stmt = conn.prepare(&full)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(scope_values(scope)), |row| {
+        Ok(FacetCount {
+            value: row.get(0)?,
+            count: row.get(1)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Fragment de jointure « un Titre ↔ ses fichiers sondés » (film : fichier
+/// direct ; série : via ses épisodes).
+const TECH_JOIN: &str = "FROM media_probes pr
+     JOIN media_files m ON m.id = pr.media_file_id
+     LEFT JOIN episodes e ON e.id = m.episode_id
+     JOIN titles t ON t.id = COALESCE(m.title_id, e.title_id)
+     JOIN categories c ON c.id = t.category_id";
+
+/// Compteurs de toutes les facettes pour le périmètre demandé (catégories
+/// publiques). Une requête par famille, jamais de jointure explosive.
+pub fn facet_counts(conn: &Connection, category_keys: &[String]) -> rusqlite::Result<FacetCounts> {
+    let scope = public_scope(category_keys);
+    let scope_sql = scope_in(1, scope.len());
+
+    let (total, year_min, year_max): (i64, Option<i64>, Option<i64>) = conn.query_row(
+        &format!(
+            "SELECT COUNT(*), MIN(t.year), MAX(t.year)
+             FROM titles t JOIN categories c ON c.id = t.category_id WHERE {scope_sql}"
+        ),
+        rusqlite::params_from_iter(scope_values(&scope)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+
+    let genres = count_rows(
+        conn,
+        "SELECT g.name, COUNT(DISTINCT t.id)
+         FROM genres g
+         JOIN title_genres tg ON tg.genre_id = g.id
+         JOIN titles t ON t.id = tg.title_id
+         JOIN categories c ON c.id = t.category_id
+         WHERE {scope}
+         GROUP BY g.id
+         ORDER BY COUNT(DISTINCT t.id) DESC, g.name COLLATE NOCASE
+         LIMIT 60",
+        &scope,
+    )?;
+    let decades = count_rows(
+        conn,
+        "SELECT CAST((t.year / 10) * 10 AS TEXT), COUNT(*)
+         FROM titles t JOIN categories c ON c.id = t.category_id
+         WHERE {scope} AND t.year IS NOT NULL
+         GROUP BY (t.year / 10)
+         ORDER BY (t.year / 10) DESC",
+        &scope,
+    )?;
+    let resolutions = count_rows(
+        conn,
+        &format!(
+            "SELECT pr.resolution, COUNT(DISTINCT t.id) {TECH_JOIN}
+             WHERE {{scope}} AND m.is_available = 1 AND pr.resolution IS NOT NULL
+             GROUP BY pr.resolution ORDER BY COUNT(DISTINCT t.id) DESC"
+        ),
+        &scope,
+    )?;
+    let codecs = count_rows(
+        conn,
+        &format!(
+            "SELECT pr.video_codec, COUNT(DISTINCT t.id) {TECH_JOIN}
+             WHERE {{scope}} AND m.is_available = 1 AND pr.video_codec IS NOT NULL
+             GROUP BY pr.video_codec ORDER BY COUNT(DISTINCT t.id) DESC"
+        ),
+        &scope,
+    )?;
+
+    // Les langues audio sont stockées en JSON (`["fr","en"]`) : on compte
+    // chaque langue connue avec le même motif LIKE que le filtre de recherche.
+    let mut audio_langs = Vec::new();
+    for lang in super::media_probe_repository::distinct_audio_langs(conn)? {
+        let mut values = scope_values(&scope);
+        values.push(rusqlite::types::Value::Text(format!("%\"{lang}\"%")));
+        let count: i64 = conn.query_row(
+            &format!(
+                "SELECT COUNT(DISTINCT t.id) {TECH_JOIN}
+                 WHERE {scope_sql} AND m.is_available = 1 AND pr.audio_langs LIKE ?{}",
+                scope.len() + 1
+            ),
+            rusqlite::params_from_iter(values),
+            |row| row.get(0),
+        )?;
+        if count > 0 {
+            audio_langs.push(FacetCount { value: lang, count });
+        }
+    }
+    audio_langs.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)));
+
+    let sagas = count_rows(
+        conn,
+        "SELECT t.saga_name, COUNT(*)
+         FROM titles t JOIN categories c ON c.id = t.category_id
+         WHERE {scope} AND t.saga_tmdb_id IS NOT NULL AND t.saga_name IS NOT NULL
+         GROUP BY t.saga_tmdb_id
+         ORDER BY COUNT(*) DESC, t.saga_name COLLATE NOCASE
+         LIMIT 100",
+        &scope,
+    )?;
+    let credit_facet = |role: &str, limit: i64| -> rusqlite::Result<Vec<FacetCount>> {
+        count_rows(
+            conn,
+            &format!(
+                "SELECT p.name, COUNT(DISTINCT tc.title_id)
+                 FROM title_credits tc
+                 JOIN people p ON p.id = tc.person_id
+                 JOIN titles t ON t.id = tc.title_id
+                 JOIN categories c ON c.id = t.category_id
+                 WHERE {{scope}} AND tc.role = '{role}'
+                 GROUP BY p.id
+                 ORDER BY COUNT(DISTINCT tc.title_id) DESC, p.name COLLATE NOCASE
+                 LIMIT {limit}"
+            ),
+            &scope,
+        )
+    };
+    let directors = credit_facet("director", 150)?;
+    let actors = credit_facet("actor", 200)?;
+
+    Ok(FacetCounts {
+        total,
+        year_min,
+        year_max,
+        genres,
+        decades,
+        resolutions,
+        codecs,
+        audio_langs,
+        sagas,
+        directors,
+        actors,
+    })
+}
+
+// ---- Collections intelligentes (automatiques) -----------------------------
+
+/// Une collection calculée à la volée à partir du catalogue (rien n'est
+/// stocké) : saga, genre, réalisateur, acteur, studio, décennie, qualité…
+#[derive(Debug, Clone, Serialize)]
+pub struct SmartCollection {
+    /// `saga` | `genre` | `director` | `actor` | `studio` | `decade` |
+    /// `quality` | `rating`
+    pub kind: String,
+    /// Identifiant de la collection au sein de son type (id numérique,
+    /// décennie, résolution…), renvoyé tel quel à `smart_collection_titles`.
+    pub key: String,
+    pub name: String,
+    pub count: i64,
+    /// Jusqu'à 4 affiches (chemins locaux) pour la mosaïque de couverture.
+    pub posters: Vec<String>,
+}
+
+pub type TitleListRow = (i64, i64, String, String, Option<i64>, Option<String>);
+
+const SMART_KINDS: [&str; 8] = [
+    "saga", "genre", "director", "actor", "studio", "decade", "quality", "rating",
+];
+
+/// Requête listant les groupes d'un type : (clé, nom, nombre de titres).
+/// Seuils volontairement bas pour ne pas produire des centaines de
+/// collections d'un seul titre.
+fn smart_groups_sql(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "saga" => {
+            "SELECT CAST(t.saga_tmdb_id AS TEXT), t.saga_name, COUNT(*)
+             FROM titles t JOIN categories c ON c.id = t.category_id
+             WHERE {scope} AND t.saga_tmdb_id IS NOT NULL AND t.saga_name IS NOT NULL
+             GROUP BY t.saga_tmdb_id HAVING COUNT(*) >= 2
+             ORDER BY COUNT(*) DESC, t.saga_name COLLATE NOCASE LIMIT 100"
+        }
+        "genre" => {
+            "SELECT CAST(g.id AS TEXT), g.name, COUNT(DISTINCT t.id)
+             FROM genres g
+             JOIN title_genres tg ON tg.genre_id = g.id
+             JOIN titles t ON t.id = tg.title_id
+             JOIN categories c ON c.id = t.category_id
+             WHERE {scope}
+             GROUP BY g.id HAVING COUNT(DISTINCT t.id) >= 3
+             ORDER BY COUNT(DISTINCT t.id) DESC, g.name COLLATE NOCASE LIMIT 60"
+        }
+        "director" => {
+            "SELECT CAST(p.id AS TEXT), p.name, COUNT(DISTINCT tc.title_id)
+             FROM title_credits tc
+             JOIN people p ON p.id = tc.person_id
+             JOIN titles t ON t.id = tc.title_id
+             JOIN categories c ON c.id = t.category_id
+             WHERE {scope} AND tc.role = 'director'
+             GROUP BY p.id HAVING COUNT(DISTINCT tc.title_id) >= 2
+             ORDER BY COUNT(DISTINCT tc.title_id) DESC, p.name COLLATE NOCASE LIMIT 80"
+        }
+        "actor" => {
+            "SELECT CAST(p.id AS TEXT), p.name, COUNT(DISTINCT tc.title_id)
+             FROM title_credits tc
+             JOIN people p ON p.id = tc.person_id
+             JOIN titles t ON t.id = tc.title_id
+             JOIN categories c ON c.id = t.category_id
+             WHERE {scope} AND tc.role = 'actor'
+             GROUP BY p.id HAVING COUNT(DISTINCT tc.title_id) >= 3
+             ORDER BY COUNT(DISTINCT tc.title_id) DESC, p.name COLLATE NOCASE LIMIT 80"
+        }
+        "studio" => {
+            "SELECT CAST(s.id AS TEXT), s.name, COUNT(DISTINCT t.id)
+             FROM studios s
+             JOIN title_studios ts ON ts.studio_id = s.id
+             JOIN titles t ON t.id = ts.title_id
+             JOIN categories c ON c.id = t.category_id
+             WHERE {scope}
+             GROUP BY s.id HAVING COUNT(DISTINCT t.id) >= 3
+             ORDER BY COUNT(DISTINCT t.id) DESC, s.name COLLATE NOCASE LIMIT 60"
+        }
+        "decade" => {
+            "SELECT CAST((t.year / 10) * 10 AS TEXT), 'Années ' || CAST((t.year / 10) * 10 AS TEXT), COUNT(*)
+             FROM titles t JOIN categories c ON c.id = t.category_id
+             WHERE {scope} AND t.year IS NOT NULL
+             GROUP BY (t.year / 10) HAVING COUNT(*) >= 3
+             ORDER BY (t.year / 10) DESC"
+        }
+        "quality" => {
+            "SELECT pr.resolution, pr.resolution, COUNT(DISTINCT t.id)
+             FROM media_probes pr
+             JOIN media_files m ON m.id = pr.media_file_id
+             LEFT JOIN episodes e ON e.id = m.episode_id
+             JOIN titles t ON t.id = COALESCE(m.title_id, e.title_id)
+             JOIN categories c ON c.id = t.category_id
+             WHERE {scope} AND m.is_available = 1 AND pr.resolution IS NOT NULL
+             GROUP BY pr.resolution HAVING COUNT(DISTINCT t.id) >= 3
+             ORDER BY COUNT(DISTINCT t.id) DESC"
+        }
+        "rating" => {
+            "SELECT 'top', 'Les mieux notés', COUNT(*)
+             FROM titles t JOIN categories c ON c.id = t.category_id
+             WHERE {scope} AND t.rating >= 7.5
+             HAVING COUNT(*) >= 3"
+        }
+        _ => return None,
+    })
+}
+
+/// Cœur « membres d'une collection » : `?1` = la clé, `{scope}` numéroté
+/// à partir de `?2`. Se termine par une clause WHERE (on y accroche
+/// `ORDER BY` / `AND …`).
+fn smart_members_core(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "saga" => {
+            "FROM titles t JOIN categories c ON c.id = t.category_id
+             WHERE {scope} AND t.saga_tmdb_id = CAST(?1 AS INTEGER)"
+        }
+        "genre" => {
+            "FROM titles t JOIN categories c ON c.id = t.category_id
+             JOIN title_genres tg ON tg.title_id = t.id
+             WHERE {scope} AND tg.genre_id = CAST(?1 AS INTEGER)"
+        }
+        "director" => {
+            "FROM titles t JOIN categories c ON c.id = t.category_id
+             JOIN title_credits tc ON tc.title_id = t.id
+             WHERE {scope} AND tc.role = 'director' AND tc.person_id = CAST(?1 AS INTEGER)"
+        }
+        "actor" => {
+            "FROM titles t JOIN categories c ON c.id = t.category_id
+             JOIN title_credits tc ON tc.title_id = t.id
+             WHERE {scope} AND tc.role = 'actor' AND tc.person_id = CAST(?1 AS INTEGER)"
+        }
+        "studio" => {
+            "FROM titles t JOIN categories c ON c.id = t.category_id
+             JOIN title_studios ts ON ts.title_id = t.id
+             WHERE {scope} AND ts.studio_id = CAST(?1 AS INTEGER)"
+        }
+        "decade" => {
+            "FROM titles t JOIN categories c ON c.id = t.category_id
+             WHERE {scope} AND t.year >= CAST(?1 AS INTEGER) AND t.year < CAST(?1 AS INTEGER) + 10"
+        }
+        "quality" => {
+            "FROM titles t JOIN categories c ON c.id = t.category_id
+             WHERE {scope} AND EXISTS (
+                 SELECT 1 FROM media_files m
+                 JOIN media_probes pr ON pr.media_file_id = m.id
+                 WHERE (m.title_id = t.id OR m.episode_id IN
+                        (SELECT e.id FROM episodes e WHERE e.title_id = t.id))
+                   AND m.is_available = 1 AND pr.resolution = ?1)"
+        }
+        "rating" => {
+            "FROM titles t JOIN categories c ON c.id = t.category_id
+             WHERE {scope} AND t.rating >= 7.5 AND ?1 IS NOT NULL"
+        }
+        _ => return None,
+    })
+}
+
+/// Toutes les collections intelligentes du catalogue public, groupées par
+/// type (l'ordre de `SMART_KINDS` est celui de l'affichage).
+pub fn list_smart_collections(conn: &Connection) -> rusqlite::Result<Vec<SmartCollection>> {
+    let scope: Vec<String> = PUBLIC_CATEGORY_KEYS.iter().map(|key| key.to_string()).collect();
+    let mut out = Vec::new();
+    for kind in SMART_KINDS {
+        let (Some(groups_sql), Some(core)) = (smart_groups_sql(kind), smart_members_core(kind)) else {
+            continue;
+        };
+        let groups: Vec<(String, String, i64)> = {
+            let sql = groups_sql.replace("{scope}", &scope_in(1, scope.len()));
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(scope_values(&scope)), |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let poster_sql = format!(
+            "SELECT t.poster_path {} AND t.poster_path IS NOT NULL ORDER BY t.rating DESC, t.id LIMIT 4",
+            core.replace("{scope}", &scope_in(2, scope.len()))
+        );
+        let mut poster_stmt = conn.prepare(&poster_sql)?;
+        for (key, name, count) in groups {
+            let mut values = vec![rusqlite::types::Value::Text(key.clone())];
+            values.extend(scope_values(&scope));
+            let posters = poster_stmt
+                .query_map(rusqlite::params_from_iter(values), |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            out.push(SmartCollection {
+                kind: kind.to_string(),
+                key,
+                name,
+                count,
+                posters,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Titres d'une collection intelligente : (id, category_id, kind, name,
+/// year, poster_path) — l'affiche effective est composée par `domain::title`.
+pub fn smart_collection_titles(
+    conn: &Connection,
+    kind: &str,
+    key: &str,
+) -> rusqlite::Result<Vec<TitleListRow>> {
+    let Some(core) = smart_members_core(kind) else {
+        return Ok(Vec::new());
+    };
+    let scope: Vec<String> = PUBLIC_CATEGORY_KEYS.iter().map(|key| key.to_string()).collect();
+    let order = match kind {
+        "saga" => "t.year ASC, t.name COLLATE NOCASE",
+        "rating" => "t.rating DESC, t.name COLLATE NOCASE",
+        _ => "t.name COLLATE NOCASE",
+    };
+    let sql = format!(
+        "SELECT t.id, t.category_id, t.kind, t.name, t.year, t.poster_path {} ORDER BY {order}",
+        core.replace("{scope}", &scope_in(2, scope.len()))
+    );
+    let mut values = vec![rusqlite::types::Value::Text(key.to_string())];
+    values.extend(scope_values(&scope));
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+    })?;
+    rows.collect()
+}
+
+#[cfg(test)]
+mod smart_tests {
+    //! Tests de bout en bout (base SQLite en mémoire, vraies migrations) des
+    //! requêtes ajoutées avec les Collections intelligentes et la recherche
+    //! avancée : sagas, facettes avec compteurs, collections automatiques.
+    use super::*;
+    use crate::db::{migrations, seed, DbPool};
+    use r2d2_sqlite::SqliteConnectionManager;
+
+    fn test_pool() -> DbPool {
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(SqliteConnectionManager::memory())
+            .expect("pool en mémoire");
+        // Les migrations 18→24 modifient des tables VaultTube qui, au démarrage
+        // réel, sont créées avant elles (lib.rs). On y met ici de simples
+        // coquilles « d'avant les migrations » (id seul) : les ALTER TABLE
+        // ajoutent ensuite leurs colonnes, sans dépendre de VaultTube.
+        {
+            let conn = pool.get().unwrap();
+            for table in [
+                "vaulttube_subscriptions",
+                "vaulttube_videos",
+                "vaulttube_playlists",
+                "vaulttube_user_playlists",
+                "vaulttube_user_playlist_items",
+            ] {
+                conn.execute_batch(&format!("CREATE TABLE {table} (id INTEGER PRIMARY KEY);")).unwrap();
+            }
+        }
+        migrations::apply_migrations(&pool).expect("migrations");
+        seed::ensure_default_categories(&pool).expect("catégories par défaut");
+        pool
+    }
+
+    fn category_id(conn: &Connection, key: &str) -> i64 {
+        conn.query_row("SELECT id FROM categories WHERE key = ?1", [key], |r| r.get(0))
+            .expect("catégorie")
+    }
+
+    fn add_movie(conn: &Connection, category: &str, name: &str, year: i64, rating: f64) -> i64 {
+        let id = create(conn, category_id(conn, category), "movie", name, Some(year), "test").unwrap();
+        conn.execute(
+            "UPDATE titles SET rating = ?1, poster_path = ?2 WHERE id = ?3",
+            rusqlite::params![rating, format!("posters/{id}.jpg"), id],
+        )
+        .unwrap();
+        id
+    }
+
+    /// Fichier sondé (résolution) rattaché à un film.
+    fn add_probe(conn: &Connection, title_id: i64, resolution: &str) {
+        let now = "2026-01-01T00:00:00Z";
+        conn.execute(
+            "INSERT OR IGNORE INTO libraries (id, name, media_type, created_at, updated_at)
+             VALUES (1, 'L', 'movies', ?1, ?1)",
+            [now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO library_folders (id, library_id, path, added_at)
+             VALUES (1, 1, 'C:/x', ?1)",
+            [now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO media_files (library_id, folder_id, path, file_name, size_bytes, modified_at,
+                                      is_available, discovered_at, updated_at, title_id)
+             VALUES (1, 1, ?1, 'f.mkv', 1, ?2, 1, ?2, ?2, ?3)",
+            rusqlite::params![format!("C:/x/{title_id}.mkv"), now, title_id],
+        )
+        .unwrap();
+        let media_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO media_probes (media_file_id, resolution, video_codec, audio_langs, probe_updated_at)
+             VALUES (?1, ?2, 'hevc', '[\"fr\",\"en\"]', ?3)",
+            rusqlite::params![media_id, resolution, now],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn smart_collections_facets_and_saga_search() {
+        let pool = test_pool();
+        let conn = pool.get().unwrap();
+
+        // Saga : 2 films de la même saga + 1 film hors saga + 1 film Privé.
+        let a = add_movie(&conn, "movies", "Aube I", 1999, 8.1);
+        let b = add_movie(&conn, "movies", "Aube II", 2002, 7.9);
+        let c = add_movie(&conn, "movies", "Solo", 1995, 6.0);
+        let private = add_movie(&conn, "private", "Secret", 1990, 9.5);
+        set_saga(&conn, a, Some((1241, "Saga Aube"))).unwrap();
+        set_saga(&conn, b, Some((1241, "Saga Aube"))).unwrap();
+        set_saga(&conn, c, None).unwrap();
+        set_saga(&conn, private, Some((999, "Saga Cachée"))).unwrap();
+        for id in [a, b, c, private] {
+            attach_genre(&conn, id, "Science-fiction").unwrap();
+            attach_credit(&conn, id, "Alex Ford", "actor", Some("Rôle"), 0).unwrap();
+        }
+        attach_credit(&conn, a, "Jane Doe", "director", None, 0).unwrap();
+        attach_credit(&conn, b, "Jane Doe", "director", None, 0).unwrap();
+        for id in [a, b, c] {
+            add_probe(&conn, id, "4K");
+        }
+
+        // `saga_checked` : seuls les films jamais interrogés restent à vérifier.
+        let d = add_movie(&conn, "movies", "Nouveau", 2020, 5.0);
+        conn.execute("UPDATE titles SET tmdb_id = 42 WHERE id = ?1", [d]).unwrap();
+        assert_eq!(count_titles_to_check_saga(&conn).unwrap(), 1);
+        assert_eq!(list_titles_to_check_saga(&conn).unwrap(), vec![(d, 42)]);
+        set_saga(&conn, d, None).unwrap();
+        assert_eq!(count_titles_to_check_saga(&conn).unwrap(), 0);
+
+        // --- Collections intelligentes (le Privé n'y apparaît jamais) ---
+        let smart = list_smart_collections(&conn).unwrap();
+        let find = |kind: &str| -> Vec<&SmartCollection> { smart.iter().filter(|s| s.kind == kind).collect() };
+        let sagas = find("saga");
+        assert_eq!(sagas.len(), 1, "une seule saga publique");
+        assert_eq!((sagas[0].key.as_str(), sagas[0].name.as_str(), sagas[0].count), ("1241", "Saga Aube", 2));
+        assert_eq!(sagas[0].posters.len(), 2);
+        let directors = find("director");
+        assert_eq!((directors[0].name.as_str(), directors[0].count), ("Jane Doe", 2));
+        // « Alex Ford » joue dans 3 films publics (le 4e est Privé) : seuil acteur = 3.
+        let actors = find("actor");
+        assert_eq!((actors[0].name.as_str(), actors[0].count), ("Alex Ford", 3));
+        let genres = find("genre");
+        assert_eq!((genres[0].name.as_str(), genres[0].count), ("Science-fiction", 3));
+        let quality = find("quality");
+        assert_eq!((quality[0].name.as_str(), quality[0].count), ("4K", 3));
+        let decades: Vec<(&str, i64)> = find("decade").iter().map(|d| (d.key.as_str(), d.count)).collect();
+        assert!(decades.is_empty(), "aucune décennie n'atteint 3 titres : {decades:?}");
+
+        // --- Membres d'une collection (saga : ordre chronologique) ---
+        let members = smart_collection_titles(&conn, "saga", "1241").unwrap();
+        let names: Vec<&str> = members.iter().map(|m| m.3.as_str()).collect();
+        assert_eq!(names, ["Aube I", "Aube II"]);
+        assert_eq!(smart_collection_titles(&conn, "director", &directors[0].key).unwrap().len(), 2);
+        assert_eq!(smart_collection_titles(&conn, "quality", "4K").unwrap().len(), 3);
+        assert_eq!(smart_collection_titles(&conn, "genre", &genres[0].key).unwrap().len(), 3);
+        assert!(smart_collection_titles(&conn, "inconnu", "x").unwrap().is_empty());
+
+        // --- Facettes avec compteurs ---
+        let facets = facet_counts(&conn, &[]).unwrap();
+        assert_eq!(facets.total, 4, "Privé exclu : Aube I, Aube II, Solo, Nouveau");
+        assert_eq!(facets.genres[0].value, "Science-fiction");
+        assert_eq!(facets.genres[0].count, 3);
+        assert_eq!(facets.sagas[0].value, "Saga Aube");
+        assert_eq!(facets.sagas[0].count, 2);
+        assert_eq!(facets.directors[0].value, "Jane Doe");
+        assert_eq!(facets.actors[0].value, "Alex Ford");
+        assert_eq!(facets.resolutions[0].value, "4K");
+        assert_eq!(facets.resolutions[0].count, 3);
+        assert_eq!(facets.codecs[0].value, "hevc");
+        assert!(facets.audio_langs.iter().any(|l| l.value == "fr" && l.count == 3));
+        assert_eq!(facets.year_min, Some(1995));
+        assert_eq!(facets.year_max, Some(2020));
+        // Périmètre restreint à une catégorie sans titre : tout est vide.
+        let none = facet_counts(&conn, &["anime".to_string()]).unwrap();
+        assert_eq!(none.total, 0);
+        assert!(none.genres.is_empty());
+
+        // --- Recherche : filtre saga, texte libre (titre / saga / personne) ---
+        let by_saga = search_titles(
+            &conn,
+            &TitleSearchQuery { sagas: vec!["Saga Aube".to_string()], ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(by_saga.len(), 2);
+        let by_person = search_titles(
+            &conn,
+            &TitleSearchQuery { q: Some("jane".to_string()), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(by_person.len(), 2, "recherche libre sur le nom d'un réalisateur");
+        let by_saga_text = search_titles(
+            &conn,
+            &TitleSearchQuery { q: Some("saga aube".to_string()), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(by_saga_text.len(), 2, "recherche libre sur le nom de la saga");
+
+        // Un ré-appariement TMDB repart de zéro côté saga.
+        clear_provider_associations(&conn, a).unwrap();
+        assert_eq!(count_titles_to_check_saga(&conn).unwrap(), 0, "a n'a pas de tmdb_id : jamais « à vérifier »");
+        let after: Option<String> = conn
+            .query_row("SELECT saga_name FROM titles WHERE id = ?1", [a], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, None);
+    }
 }

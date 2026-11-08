@@ -78,6 +78,9 @@ export function writePersistedTheme(theme: PersistedTheme): void {
     // Stockage indisponible (quota, mode privé…) : le thème reste actif
     // pour la session en cours, simplement pas persisté — pas fatal.
   }
+  // 0.7.8 — plusieurs éditeurs (couleurs détaillées, couleurs du thème
+  // Transparent) lisent ce même thème : ils se resynchronisent sur cet événement.
+  window.dispatchEvent(new Event("avm-theme-changed"));
 }
 
 /** Appelé une fois, avant le premier rendu (voir `main.tsx`). */

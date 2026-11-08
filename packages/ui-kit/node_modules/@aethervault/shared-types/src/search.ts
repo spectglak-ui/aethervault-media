@@ -11,6 +11,8 @@ export interface TitleSearchQuery {
   resolutions: string[];
   codecs: string[];
   audio_langs: string[];
+  /** Sagas (collections TMDB) — noms exacts, OU interne. */
+  sagas: string[];
 }
 
 export interface TitleSearchResult {
@@ -30,4 +32,52 @@ export interface SearchFacets {
   resolutions: string[];
   codecs: string[];
   audio_langs: string[];
+}
+
+/** Une valeur de facette et le nombre de titres qui la portent. */
+export interface FacetCount {
+  value: string;
+  count: number;
+}
+
+/** Compteurs de toutes les facettes pour un périmètre de catégories. */
+export interface FacetCounts {
+  total: number;
+  year_min: number | null;
+  year_max: number | null;
+  genres: FacetCount[];
+  /** `value` = début de décennie (« 1990 »). */
+  decades: FacetCount[];
+  resolutions: FacetCount[];
+  codecs: FacetCount[];
+  audio_langs: FacetCount[];
+  sagas: FacetCount[];
+  directors: FacetCount[];
+  actors: FacetCount[];
+}
+
+export type SmartCollectionKind =
+  | "saga"
+  | "genre"
+  | "director"
+  | "actor"
+  | "studio"
+  | "decade"
+  | "quality"
+  | "rating";
+
+/** Collection calculée automatiquement à partir du catalogue. */
+export interface SmartCollection {
+  kind: SmartCollectionKind;
+  key: string;
+  name: string;
+  count: number;
+  /** Jusqu'à 4 affiches (chemins locaux) pour la mosaïque de couverture. */
+  posters: string[];
+}
+
+export interface SagaStatus {
+  unchecked: number;
+  tmdb_configured: boolean;
+  running: boolean;
 }

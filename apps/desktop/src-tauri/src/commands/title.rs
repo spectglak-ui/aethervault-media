@@ -85,6 +85,67 @@ pub fn search_facets(state: tauri::State<AppState>) -> Result<title::SearchFacet
     title::search_facets(&state.db_pool)
 }
 
+/// Compteurs de facettes pour les filtres (pages Catégorie, recherche
+/// avancée). `category_keys` vide = tout le catalogue public.
+#[tauri::command]
+pub fn search_facet_counts(
+    state: tauri::State<AppState>,
+    category_keys: Vec<String>,
+) -> Result<crate::db::repositories::title_repository::FacetCounts, String> {
+    title::facet_counts(&state.db_pool, category_keys)
+}
+
+// ---- Collections intelligentes (automatiques) ------------------------
+
+#[tauri::command]
+pub fn list_smart_collections(
+    state: tauri::State<AppState>,
+) -> Result<Vec<crate::db::repositories::title_repository::SmartCollection>, String> {
+    title::list_smart_collections(&state.db_pool)
+}
+
+#[tauri::command]
+pub fn list_smart_collection_titles(
+    state: tauri::State<AppState>,
+    kind: String,
+    key: String,
+) -> Result<Vec<TitleSummary>, String> {
+    title::smart_collection_titles(&state.db_pool, &kind, &key)
+}
+
+#[derive(serde::Serialize)]
+pub struct SagaStatus {
+    /// Films enrichis dont la saga n'a pas encore été vérifiée.
+    pub unchecked: i64,
+    /// Une clé API TMDB est-elle configurée (sinon pas de détection).
+    pub tmdb_configured: bool,
+    pub running: bool,
+}
+
+#[tauri::command]
+pub fn get_saga_status(state: tauri::State<AppState>) -> Result<SagaStatus, String> {
+    let conn = state.get_conn()?;
+    let unchecked = crate::db::repositories::title_repository::count_titles_to_check_saga(&conn)
+        .map_err(|e| e.to_string())?;
+    let settings = crate::services::metadata::tmdb::load_settings(&conn);
+    Ok(SagaStatus {
+        unchecked,
+        tmdb_configured: !settings.api_key.is_empty(),
+        running: crate::services::metadata::tmdb::saga_detection_running(),
+    })
+}
+
+/// Lance en tâche de fond la détection des sagas des films déjà présents
+/// (événements `collections:sagas-progress` puis `collections:sagas-updated`).
+/// Retourne `false` si une détection était déjà en cours.
+#[tauri::command]
+pub fn detect_sagas(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<bool, String> {
+    Ok(crate::services::metadata::tmdb::spawn_saga_detection(
+        app,
+        state.db_pool.clone(),
+    ))
+}
+
 /// Accueil v2 (Étape 7) : rangée « Ajouts récents ».
 #[tauri::command]
 pub fn list_recent_titles(state: tauri::State<AppState>) -> Result<Vec<TitleSummary>, String> {

@@ -8,6 +8,7 @@ import type { Category, TitleSummary } from "@aethervault/shared-types";
 import { titleApi, type CollectionRecord } from "../features/title/api";
 import { categoryApi } from "../features/category/api";
 import { assetUrl } from "../lib/assetUrl";
+import { SmartCollectionsView } from "../features/collections/SmartCollectionsView";
 import "./pages.css";
 
 /**
@@ -24,6 +25,8 @@ export function CollectionsPage() {
   const [titles, setTitles] = useState<TitleSummary[] | null>(null);
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
+  // « Intelligentes » : automatiques (sagas, genres, réalisateurs…) ; « Mes collections » : listes manuelles.
+  const [tab, setTab] = useState<"smart" | "mine">("smart");
 
   const refreshCollections = useCallback(() => {
     titleApi.listCollections().then(setCollections).catch(() => setCollections([]));
@@ -89,8 +92,28 @@ export function CollectionsPage() {
         tint={PAGE_TINTS.collections}
         kicker="Vos listes"
         title="Collections"
-        description="Vos listes personnalisées : à voir, favoris, sagas…"
+        description="Des collections automatiques (sagas, genres, réalisateurs…) et vos propres listes : à voir, favoris…"
       />
+      <div className="avm-smart-tabs" role="tablist" aria-label="Type de collections">
+        <button
+          role="tab"
+          aria-selected={tab === "smart"}
+          className={tab === "smart" ? "avm-chip avm-chip--active" : "avm-chip"}
+          onClick={() => setTab("smart")}
+        >
+          ✨ Intelligentes
+        </button>
+        <button
+          role="tab"
+          aria-selected={tab === "mine"}
+          className={tab === "mine" ? "avm-chip avm-chip--active" : "avm-chip"}
+          onClick={() => setTab("mine")}
+        >
+          Mes collections
+        </button>
+      </div>
+      {tab === "smart" && <SmartCollectionsView categories={categories} />}
+      {tab === "mine" && (
       <div className="avm-collections">
         <aside className="avm-collections__side">
           <div className="avm-collections__create">
@@ -176,6 +199,7 @@ export function CollectionsPage() {
           )}
         </section>
       </div>
+      )}
     </div>
   );
 }

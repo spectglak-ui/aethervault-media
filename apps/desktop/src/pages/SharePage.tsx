@@ -7,6 +7,7 @@ import type { EpisodeSummary, TitleDetails, TitleSearchResult } from "@aethervau
 import { titleApi } from "../features/title/api";
 import { shareApi, type ShareOffer, type ShareProgress } from "../features/share/api";
 import "./pages.css";
+import { playUiSound } from "../features/sound/uiSounds";
 
 interface ShareableEpisode {
   mediaFileId: number;
@@ -214,7 +215,11 @@ export function SharePage() {
               <div className="avm-form-actions">
                 <Button
                   variant="primary"
-                  onClick={() => void navigator.clipboard.writeText(offer.code)}
+                  data-sound="none"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(offer.code);
+                    playUiSound("copy");
+                  }}
                 >
                   <Copy size={14} /> Copier le code
                 </Button>

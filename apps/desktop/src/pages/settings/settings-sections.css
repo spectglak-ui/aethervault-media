@@ -1,0 +1,105 @@
+/* Sections ajoutées en 0.7.8 : sons d'interface, bande-annonce du Héro, couleurs du thème Transparent */
+.avm-sound-tests {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.avm-volume-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+  max-width: 420px;
+}
+.avm-volume-row .avm-slider {
+  flex: 1;
+}
+.avm-volume-row__value {
+  min-width: 3.2ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+.avm-tcolors__palettes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.avm-tcolors__palette {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.avm-tcolors__palette:hover,
+.avm-tcolors__palette--on {
+  border-color: var(--color-accent);
+}
+.avm-tcolors__dots {
+  display: inline-flex;
+}
+.avm-tcolors__dots i {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+.avm-tcolors__dots i + i {
+  margin-left: -4px;
+}
+.avm-tcolors__grid {
+  display: grid;
+  grid-template-columns: 210px 44px minmax(200px, 320px) 4.5ch;
+  justify-content: start;
+  align-items: center;
+  gap: 12px 18px;
+  margin: 8px 0 12px;
+}
+.avm-tcolors__label {
+  font-size: 0.9rem;
+}
+.avm-tcolors__color {
+  width: 36px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+.avm-tcolors__swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.avm-tcolors__swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.avm-tcolors__swatch--on {
+  border-color: var(--color-text);
+}
+.avm-tcolors__pct {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+}
+.avm-tcolors__warn {
+  margin: 8px 0;
+  color: var(--color-warning, #f5c04e);
+  font-size: 0.85rem;
+}

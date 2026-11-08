@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   Home,
-  Compass,
   Layers,
   Bookmark,
   Users,
@@ -20,9 +19,9 @@ import type { Category } from "@aethervault/shared-types";
 import { categoryApi } from "../features/category/api";
 import { categoryRoute } from "../lib/categoryRoute";
 import { categoryIcon } from "../lib/categoryIcon";
+import logoUrl from "../assets/logo-small.png";
 
 const SECONDARY_NAV_ITEMS = [
-  { path: "/explore", label: "Explorer", icon: Compass },
   { path: "/collections", label: "Collections", icon: Layers },
   { path: "/watchlist", label: "Watchlist", icon: Bookmark },
   { path: "/share", label: "Partage", icon: Share2 },
@@ -70,12 +69,18 @@ export function Sidebar({ collapsed, canToggle, onToggleCollapsed }: SidebarProp
 
   return (
     <nav className="avm-sidebar" aria-label="Navigation principale">
-      <div className="avm-sidebar__header">
-        {!collapsed && (
-  <span className="avm-sidebar__brand avm-brand-app">
-    AetherVault <span style={{ color: "var(--color-accent-2, #2ec4b6)" }}>Media</span>
-  </span>
-)}
+      <div className={`avm-sidebar__header${collapsed ? " avm-sidebar__header--collapsed" : ""}`}>
+        <span className="avm-sidebar__brandwrap">
+          <img src={logoUrl} alt="" className="avm-sidebar__logo" draggable={false} />
+          {!collapsed && (
+            <span className="avm-sidebar__brand avm-brand-app">
+              AetherVault{" "}
+              <span className="avm-sidebar__brand-media" style={{ color: "var(--color-accent-2, #2ec4b6)" }}>
+                Media
+              </span>
+            </span>
+          )}
+        </span>
         {canToggle && (
           <IconButton
             label={collapsed ? "Déplier la barre latérale" : "Réduire la barre latérale"}

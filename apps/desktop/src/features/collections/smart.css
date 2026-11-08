@@ -1,0 +1,92 @@
+/* Collections intelligentes */
+.avm-smart-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0 1.25rem;
+}
+.avm-smart-tabs__count {
+  margin-left: 0.45rem;
+  font-size: 0.75rem;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+.avm-smart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 1.1rem;
+  align-items: start;
+}
+.avm-smart-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 12px);
+}
+.avm-smart-card:hover {
+  border-color: var(--color-accent);
+}
+.avm-smart-card__mosaic {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 2px;
+  aspect-ratio: 4 / 3;
+  background: var(--color-bg);
+}
+.avm-smart-card__mosaic--1 {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+.avm-smart-card__mosaic--2 {
+  grid-template-rows: 1fr;
+}
+.avm-smart-card__mosaic img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.avm-smart-card__placeholder {
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.35), rgba(46, 196, 182, 0.2));
+}
+.avm-smart-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.6rem 0.75rem 0.75rem;
+}
+.avm-smart-card__name {
+  font-weight: 700;
+  font-size: 0.92rem;
+}
+.avm-smart-card__count {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+.avm-smart-banner {
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--radius-md, 10px);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+  font-size: 0.88rem;
+}
+.avm-smart-detail__head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 0 0 1.25rem;
+}
+.avm-smart-detail__title {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 800;
+}
