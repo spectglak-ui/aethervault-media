@@ -33,6 +33,7 @@ function emptyQuery(q: string): TitleSearchQuery {
     year_from: null,
     year_to: null,
     genres: [],
+    sagas: [],          // ← 0.7.8 : champ obligatoire de TitleSearchQuery
     actor: null,
     director: null,
     resolutions: [],
@@ -51,6 +52,7 @@ function isActive(query: TitleSearchQuery): boolean {
       query.category_keys.length ||
       query.kinds.length ||
       query.genres.length ||
+      query.sagas.length ||      // ← ajout
       query.resolutions.length ||
       query.codecs.length ||
       query.audio_langs.length
