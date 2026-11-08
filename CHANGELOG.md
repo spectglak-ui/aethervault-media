@@ -89,3 +89,19 @@ Toutes les modifications notables apportées à ce projet seront documentées da
 - Le numéro de version reste `0.3.0`. Le correctif concerne uniquement les artefacts d'installation fournis (installateurs).
 - Voir le README.md pour les instructions d'installation et la mention du correctif.
 
+### Ajouts
+- **Collections intelligentes** : sagas, genres, réalisateurs regroupés automatiquement
+- **Portails Collections & Watchlist** sur l'accueil avec teintes cohérentes
+- **Bande-annonce héro** : lecture automatique en arrière-plan (désactivable)
+- **Sons d'interface** : 19 effets sonores pour une meilleure rétroaction
+- **Recherche à facettes** : filtres par genre, année, résolution
+- **Sagas** : migration SQL + regroupement automatique
+
+### Corrections
+- `fetch_update` déprécié remplacé par `try_update` (warning Rust)
+- Teintes des tuiles Collections/Watchlist alignées sur les pages
+
+### Technique
+- Migration SQL `0027_sagas.sql`
+- Composant `SmartCollectionsView`
+- Page `SearchPage` avec filtres avancés
