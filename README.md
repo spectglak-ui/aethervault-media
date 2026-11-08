@@ -25,7 +25,7 @@
 - **Chiffrement intégral** : Section privée protégée en AES-256-GCM
 - **Haute performance** : Lecteur basé sur libmpv avec rendu OpenGL optimisé
 - **Multiplateforme** : Windows, Linux, macOS (Tauri)
-- **Bibliothèque universelle** : films, séries, anime, documentaires, manga, webtoons, bandes dessinées et romans
+- **Bibliothèque universelle** : films, séries, anime, documentaires, livre, TV
 - **Open Source** : MIT License
 
 **Version actuelle** : 0.7.8 « Orbite »
