@@ -16,6 +16,7 @@
 pub mod migrations;
 pub mod repositories;
 pub mod seed;
+pub mod startup;
 
 use r2d2_sqlite::SqliteConnectionManager;
 use std::path::Path;

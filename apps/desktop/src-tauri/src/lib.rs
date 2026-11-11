@@ -16,8 +16,49 @@ use state::AppState;
 use tauri::Manager;
 use tauri_plugin_log::{Target, TargetKind};
 
+/// Affiche une erreur de démarrage FATALE dans une boîte de dialogue (puis quitte
+/// quand l'utilisateur la ferme) : sans cela, l'application — sans console en
+/// version installée — se fermait sans le moindre message.
+fn show_fatal_startup_error(handle: &tauri::AppHandle, what: &str, err: &dyn std::fmt::Display) {
+    log::error!("Démarrage impossible — {what} : {err}");
+    if let Some(window) = handle.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    let log_dir = handle
+        .path()
+        .app_log_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "(introuvable)".to_string());
+    let message = format!(
+        "AetherVault Media ne peut pas démarrer.\n\n{what} a échoué :\n{err}\n\n\
+         Le détail est enregistré dans le dossier de journaux :\n{log_dir}"
+    );
+    let handle = handle.clone();
+    // `blocking_show` ne doit pas tourner sur le fil principal (qui affiche la boîte).
+    std::thread::spawn(move || {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+        handle
+            .dialog()
+            .message(message)
+            .title("AetherVault Media — démarrage impossible")
+            .kind(MessageDialogKind::Error)
+            .blocking_show();
+        handle.exit(1);
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 0.7.9 : une panique au démarrage faisait disparaître l'application sans
+    // aucune trace (pas de console en version installée). Elle est désormais
+    // écrite dans le journal (dossier de journaux de l'application) avant que le
+    // gestionnaire par défaut ne s'exécute.
+    let default_panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log::error!("PANIQUE : {info}");
+        default_panic_hook(info);
+    }));
+
     tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -51,37 +92,16 @@ pub fn run() {
             let pool = db::init_pool(&database_path)
                 .expect("impossible d'initialiser le pool de connexions SQLite");
 
-            // 0.5.1 (correctif installation fraîche) : les tables VaultTube
-            // DOIVENT exister AVANT que les migrations 18→21 ne les modifient
-            // (ALTER TABLE). Auparavant create_tables() tournait après
-            // apply_migrations() → crash « no such table: vaulttube_subscriptions »
-            // au tout premier lancement sur une base neuve (ex. .deb Linux).
-            // create_tables() est idempotent (CREATE TABLE IF NOT EXISTS) :
-            // aucun effet sur une base existante déjà à jour.
-            services::vaulttube::VaultTubeRepository::new(pool.clone())
-                .create_tables()
-                .expect("impossible de créer les tables VaultTube");
-				
-		    // 0.7.0 : catégorie Lecture — tables idempotentes + catégorie
-            // système « reading » (même précédent que VaultTube).
-         {
-             let conn = pool.get().expect("impossible d'ouvrir une connexion pour les tables Lecture");
-             crate::db::repositories::reading_repository::ensure_tables(&conn)
-                 .expect("impossible de créer les tables Lecture");
-             crate::db::repositories::reading_repository::ensure_category(&conn)
-                 .expect("impossible de créer la catégorie Lecture");
-         }
-
-            // Schéma appliqué de façon versionnée (voir db::migrations), puis
-            // données par défaut insérées séparément (voir db::seed).
-            db::migrations::apply_migrations(&pool)
-                .expect("impossible d'appliquer les migrations de la base de données");
-            db::seed::ensure_default_profile(&pool)
-                .expect("impossible d'initialiser les données par défaut");
-            db::seed::ensure_default_categories(&pool)
-                .expect("impossible d'initialiser les catégories par défaut");
-            db::seed::backfill_library_categories(&pool)
-                .expect("impossible de rattacher les bibliothèques existantes à une catégorie");
+            // 0.7.9 : toute la préparation de la base (tables VaultTube hors
+            // migrations, tables Lecture, migrations, données par défaut,
+            // catégorie Lecture) vit dans `db::startup::prepare_database`, testée
+            // sur une base NEUVE. Avant, la catégorie Lecture était créée AVANT les
+            // migrations alors qu'elle a besoin de la table `categories` : plantage
+            // silencieux à la toute première installation (profil Windows neuf).
+            if let Err(err) = db::startup::prepare_database(&pool) {
+                show_fatal_startup_error(&handle, "La préparation de la base de données", &err);
+                return Ok(());
+            }
 
             let log_dir = handle
                 .path()
