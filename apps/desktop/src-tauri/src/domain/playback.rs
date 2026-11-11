@@ -11,13 +11,9 @@
 //! `commands::playback`.
 
 use crate::db::repositories::playback_repository::{self, PlaybackProgressRecord};
+use crate::domain::watch_state;
 use crate::db::DbPool;
 use rusqlite::OptionalExtension;
-
-/// Fraction de la durée totale au-delà de laquelle un fichier est considéré
-/// "terminé" plutôt que "en cours" — évite qu'un futur "Continuer la
-/// lecture" (Étape 7) affiche un fichier regardé jusqu'au bout.
-const COMPLETED_THRESHOLD: f64 = 0.95;
 
 pub fn get_progress(
     pool: &DbPool,
@@ -37,9 +33,19 @@ pub fn save_progress(
 ) -> Result<(), String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
 
-    let is_completed = duration_seconds > 0.0 && position_seconds / duration_seconds >= COMPLETED_THRESHOLD;
+    // 0.7.9 : le seuil « terminé » n'est plus un 95 % fixe — il tient compte du
+    // générique de fin (voir `domain::watch_state`), qui pose aussi le statut
+    // « En cours » / « Vu » du média. Un média terminé n'a plus de position de
+    // reprise : le prochain clic repart du début.
+    let verdict = watch_state::record_progress(
+        &conn,
+        profile_id,
+        media_file_id,
+        position_seconds,
+        duration_seconds,
+    )?;
 
-    if is_completed {
+    if matches!(verdict, watch_state::Verdict::Completed(_)) {
         playback_repository::clear(&conn, profile_id, media_file_id).map_err(|e| e.to_string())
     } else {
         playback_repository::upsert(&conn, profile_id, media_file_id, position_seconds, duration_seconds)

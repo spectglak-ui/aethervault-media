@@ -105,7 +105,14 @@ pub fn watchlist_set_status(
     validate_status(&status)?;
     let profile_id = state.read_active_profile_id()?;
     let conn = state.get_conn()?;
-    repo::watchlist_set_status(&conn, profile_id, title_id, &status).map_err(|e| e.to_string())
+    repo::watchlist_set_status(&conn, profile_id, title_id, &status).map_err(|e| e.to_string())?;
+    // 0.7.9 : « Vu » / « À voir » posés à la main dans la watchlist s'appliquent
+    // aussi aux médias du titre (sinon deux statuts se contrediraient). « En
+    // cours » n'a pas d'équivalent manuel : il vient de la lecture réelle.
+    if status == "done" || status == "todo" {
+        crate::domain::watch_state::set_title_status(&conn, profile_id, title_id, &status)?;
+    }
+    Ok(())
 }
 
 /// Watchlist du profil actif, filtrable par catégorie et par statut.

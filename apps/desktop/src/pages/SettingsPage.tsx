@@ -2,10 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
 import type { AppStatus, VaultStatus } from "@aethervault/shared-types";
 import { Button, IconButton, useTheme } from "@aethervault/ui-kit";
-import { HeroTrailerSection, TransparentThemeSection, UiSoundsSection } from "./settings/NewSettingsSections";
+import {
+  AnimatedBackdropLibrarySection,
+  HeroTrailerSection,
+  TransparentThemeSection,
+  UiSoundsSection,
+} from "./settings/NewSettingsSections";
 import { ModernPageHeader, PAGE_TINTS } from "../components/ModernPageHeader";
 import { Settings as SettingsIcon } from "lucide-react";
 import {
@@ -16,6 +20,8 @@ import {
   setBuiltinImage,
   setBuiltinVideo,
 } from "../lib/builtinBackdrops";
+// 0.8.0 — bibliothèque personnelle de fonds animés (prioritaire sur tout).
+import { getSelectedCustomPath } from "../lib/animatedBackdropLibrary";
 import "../components/backdrop-presets.css";
 import { useActiveProfile } from "../profile/ActiveProfileContext";
 import { privacyApi } from "../features/privacy/api";
@@ -37,14 +43,14 @@ type DiagnosticsState =
   | { kind: "ready"; status: AppStatus };
 
 /**
- * Sélection, import et export de thèmes. Le "partage communautaire" réel
- * (parcourir/télécharger les thèmes d'autres personnes en ligne) reste une
- * extension réseau future ; ce qui est implémenté ici — le format JSON
- * sérialisé et le bouton Import/Export — permet DÉJÀ à n'importe qui de
- * partager son thème (forums, Discord, Reddit...).
- */
+Sélection, import et export de thèmes. Le "partage communautaire" réel
+(parcourir/télécharger les thèmes d'autres personnes en ligne) reste une
+extension réseau future ; ce qui est implémenté ici — le format JSON
+sérialisé et le bouton Import/Export — permet DÉJÀ à n'importe qui de
+partager son thème (forums, Discord, Reddit...).
+*/
 const THEME_PRESETS: Record<string, Record<string, string>> = {
-    dark: {
+  dark: {
     "--color-bg": "#14161a",
     "--color-surface": "#1d2026",
     "--color-surface-hover": "#242830",
@@ -171,14 +177,12 @@ function ProfileAvatarSection() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
   useEffect(() => {
     if (!activeProfile) return;
     invoke<string | null>("get_profile_avatar", { profileId: activeProfile.id })
       .then(setAvatar)
       .catch(() => setAvatar(null));
   }, [activeProfile]);
-
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -203,7 +207,6 @@ function ProfileAvatarSection() {
       setBusy(false);
     }
   };
-
   const handleClear = async () => {
     setBusy(true);
     setError(null);
@@ -217,7 +220,6 @@ function ProfileAvatarSection() {
       setBusy(false);
     }
   };
-
   return (
     <section className="avm-settings-section">
       <h2>Image de profil</h2>
@@ -254,17 +256,16 @@ function ProfileAvatarSection() {
 }
 
 /**
- * FONCTIONNALITÉ (Accès rapide) : l'UI manquait — les commandes Rust
- * (`get_/set_quick_access_enabled`) et le flux de connexion en un clic
- * (`AuthGate.tsx`) existaient déjà, mais rien ne permettait de
- * l'activer. Placée juste après la section Profil, comme demandé.
- */
+FONCTIONNALITÉ (Accès rapide) : l'UI manquait — les commandes Rust
+(`get_/set_quick_access_enabled`) et le flux de connexion en un clic
+(`AuthGate.tsx`) existaient déjà, mais rien ne permettait de
+l'activer. Placée juste après la section Profil, comme demandé.
+*/
 function QuickAccessSection() {
   const [enabled, setEnabled] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
   useEffect(() => {
     invoke<boolean>("get_quick_access_enabled")
       .then((value) => {
@@ -273,7 +274,6 @@ function QuickAccessSection() {
       })
       .catch(() => setLoaded(true));
   }, []);
-
   const toggle = async (value: boolean) => {
     setBusy(true);
     setError(null);
@@ -286,7 +286,6 @@ function QuickAccessSection() {
       setBusy(false);
     }
   };
-
   return (
     <section className="avm-settings-section">
       <h2>Accès rapide</h2>
@@ -315,13 +314,11 @@ function HomeBackdropSection() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
   useEffect(() => {
     invoke<string | null>("get_home_backdrop")
       .then(setBackdrop)
       .catch(() => setBackdrop(null));
   }, []);
-
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -342,7 +339,6 @@ function HomeBackdropSection() {
       setBusy(false);
     }
   };
-
   const handleClear = async () => {
     setBusy(true);
     setError(null);
@@ -356,7 +352,6 @@ function HomeBackdropSection() {
       setBusy(false);
     }
   };
-
   /** Choisit un fond intégré (ou `null` = fond par défaut) : retire le fond personnel. */
   const selectBuiltin = async (id: string | null) => {
     setBusy(true);
@@ -372,7 +367,6 @@ function HomeBackdropSection() {
       setBusy(false);
     }
   };
-
   return (
     <section className="avm-settings-section">
       <h2>Fond de la page d'accueil</h2>
@@ -432,18 +426,17 @@ function HomeBackdropSection() {
 }
 
 /**
- * FONCTIONNALITÉ (fond animé) : remplace le fond image par une vidéo en
- * boucle, appliquée globalement (voir components/AppBackdrop.tsx — déjà
- * une couche derrière toute l'appli, pas seulement l'Accueil). Choix du
- * fichier via le sélecteur natif (`@tauri-apps/plugin-dialog`, déjà
- * utilisé ailleurs dans l'app pour les vidéos — voir
- * ExperimentalPlayerPage.tsx) plutôt qu'un `<input type="file">` : une
- * vidéo peut peser bien plus qu'une image, autant éviter de la faire
- * transiter par l'IPC Tauri sous forme de tableau d'octets JSON.
- *
- * Granularité "par page" volontairement absente ici — prévue pour plus
- * tard, une fois cette première version en place.
- */
+FONCTIONNALITÉ (fond animé) : remplace le fond image par une vidéo en
+boucle, appliquée globalement (voir components/AppBackdrop.tsx).
+0.8.0 — PANNEAU FUSIONNÉ : fonds intégrés + case d'activation +
+bibliothèque personnelle (composant de NewSettingsSections, rendu ici
+sans section propre). Le sélecteur « Choisir une vidéo » (vidéo
+personnelle unique) est retiré : la bibliothèque le remplace ; une
+ligne « Retirer » reste proposée SEULEMENT si une ancienne vidéo
+personnelle existe encore en base (legacy).
+Priorité d'affichage (AppBackdrop) : bibliothèque personnelle >
+vidéo personnelle legacy > fond intégré.
+*/
 function AnimatedBackdropSection() {
   const [videoPath, setVideoPath] = useState<string | null>(null);
   const [builtinVideoId, setBuiltinVideoId] = useState<string | null>(() => getBuiltinVideo()?.id ?? null);
@@ -451,7 +444,13 @@ function AnimatedBackdropSection() {
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
+  // Vidéo active de la bibliothèque personnelle (localStorage).
+  const [customPath, setCustomPath] = useState<string | null>(() => getSelectedCustomPath());
+  useEffect(() => {
+    const refreshCustom = () => setCustomPath(getSelectedCustomPath());
+    window.addEventListener("avm-home-backdrop-changed", refreshCustom);
+    return () => window.removeEventListener("avm-home-backdrop-changed", refreshCustom);
+  }, []);
   useEffect(() => {
     Promise.all([
       invoke<string | null>("get_home_backdrop_video").catch(() => null),
@@ -462,36 +461,8 @@ function AnimatedBackdropSection() {
       setLoaded(true);
     });
   }, []);
-
-  const handlePick = async () => {
-    setError(null);
-    let selected: string | null;
-    try {
-      selected = await open({
-        multiple: false,
-        filters: [{ name: "Vidéo", extensions: ["mp4", "webm"] }],
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Sélection impossible.");
-      return;
-    }
-    if (typeof selected !== "string") return; // annulé par l'utilisateur
-    setBusy(true);
-    try {
-      await invoke("set_home_backdrop_video", { sourcePath: selected });
-      const refreshed = await invoke<string | null>("get_home_backdrop_video");
-      setVideoPath(refreshed);
-      setBuiltinVideo(null); // la vidéo personnelle prend la place de la vidéo intégrée
-      setBuiltinVideoId(null);
-      window.dispatchEvent(new Event("avm-home-backdrop-changed"));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Enregistrement impossible.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleClear = async () => {
+  /** Legacy : retire l'ancienne vidéo personnelle unique (base Rust). */
+  const handleClearLegacy = async () => {
     setBusy(true);
     setError(null);
     try {
@@ -504,7 +475,6 @@ function AnimatedBackdropSection() {
       setBusy(false);
     }
   };
-
   const toggleEnabled = async (value: boolean) => {
     setBusy(true);
     setError(null);
@@ -518,8 +488,7 @@ function AnimatedBackdropSection() {
       setBusy(false);
     }
   };
-
-  /** Choisit une vidéo intégrée : retire la vidéo personnelle et active le fond animé. */
+  /** Choisit une vidéo intégrée : retire la vidéo legacy et active le fond animé. */
   const selectBuiltinVideo = async (id: string) => {
     setBusy(true);
     setError(null);
@@ -536,20 +505,21 @@ function AnimatedBackdropSection() {
       setBusy(false);
     }
   };
-
   return (
     <section className="avm-settings-section">
       <h2>Fond animé</h2>
       <p className="avm-settings-muted">
-        Remplace le fond image par une vidéo en boucle, partout dans le logiciel (pas seulement
-        l'Accueil). Formats acceptés : .mp4, .webm — 300 Mo maximum.
+        Remplace le fond image par une vidéo en boucle, partout dans le logiciel (pas
+        seulement l'Accueil). Choisissez un fond intégré ci-dessous, ou ajoutez vos propres
+        vidéos dans la bibliothèque personnelle — la vidéo qui y est sélectionnée est
+        prioritaire sur tout le reste.
       </p>
       <div className="avm-bd-presets" role="group" aria-label="Fonds animés intégrés">
         {BUILTIN_VIDEOS.map((preset) => (
           <button
             key={preset.id}
             type="button"
-            className={`avm-bd-preset${!videoPath && builtinVideoId === preset.id ? " avm-bd-preset--active" : ""}`}
+            className={`avm-bd-preset${!videoPath && !customPath && builtinVideoId === preset.id ? " avm-bd-preset--active" : ""}`}
             onClick={() => void selectBuiltinVideo(preset.id)}
             disabled={busy}
           >
@@ -557,7 +527,7 @@ function AnimatedBackdropSection() {
             <span className="avm-bd-preset__label">{preset.label}</span>
           </button>
         ))}
-        {builtinVideoId && !videoPath && (
+        {builtinVideoId && !videoPath && !customPath && (
           <Button
             variant="ghost"
             onClick={() => {
@@ -570,42 +540,48 @@ function AnimatedBackdropSection() {
           </Button>
         )}
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        {videoPath && (
+      <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={!loaded || busy || (!videoPath && !builtinVideoId && !customPath)}
+          onChange={(e) => void toggleEnabled(e.target.checked)}
+        />
+        Utiliser le fond animé (remplace le fond image partout, tant qu'il est activé)
+      </label>
+      {customPath && (
+        <p className="avm-settings-muted">
+          Une vidéo de votre bibliothèque personnelle est sélectionnée : elle est prioritaire
+          sur les fonds intégrés et sur l'ancienne vidéo personnelle.
+        </p>
+      )}
+      {videoPath && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10, flexWrap: "wrap" }}>
           <video
             src={convertFileSrc(videoPath)}
             autoPlay
             loop
             muted
             playsInline
-            style={{ width: 128, height: 72, objectFit: "cover", borderRadius: 6 }}
+            style={{ width: 96, height: 54, objectFit: "cover", borderRadius: 6 }}
           />
-        )}
-        <Button variant="secondary" onClick={() => void handlePick()} disabled={busy}>
-          Choisir une vidéo
-        </Button>
-        {videoPath && (
-          <Button variant="ghost" onClick={() => void handleClear()} disabled={busy}>
+          <span className="avm-settings-muted">
+            Ancienne vidéo personnelle (antérieure à la bibliothèque).
+          </span>
+          <Button variant="ghost" onClick={() => void handleClearLegacy()} disabled={busy}>
             Retirer
           </Button>
-        )}
-      </div>
-      <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
-        <input
-          type="checkbox"
-          checked={enabled}
-          disabled={!loaded || busy || (!videoPath && !builtinVideoId)}
-          onChange={(e) => void toggleEnabled(e.target.checked)}
-        />
-        Utiliser le fond animé (remplace le fond image partout, tant qu'il est activé)
-      </label>
+        </div>
+      )}
+      {/* 0.8.0 — bibliothèque personnelle fusionnée dans ce panneau. */}
+      <AnimatedBackdropLibrarySection />
       {error && <p className="avm-settings-error">{error}</p>}
     </section>
   );
 }
 
 /* Auto-skip des génériques (0.3.0) : désactivé par défaut — sinon un
-   bouton « Passer » s'affiche pendant chaque segment détecté/marqué. */
+bouton « Passer » s'affiche pendant chaque segment détecté/marqué. */
 function SkipSettingsSection() {
   const [autoSkip, setAutoSkip] = useState(() => {
     try {
@@ -641,7 +617,7 @@ function SkipSettingsSection() {
 type SecretKind = "pin" | "password";
 
 /** Section « Sécurité — Coffre privé ». Réglages sensibles (mode opaque, WAL
-    sécurisé, etc.) : cette action affecte l'installation entière. */
+sécurisé, etc.) : cette action affecte l'installation entière. */
 function SecuritySection() {
   const { activeProfile } = useActiveProfile();
   const navigate = useNavigate();
@@ -653,9 +629,7 @@ function SecuritySection() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
-
   const canManage = activeProfile?.can_manage_global_settings ?? false;
-
   useEffect(() => {
     if (!canManage) return;
     privacyApi
@@ -665,7 +639,6 @@ function SecuritySection() {
         setLoadError(error instanceof Error ? error.message : "Chargement impossible.")
       );
   }, [canManage]);
-
   if (!canManage) {
     return (
       <section className="avm-settings-section">
@@ -676,7 +649,6 @@ function SecuritySection() {
       </section>
     );
   }
-
   if (loadError) {
     return (
       <section className="avm-settings-section">
@@ -685,7 +657,6 @@ function SecuritySection() {
       </section>
     );
   }
-
   if (!status) {
     return (
       <section className="avm-settings-section">
@@ -694,7 +665,6 @@ function SecuritySection() {
       </section>
     );
   }
-
   if (!status.initialized) {
     return (
       <section className="avm-settings-section">
@@ -708,7 +678,6 @@ function SecuritySection() {
       </section>
     );
   }
-
   const handleChangeSecret = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
@@ -733,7 +702,6 @@ function SecuritySection() {
       setSubmitting(false);
     }
   };
-
   return (
     <section className="avm-settings-section">
       <h2>Sécurité — Coffre privé</h2>
@@ -801,13 +769,11 @@ function SecuritySection() {
 
 function SystemInfoSection() {
   const [state, setState] = useState<DiagnosticsState>({ kind: "loading" });
-
   useEffect(() => {
     invoke<AppStatus>("get_app_status")
       .then((status) => setState({ kind: "ready", status }))
       .catch((error) => setState({ kind: "error", message: String(error) }));
   }, []);
-
   return (
     <section className="avm-settings-section">
       <h2>Informations système</h2>
@@ -881,13 +847,13 @@ function isLevel(value: string): value is SpatialLevel {
 const AB_PHASE_MS = 3000;
 
 /**
- * Effets audio : spatialisation (virtualisation casque) et ambiance cinéma —
- * deux réglages globaux à quatre niveaux, combinables. Le moteur (Rust)
- * applique la combinaison avant CHAQUE chargement, quel que soit le chemin de
- * lecture (fichier, AetherFy, TV) et dès le démarrage ; ici on enregistre les
- * choix et on propose une comparaison A/B (sans effet ↔ réglages actuels) sur
- * le média en cours.
- */
+Effets audio : spatialisation (virtualisation casque) et ambiance cinéma —
+deux réglages globaux à quatre niveaux, combinables. Le moteur (Rust)
+applique la combinaison avant CHAQUE chargement, quel que soit le chemin de
+lecture (fichier, AetherFy, TV) et dès le démarrage ; ici on enregistre les
+choix et on propose une comparaison A/B (sans effet ↔ réglages actuels) sur
+le média en cours.
+*/
 function AudioSection() {
   const { isPlaying } = usePlayer();
   const [spatial, setSpatial] = useState<SpatialLevel>("off");
@@ -905,7 +871,6 @@ function AudioSection() {
   // on ne restaure les niveaux enregistrés QUE dans ce cas (jamais à un simple
   // montage/démontage — notamment avant que les réglages aient été chargés).
   const previewDirtyRef = useRef(false);
-
   useEffect(() => {
     Promise.all([
       invoke<string>("get_audio_spatialization_level"),
@@ -918,13 +883,11 @@ function AudioSection() {
       })
       .catch(() => setLoaded(true));
   }, []);
-
   const restoreSaved = () => {
     if (!previewDirtyRef.current) return;
     previewDirtyRef.current = false;
     void playerApi.previewAudioEffects(spatialRef.current, cinemaRef.current).catch(() => {});
   };
-
   // Comparaison A/B : alterne « sans effet » (A) et réglages actuels (B).
   useEffect(() => {
     if (abPhase === null) return;
@@ -941,7 +904,6 @@ function AudioSection() {
     );
     return () => window.clearTimeout(timer);
   }, [abPhase]);
-
   // Plus de lecture → on arrête la comparaison ; en quittant la page, on
   // restaure toujours les réglages enregistrés.
   useEffect(() => {
@@ -952,12 +914,10 @@ function AudioSection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPlaying]);
   useEffect(() => restoreSaved, []);
-
   const stopAb = () => {
     setAbPhase(null);
     restoreSaved();
   };
-
   const choose = async (kind: "spatial" | "cinema", next: SpatialLevel) => {
     if (abPhase !== null) stopAb();
     setBusy(true);
@@ -985,7 +945,6 @@ function AudioSection() {
       setBusy(false);
     }
   };
-
   const describeCurrent = [
     spatial !== "off" &&
       `spatialisation ${SPATIAL_LEVELS.find((l) => l.key === spatial)?.label.toLowerCase()}`,
@@ -996,7 +955,6 @@ function AudioSection() {
     .join(" + ");
   const anyEffect = spatial !== "off" || cinema !== "off";
   const canCompare = loaded && !busy && anyEffect && isPlaying;
-
   const renderGroup = (
     kind: "spatial" | "cinema",
     legend: string,
@@ -1029,7 +987,6 @@ function AudioSection() {
       ))}
     </fieldset>
   );
-
   return (
     <section className="avm-settings-section">
       <h2>Audio</h2>
@@ -1078,8 +1035,8 @@ function ExperimentalPlayerSection() {
 }
 
 /** Section « Métadonnées en ligne (TMDB) » (Étape 7) : clé API stockée
-    dans aethervault.db (non sensible), langue des fiches, enrichissement
-    automatique après scan. */
+dans aethervault.db (non sensible), langue des fiches, enrichissement
+automatique après scan. */
 function TmdbSection() {
   const [apiKey, setApiKey] = useState("");
   const [language, setLanguage] = useState("fr-FR");
@@ -1087,7 +1044,6 @@ function TmdbSection() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
   useEffect(() => {
     metadataApi
       .getSettings()
@@ -1098,7 +1054,6 @@ function TmdbSection() {
       })
       .catch(() => {});
   }, []);
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
@@ -1117,7 +1072,6 @@ function TmdbSection() {
       setSaving(false);
     }
   };
-
   return (
     <section className="avm-settings-section">
       <h2>Métadonnées en ligne (TMDB)</h2>
@@ -1170,7 +1124,7 @@ function TmdbSection() {
 }
 
 /** Convertit une couleur CSS (#rgb, #rrggbb, rgb()) en #rrggbb pour
-    <input type="color"> ; repli neutre si format non reconnu. */
+`<input type="color">` ; repli neutre si format non reconnu. */
 function cssToHex(css: string): string {
   const s = css.trim();
   if (/^#[0-9a-f]{6}$/i.test(s)) return s;
@@ -1190,7 +1144,6 @@ function ThemeCustomizerSection() {
   const [edited, setEdited] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
   // CORRECTIF (le thème se réinitialise au redémarrage) : `main.tsx`
   // réapplique déjà le thème persisté avant ce montage — ici, on lit la
   // même source pour resynchroniser l'état de CE composant (le preset
@@ -1216,14 +1169,12 @@ function ThemeCustomizerSection() {
     }
     setEdited(initial);
   }, []);
-
   const applyVars = (vars: Record<string, string>) => {
     const root = document.documentElement;
     for (const [key, value] of Object.entries(vars)) {
       root.style.setProperty(key, value);
     }
   };
-
   const selectPreset = (name: string) => {
     setCurrentPreset(name);
     const vars = THEME_PRESETS[name];
@@ -1245,14 +1196,12 @@ function ThemeCustomizerSection() {
       writePersistedTheme({ preset: name, vars });
     }
   };
-
   const updateVar = (key: string, value: string) => {
     const next = { ...edited, [key]: value };
     setEdited(next);
     document.documentElement.style.setProperty(key, value);
     writePersistedTheme({ preset: currentPreset, vars: next });
   };
-
   const handleExport = () => {
     const blob = new Blob([JSON.stringify(edited, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -1262,7 +1211,6 @@ function ThemeCustomizerSection() {
     a.click();
     URL.revokeObjectURL(url);
   };
-
   const handleImport = async () => {
     const input = document.createElement("input");
     input.type = "file";
@@ -1287,7 +1235,6 @@ function ThemeCustomizerSection() {
     };
     input.click();
   };
-
   return (
     <section className="avm-settings-section">
       <h2>Couleurs du thème</h2>
@@ -1370,7 +1317,6 @@ function applyTypography(t: TypographySettings): void {
 
 function TypographySection() {
   const [settings, setSettings] = useState<TypographySettings>(TYPO_DEFAULTS);
-
   useEffect(() => {
     invoke<TypographySettings>("get_typography_settings")
       .then((t) => {
@@ -1379,21 +1325,18 @@ function TypographySection() {
       })
       .catch(() => {});
   }, []);
-
   const update = (key: keyof TypographySettings, value: string) => {
     const next = { ...settings, [key]: value };
     setSettings(next);
     applyTypography(next);
     invoke("save_typography_settings", next).catch(() => {});
   };
-
   const rows: { key: keyof TypographySettings; label: string; hint: string }[] = [
     { key: "display", label: "Titres & hero", hint: "Grands titres de pages, fiches, hero" },
     { key: "ui", label: "Interface", hint: "Boutons, badges, onglets, navigation" },
     { key: "body", label: "Corps de texte", hint: "Descriptions, synopsis, listes" },
     { key: "mono", label: "Technique", hint: "Timecodes, durées, résolutions" },
   ];
-
   return (
     <section className="avm-settings-section">
       <h2>Typographie</h2>
@@ -1444,7 +1387,6 @@ function HidePrivateSection() {
       return false;
     }
   });
-
   const toggle = (value: boolean) => {
     setHidePrivate(value);
     try {
@@ -1455,7 +1397,6 @@ function HidePrivateSection() {
     // 0.9.14 — ALIGNEMENT avec HomePage : même événement
     window.dispatchEvent(new Event("avm-home-hide-private-changed"));
   };
-
   return (
     <section className="avm-settings-section">
       <h2>Visibilité — Catégorie Privé</h2>
@@ -1477,7 +1418,6 @@ function HidePrivateSection() {
 
 function CategoryBackdropSection() {
   const [hidden, setHidden] = useState(readCategoryBackdropHidden);
-
   const toggle = (value: boolean) => {
     setHidden(value);
     try {
@@ -1487,7 +1427,6 @@ function CategoryBackdropSection() {
     }
     window.dispatchEvent(new Event(CATEGORY_BACKDROP_EVENT));
   };
-
   return (
     <section className="avm-settings-section">
       <h2>Fonds des pages Catégorie</h2>
@@ -1528,14 +1467,16 @@ export function SettingsPage() {
       <HomeBackdropSection />
       <HeroTrailerSection />
       <AnimatedBackdropSection />
+      {/* 0.8.0 — bibliothèque personnelle de fonds animés (vidéos mp4/webm
+          locales, prioritaires sur les fonds intégrés). */}
       <ThemeCustomizerSection />
       <TransparentThemeSection />
       <TypographySection />
       <SkipSettingsSection />
-	  <RenderQualitySection />
+      <RenderQualitySection />
       <TmdbSection />
       <HidePrivateSection />
-	  <CategoryBackdropSection />
+      <CategoryBackdropSection />
       <AudioSection />
       <UiSoundsSection />
       <SecuritySection />

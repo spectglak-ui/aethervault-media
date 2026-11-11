@@ -1,8 +1,52 @@
+import { useEffect, useState } from "react";
 import { ChevronUp, Music, Pause, Play, SkipForward } from "lucide-react";
 import { usePlayer } from "./PlayerContext";
 
+/** 0.8.0 — même chaîne de candidats pochette que l'overlay immersif :
+la mini-barre affiche EXACTEMENT la même image que la liste MusicHub
+(maxres HD fourni par la file, repli hqdefault). */
+function artChainFromMedia(m: {
+  thumbnail?: string | null;
+  youtubeId?: string | null;
+  path: string;
+}): string[] {
+  const out: string[] = [];
+  if (m.thumbnail) out.push(m.thumbnail);
+  let ytId = m.youtubeId ?? null;
+  if (!ytId) {
+    const yt = m.path.match(/[?&]v=([^&]+)/) ?? m.path.match(/youtu\.be\/([^?/&]+)/);
+    ytId = yt?.[1] ?? null;
+  }
+  if (ytId) {
+    out.push(`https://i.ytimg.com/vi/${ytId}/maxresdefault.jpg`);
+    out.push(`https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`);
+  } else {
+    const dm = m.path.match(/dailymotion\.com\/video\/([^?/&]+)/);
+    if (dm) out.push(`https://www.dailymotion.com/thumbnail/video/${dm[1]}`);
+  }
+  return [...new Set(out)];
+}
+
+function ArtImg({ chain, style }: { chain: string[]; style?: React.CSSProperties }) {
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    setIndex(0);
+  }, [chain[0]]);
+  if (chain.length === 0) return null;
+  const safe = Math.min(index, chain.length - 1);
+  return (
+    <img
+      src={chain[safe]}
+      alt=""
+      style={style}
+      onError={() => setIndex((i) => Math.min(i + 1, chain.length - 1))}
+    />
+  );
+}
+
 /** 0.4.0 — Mini-barre audio : le lecteur musique se réduit en bas de
- * l'écran pour le multitâche ; le bouton ⌃ rouvre la vue immersive. */
+l'écran pour le multitâche ; le bouton ⌃ rouvre la vue immersive.
+0.8.0 — pochette HD + artiste partagés avec la liste et l'overlay. */
 export function AudioMiniBar() {
   const {
     currentMedia,
@@ -14,16 +58,9 @@ export function AudioMiniBar() {
     playNext,
     openImmersive,
   } = usePlayer();
-
   if (!currentMedia) return null;
-
-  const thumb =
-    currentMedia.thumbnail ??
-    (currentMedia.youtubeId
-      ? `https://i.ytimg.com/vi/${currentMedia.youtubeId}/hqdefault.jpg`
-      : null);
+  const chain = artChainFromMedia(currentMedia);
   const pct = duration > 0 ? Math.min(100, (position / duration) * 100) : 0;
-
   return (
     <div
       style={{
@@ -54,10 +91,9 @@ export function AudioMiniBar() {
           transition: "width .3s linear",
         }}
       />
-      {thumb ? (
-        <img
-          src={thumb}
-          alt=""
+      {chain.length > 0 ? (
+        <ArtImg
+          chain={chain}
           style={{ width: 42, height: 42, borderRadius: 6, objectFit: "cover", background: "#000" }}
         />
       ) : (

@@ -168,6 +168,11 @@ pub const MIGRATIONS: &[Migration] = &[
         description: "Sagas (TMDB belongs_to_collection) pour les Collections intelligentes",
         sql: include_str!("0027_sagas.sql"),
     },
+    Migration {
+        version: 28,
+        description: "Statuts de visionnage automatiques (À voir / En cours / Vu), par profil et par média",
+        sql: include_str!("0028_media_watch_status.sql"),
+    },
 ];
 
 /// Applique, dans l'ordre, toutes les migrations dont la version est

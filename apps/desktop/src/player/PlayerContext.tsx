@@ -20,6 +20,7 @@ import { titleApi } from "../features/title/api";
 import { windowApi } from "../features/window/api";
 import { playerSettingsApi } from "../features/playerSettings/api";
 import { friendsApi } from "../features/friends/api";
+import { notifyWatchStateChanged } from "../features/watchState/api";
 import { getWindowLabel } from "../window/getWindowLabel";
 import { applyNearMax } from "../window/nearMax";
 
@@ -258,6 +259,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const durationRef = useRef(0);
   durationRef.current = duration;
   const endedHandledRef = useRef<number | null>(null);
+  // 0.7.9 : dernier média dont le passage à « En cours » a déjà été signalé à l'interface.
+  const watchStartedNotifiedRef = useRef<number | null>(null);
 
   const userPausedRef = useRef(false);
   const seekDebounceRef = useRef<number | null>(null);
@@ -288,6 +291,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       return;
     }
     endedHandledRef.current = media.id;
+
+    // 0.7.9 : fin de lecture → on fige la progression sur la durée pour que le
+    // statut « Vu » soit posé à coup sûr (la dernière sauvegarde périodique peut
+    // dater de 5 s). Les médias privés (coffre) n'ont pas de statut de visionnage.
+    if (media.id >= 0 && !isOnlineMedia(media) && !media.isPrivate && durationRef.current > 0) {
+      playerApi
+        .saveProgress(media.id, durationRef.current, durationRef.current)
+        .then(() => notifyWatchStateChanged())
+        .catch(() => {});
+    }
 
     // 0.9.1 : médias TV absents de la base → pas d'historique (idem en ligne).
     if (
@@ -355,7 +368,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         const saveProgress = media.isPrivate
           ? playerApi.savePrivateProgress
           : playerApi.saveProgress;
-        saveProgress(media.id, positionRef.current, durationRef.current).catch(() => {});
+        const startedMediaId = media.id;
+        saveProgress(media.id, positionRef.current, durationRef.current)
+          .then(() => {
+            // Premier passage de ce média au-delà de 30 s : il est maintenant
+            // « En cours » → on prévient les grilles et listes affichées.
+            if (
+              !media.isPrivate &&
+              positionRef.current >= 30 &&
+              watchStartedNotifiedRef.current !== startedMediaId
+            ) {
+              watchStartedNotifiedRef.current = startedMediaId;
+              notifyWatchStateChanged();
+            }
+          })
+          .catch(() => {});
       }
       publishActivity();
     }
@@ -712,6 +739,22 @@ useEffect(() => {
         ) {
           void titleApi
             .recordWatch(media.id, positionRef.current, durationRef.current)
+            .catch(() => {});
+        }
+        // 0.7.9 : dernier instantané de progression à l'arrêt. Sans lui, la
+        // dernière sauvegarde périodique peut dater de 5 s et fausser « En cours /
+        // Vu » quand on quitte juste avant ou pendant le générique.
+        if (
+          media &&
+          media.id >= 0 &&
+          !isOnlineMedia(media) &&
+          !media.isPrivate &&
+          endedHandledRef.current !== media.id &&
+          durationRef.current > 0
+        ) {
+          playerApi
+            .saveProgress(media.id, positionRef.current, durationRef.current)
+            .then(() => notifyWatchStateChanged())
             .catch(() => {});
         }
         endedHandledRef.current = null;

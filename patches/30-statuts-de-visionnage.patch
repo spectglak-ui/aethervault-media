@@ -1,0 +1,2207 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index fa8b6f4..86e665c 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,18 @@
+ 
+ Toutes les modifications notables apportées à ce projet seront documentées dans ce fichier.
+ 
++## [Non publié]
++
++### Ajouté
++- **Statuts de visionnage automatiques « À voir / En cours / Vu »** (migration 28), par profil et par média. Tous les médias sont « À voir » au départ ; un média commencé (au moins 30 s et 1 %) passe « En cours » et un nouveau clic reprend la lecture à la position où elle s'était arrêtée ; un média terminé passe « Vu ». Annotation sous les affiches des catégories, sur la page d'un titre et sur chaque épisode (avec barre d'avancement). Une série est « En cours » dès qu'un épisode est commencé ou terminé, « Vu » quand tous les épisodes le sont (« 3/10 »).
++- **Seuil « Vu » intelligent** (plus de 95 % fixe) : fin du fichier atteinte, OU arrêt jusqu'à 15 s avant le début du générique de fin détecté (épisodes analysés), pendant ou après celui-ci ; à défaut de générique connu, queue de secours de 5 % de la durée bornée entre 45 s et 6 min. Un générique « détecté » avant 60 % de la durée est ignoré. Un média « Vu » ne repasse jamais « En cours » tout seul (revoir un film à moitié le laisse « Vu »).
++- **Page d'un titre** : bouton de lecture adapté (Lecture / Reprendre à 42:10 / Revoir pour un film ; Commencer / Reprendre / Épisode suivant · S1 · É4 pour une série) et **Marquer comme vu / non vu** (un film, un épisode ou une série entière).
++- Dernier instantané de progression enregistré à l'arrêt et à la fin de la lecture (la sauvegarde périodique, toutes les 5 s, pouvait fausser le statut).
++
++### Changé
++- Les médias déjà regardés avant la mise à jour sont repris : historique terminé à ≥ 95 % → « Vu », progression existante → « En cours ».
++- Le statut de la **Watchlist** suit désormais le statut automatique pour les titres qu'elle contient, et marquer « Vu » / « À voir » dans la Watchlist s'applique aussi aux médias. Sous les affiches, la Watchlist n'est plus qu'un marque-page.
++
+ ## [0.7.8 « Orbite »] - 2026-11-05
+ 
+ ### Ajouté
+diff --git a/apps/desktop/src-tauri/src/commands/mod.rs b/apps/desktop/src-tauri/src/commands/mod.rs
+index 210793e..89ef2ee 100644
+--- a/apps/desktop/src-tauri/src/commands/mod.rs
++++ b/apps/desktop/src-tauri/src/commands/mod.rs
+@@ -36,3 +36,4 @@ pub mod private_tags;
+ pub mod reading;
+ pub mod tv;
+ pub mod user_lists;
++pub mod watch_state;
+diff --git a/apps/desktop/src-tauri/src/commands/user_lists.rs b/apps/desktop/src-tauri/src/commands/user_lists.rs
+index 03a6f97..6eb2efc 100644
+--- a/apps/desktop/src-tauri/src/commands/user_lists.rs
++++ b/apps/desktop/src-tauri/src/commands/user_lists.rs
+@@ -105,7 +105,14 @@ pub fn watchlist_set_status(
+     validate_status(&status)?;
+     let profile_id = state.read_active_profile_id()?;
+     let conn = state.get_conn()?;
+-    repo::watchlist_set_status(&conn, profile_id, title_id, &status).map_err(|e| e.to_string())
++    repo::watchlist_set_status(&conn, profile_id, title_id, &status).map_err(|e| e.to_string())?;
++    // 0.7.9 : « Vu » / « À voir » posés à la main dans la watchlist s'appliquent
++    // aussi aux médias du titre (sinon deux statuts se contrediraient). « En
++    // cours » n'a pas d'équivalent manuel : il vient de la lecture réelle.
++    if status == "done" || status == "todo" {
++        crate::domain::watch_state::set_title_status(&conn, profile_id, title_id, &status)?;
++    }
++    Ok(())
+ }
+ 
+ /// Watchlist du profil actif, filtrable par catégorie et par statut.
+diff --git a/apps/desktop/src-tauri/src/commands/watch_state.rs b/apps/desktop/src-tauri/src/commands/watch_state.rs
+new file mode 100644
+index 0000000..4ad0a5a
+--- /dev/null
++++ b/apps/desktop/src-tauri/src/commands/watch_state.rs
+@@ -0,0 +1,94 @@
++//! Statuts de visionnage « À voir / En cours / Vu » (0.7.9) — PAR PROFIL.
++//!
++//! La pose AUTOMATIQUE des statuts n'est pas ici : elle se fait à chaque
++//! sauvegarde de progression (`commands::playback::save_playback_progress` →
++//! `domain::playback::save_progress` → `domain::watch_state::record_progress`).
++//! Ces commandes servent à LIRE les statuts (grilles, listes d'épisodes, pages de
++//! titre) et au marquage MANUEL. Toutes agissent sur le profil actif.
++
++use serde::Serialize;
++
++use crate::db::repositories::watch_state_repository::{self as repo, MediaWatchRow};
++use crate::domain::watch_state::{self, ResumeTarget, TitleWatchState};
++use crate::state::AppState;
++
++/// Statut de plusieurs titres en une requête (grilles d'affiches). Tous les
++/// ids demandés sont renvoyés ; « À voir » par défaut.
++#[tauri::command]
++pub fn list_title_watch_states(
++    state: tauri::State<AppState>,
++    title_ids: Vec<i64>,
++) -> Result<Vec<TitleWatchState>, String> {
++    let profile_id = state.read_active_profile_id()?;
++    let conn = state.get_conn()?;
++    watch_state::title_states(&conn, profile_id, &title_ids)
++}
++
++/// Statut + avancement de plusieurs fichiers (listes d'épisodes, page d'un film).
++#[tauri::command]
++pub fn list_media_watch_states(
++    state: tauri::State<AppState>,
++    media_file_ids: Vec<i64>,
++) -> Result<Vec<MediaWatchRow>, String> {
++    let profile_id = state.read_active_profile_id()?;
++    let conn = state.get_conn()?;
++    repo::media_states(&conn, profile_id, &media_file_ids).map_err(|e| e.to_string())
++}
++
++/// Marquage manuel d'un fichier : `done` (« Vu ») ou `todo` (« À voir », efface
++/// aussi la position de reprise).
++#[tauri::command]
++pub fn set_media_watch_status(
++    state: tauri::State<AppState>,
++    media_file_id: i64,
++    status: String,
++) -> Result<(), String> {
++    let profile_id = state.read_active_profile_id()?;
++    let conn = state.get_conn()?;
++    watch_state::set_media_status(&conn, profile_id, media_file_id, &status)
++}
++
++/// Marquage manuel d'un titre entier (film, ou tous les épisodes d'une série).
++#[tauri::command]
++pub fn set_title_watch_status(
++    state: tauri::State<AppState>,
++    title_id: i64,
++    status: String,
++) -> Result<(), String> {
++    let profile_id = state.read_active_profile_id()?;
++    let conn = state.get_conn()?;
++    watch_state::set_title_status(&conn, profile_id, title_id, &status)
++}
++
++/// Épisode à proposer pour « Continuer » une série (`null` si tout est vu ou si
++/// la série n'a aucun épisode disponible).
++#[tauri::command]
++pub fn get_title_resume_target(
++    state: tauri::State<AppState>,
++    title_id: i64,
++) -> Result<Option<ResumeTarget>, String> {
++    let profile_id = state.read_active_profile_id()?;
++    let conn = state.get_conn()?;
++    watch_state::resume_target(&conn, profile_id, title_id)
++}
++
++/// Réglages de dosage exposés en lecture seule (diagnostic / page Paramètres).
++#[derive(Debug, Clone, Serialize)]
++pub struct WatchThresholds {
++    pub credits_tolerance_seconds: f64,
++    pub tail_ratio: f64,
++    pub tail_min_seconds: f64,
++    pub tail_max_seconds: f64,
++    pub in_progress_min_seconds: f64,
++}
++
++#[tauri::command]
++pub fn get_watch_thresholds() -> WatchThresholds {
++    WatchThresholds {
++        credits_tolerance_seconds: watch_state::CREDITS_TOLERANCE_SECONDS,
++        tail_ratio: watch_state::TAIL_RATIO,
++        tail_min_seconds: watch_state::TAIL_MIN_SECONDS,
++        tail_max_seconds: watch_state::TAIL_MAX_SECONDS,
++        in_progress_min_seconds: watch_state::IN_PROGRESS_MIN_SECONDS,
++    }
++}
+diff --git a/apps/desktop/src-tauri/src/db/migrations/0028_media_watch_status.sql b/apps/desktop/src-tauri/src/db/migrations/0028_media_watch_status.sql
+new file mode 100644
+index 0000000..5b27f05
+--- /dev/null
++++ b/apps/desktop/src-tauri/src/db/migrations/0028_media_watch_status.sql
+@@ -0,0 +1,49 @@
++-- Migration 0028 — Statuts de visionnage automatiques « À voir / En cours / Vu »,
++-- PAR PROFIL et PAR FICHIER MÉDIA (un film = un fichier, un épisode = un fichier).
++--
++-- Principe : l'ABSENCE de ligne signifie « À voir » (état initial de tous les
++-- médias — aucune ligne à créer au scan). Une ligne n'existe que pour les états
++-- 'in_progress' (commencé, pas fini) et 'done' (vu).
++--
++-- Pourquoi une table dédiée plutôt que `playback_progress` : cette dernière est
++-- effacée dès qu'un média est terminé (voir `domain::playback`), ce qui
++-- faisait perdre l'information « déjà vu ». Elle reste la source de la
++-- position de reprise ; `media_watch_status` est la source du statut.
++--
++-- completed_by (diagnostic du dosage de « Vu », NULL tant que 'in_progress') :
++--   'ended'   fin du fichier atteinte
++--   'credits' arrêt à l'approche / pendant le générique de fin détecté (outro)
++--   'tail'    arrêt dans la queue de secours (générique inconnu)
++--   'manual'  marqué à la main par l'utilisateur
++
++CREATE TABLE media_watch_status (
++    profile_id    INTEGER NOT NULL REFERENCES profiles(id)    ON DELETE CASCADE,
++    media_file_id INTEGER NOT NULL REFERENCES media_files(id) ON DELETE CASCADE,
++    status        TEXT    NOT NULL CHECK (status IN ('in_progress', 'done')),
++    completed_by  TEXT    CHECK (completed_by IN ('ended', 'credits', 'tail', 'manual')),
++    updated_at    TEXT    NOT NULL,
++    PRIMARY KEY (profile_id, media_file_id)
++);
++CREATE INDEX idx_media_watch_status_media ON media_watch_status(media_file_id);
++CREATE INDEX idx_media_watch_status_profile_status ON media_watch_status(profile_id, status);
++
++-- Reprise de l'existant (une seule fois, à la mise à jour) --------------------
++-- 1) « Vu » : toute session d'historique qui s'était terminée à ≥ 95 % (ancien
++--    seuil) — c'est exactement ce qui effaçait la progression.
++INSERT OR IGNORE INTO media_watch_status (profile_id, media_file_id, status, completed_by, updated_at)
++SELECT wh.profile_id, wh.media_file_id, 'done', 'tail', MAX(wh.ended_at)
++FROM watch_history wh
++WHERE wh.duration_seconds > 0
++  AND wh.position_seconds / wh.duration_seconds >= 0.95
++  AND EXISTS (SELECT 1 FROM profiles p WHERE p.id = wh.profile_id)
++  AND EXISTS (SELECT 1 FROM media_files m WHERE m.id = wh.media_file_id)
++GROUP BY wh.profile_id, wh.media_file_id;
++
++-- 2) « En cours » : toute progression existante d'au moins 30 s et 1 % (les
++--    lignes déjà « Vu » ci-dessus l'emportent : INSERT OR IGNORE).
++INSERT OR IGNORE INTO media_watch_status (profile_id, media_file_id, status, completed_by, updated_at)
++SELECT pp.profile_id, pp.media_file_id, 'in_progress', NULL, pp.updated_at
++FROM playback_progress pp
++WHERE pp.duration_seconds > 0
++  AND pp.position_seconds >= 30
++  AND pp.position_seconds / pp.duration_seconds >= 0.01;
+diff --git a/apps/desktop/src-tauri/src/db/migrations/mod.rs b/apps/desktop/src-tauri/src/db/migrations/mod.rs
+index 62ad037..57be615 100644
+--- a/apps/desktop/src-tauri/src/db/migrations/mod.rs
++++ b/apps/desktop/src-tauri/src/db/migrations/mod.rs
+@@ -168,6 +168,11 @@ pub const MIGRATIONS: &[Migration] = &[
+         description: "Sagas (TMDB belongs_to_collection) pour les Collections intelligentes",
+         sql: include_str!("0027_sagas.sql"),
+     },
++    Migration {
++        version: 28,
++        description: "Statuts de visionnage automatiques (À voir / En cours / Vu), par profil et par média",
++        sql: include_str!("0028_media_watch_status.sql"),
++    },
+ ];
+ 
+ /// Applique, dans l'ordre, toutes les migrations dont la version est
+diff --git a/apps/desktop/src-tauri/src/db/repositories/mod.rs b/apps/desktop/src-tauri/src/db/repositories/mod.rs
+index 47b3106..80b9459 100644
+--- a/apps/desktop/src-tauri/src/db/repositories/mod.rs
++++ b/apps/desktop/src-tauri/src/db/repositories/mod.rs
+@@ -24,3 +24,4 @@ pub mod segment_repository;
+ pub mod private_tag_repository;
+ pub mod reading_repository;
+ pub mod user_list_repository;
++pub mod watch_state_repository;
+diff --git a/apps/desktop/src-tauri/src/db/repositories/watch_state_repository.rs b/apps/desktop/src-tauri/src/db/repositories/watch_state_repository.rs
+new file mode 100644
+index 0000000..74049d2
+--- /dev/null
++++ b/apps/desktop/src-tauri/src/db/repositories/watch_state_repository.rs
+@@ -0,0 +1,346 @@
++//! Statuts de visionnage « À voir / En cours / Vu » (migration 0028) — PAR PROFIL.
++//!
++//! Seul endroit du code autorisé à écrire du SQL pour `media_watch_status`.
++//! L'absence de ligne = « À voir » : ce module ne renvoie donc `todo` que par
++//! défaut, jamais depuis la base.
++
++use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
++use serde::Serialize;
++
++use super::segment_repository;
++
++pub const STATUS_TODO: &str = "todo";
++pub const STATUS_IN_PROGRESS: &str = "in_progress";
++pub const STATUS_DONE: &str = "done";
++
++/// Ce que l'on sait d'un fichier média au moment d'évaluer sa progression.
++#[derive(Debug, Clone, Copy)]
++pub struct MediaContext {
++    /// Le fichier appartient à un titre (film) ou à un épisode — les fichiers
++    /// « libres » (musique, etc.) n'ont pas de statut de visionnage.
++    pub has_title: bool,
++    /// Début du générique de fin (segment `outro`) de l'épisode, s'il est connu.
++    pub outro_start: Option<f64>,
++}
++
++pub fn media_context(conn: &Connection, media_file_id: i64) -> rusqlite::Result<Option<MediaContext>> {
++    // La table des segments est créée à la demande (pas de migration numérotée).
++    segment_repository::ensure_table(conn)?;
++    conn.query_row(
++        "SELECT COALESCE(m.title_id, e.title_id) IS NOT NULL,
++                (SELECT s.start_seconds FROM episode_segments s
++                  WHERE s.episode_id = m.episode_id AND s.segment_type = 'outro')
++         FROM media_files m
++         LEFT JOIN episodes e ON e.id = m.episode_id
++         WHERE m.id = ?1",
++        params![media_file_id],
++        |row| {
++            Ok(MediaContext {
++                has_title: row.get::<_, i64>(0)? != 0,
++                outro_start: row.get(1)?,
++            })
++        },
++    )
++    .optional()
++}
++
++/// Statut stocké (`in_progress` | `done`) d'un média, `None` = « À voir ».
++pub fn get_status(
++    conn: &Connection,
++    profile_id: i64,
++    media_file_id: i64,
++) -> rusqlite::Result<Option<String>> {
++    conn.query_row(
++        "SELECT status FROM media_watch_status WHERE profile_id = ?1 AND media_file_id = ?2",
++        params![profile_id, media_file_id],
++        |row| row.get(0),
++    )
++    .optional()
++}
++
++/// Passe un média à « En cours » — sans JAMAIS faire reculer un « Vu » (revoir
++/// un film à moitié ne le rend pas « non vu »). Renvoie `true` si le statut a
++/// réellement changé (nouvelle ligne), `false` sinon.
++pub fn mark_in_progress(
++    conn: &Connection,
++    profile_id: i64,
++    media_file_id: i64,
++) -> rusqlite::Result<bool> {
++    let now = chrono::Utc::now().to_rfc3339();
++    let existing = get_status(conn, profile_id, media_file_id)?;
++    match existing.as_deref() {
++        Some(STATUS_DONE) => Ok(false),
++        Some(_) => {
++            // Déjà « En cours » : on rafraîchit seulement la date (ordre de reprise).
++            conn.execute(
++                "UPDATE media_watch_status SET updated_at = ?3
++                 WHERE profile_id = ?1 AND media_file_id = ?2",
++                params![profile_id, media_file_id, now],
++            )?;
++            Ok(false)
++        }
++        None => {
++            conn.execute(
++                "INSERT INTO media_watch_status (profile_id, media_file_id, status, completed_by, updated_at)
++                 VALUES (?1, ?2, 'in_progress', NULL, ?3)",
++                params![profile_id, media_file_id, now],
++            )?;
++            Ok(true)
++        }
++    }
++}
++
++/// Passe un média à « Vu ». Renvoie `true` si le statut a changé.
++pub fn mark_done(
++    conn: &Connection,
++    profile_id: i64,
++    media_file_id: i64,
++    completed_by: &str,
++) -> rusqlite::Result<bool> {
++    // Déjà « Vu » : on ne réécrit rien (ni la raison, ni la date — la date sert
++    // à proposer l'épisode SUIVANT le dernier terminé, un revisionnage ne doit
++    // pas la déplacer).
++    if get_status(conn, profile_id, media_file_id)?.as_deref() == Some(STATUS_DONE) {
++        return Ok(false);
++    }
++    let now = chrono::Utc::now().to_rfc3339();
++    conn.execute(
++        "INSERT INTO media_watch_status (profile_id, media_file_id, status, completed_by, updated_at)
++         VALUES (?1, ?2, 'done', ?3, ?4)
++         ON CONFLICT(profile_id, media_file_id) DO UPDATE SET
++            status = 'done',
++            completed_by = excluded.completed_by,
++            updated_at = excluded.updated_at",
++        params![profile_id, media_file_id, completed_by, now],
++    )?;
++    Ok(true)
++}
++
++/// Marquage manuel « Vu » : écrase aussi un « Vu » automatique (la raison
++/// devient `manual`), sans toucher à la date si le média l'était déjà.
++pub fn mark_done_manual(
++    conn: &Connection,
++    profile_id: i64,
++    media_file_id: i64,
++) -> rusqlite::Result<bool> {
++    let changed = mark_done(conn, profile_id, media_file_id, "manual")?;
++    if !changed {
++        conn.execute(
++            "UPDATE media_watch_status SET completed_by = 'manual'
++             WHERE profile_id = ?1 AND media_file_id = ?2",
++            params![profile_id, media_file_id],
++        )?;
++    }
++    Ok(changed)
++}
++
++/// Remet un média à « À voir » (supprime la ligne).
++pub fn clear_status(
++    conn: &Connection,
++    profile_id: i64,
++    media_file_id: i64,
++) -> rusqlite::Result<bool> {
++    let n = conn.execute(
++        "DELETE FROM media_watch_status WHERE profile_id = ?1 AND media_file_id = ?2",
++        params![profile_id, media_file_id],
++    )?;
++    Ok(n > 0)
++}
++
++/// Titre auquel appartient un fichier (film : `media_files.title_id` ; épisode :
++/// via `episodes.title_id`).
++pub fn title_of_media(conn: &Connection, media_file_id: i64) -> rusqlite::Result<Option<i64>> {
++    conn.query_row(
++        "SELECT COALESCE(m.title_id, e.title_id)
++         FROM media_files m LEFT JOIN episodes e ON e.id = m.episode_id
++         WHERE m.id = ?1",
++        params![media_file_id],
++        |row| row.get::<_, Option<i64>>(0),
++    )
++    .optional()
++    .map(|o| o.flatten())
++}
++
++/// Tous les fichiers disponibles d'un titre (un film, ou tous ses épisodes).
++pub fn media_ids_of_title(conn: &Connection, title_id: i64) -> rusqlite::Result<Vec<i64>> {
++    let mut stmt = conn.prepare(
++        "SELECT m.id FROM media_files m WHERE m.is_available = 1 AND m.title_id = ?1
++         UNION
++         SELECT m.id FROM media_files m JOIN episodes e ON e.id = m.episode_id
++          WHERE m.is_available = 1 AND e.title_id = ?1",
++    )?;
++    let rows = stmt.query_map(params![title_id], |row| row.get::<_, i64>(0))?;
++    rows.collect()
++}
++
++// ---- Lecture groupée -----------------------------------------------------
++
++/// Statut + avancement d'un fichier (pour les listes d'épisodes, pages de titre).
++#[derive(Debug, Clone, Serialize)]
++pub struct MediaWatchRow {
++    pub media_file_id: i64,
++    pub status: String,
++    /// Fraction 0–1 de la position de reprise (seulement si « En cours »).
++    pub progress_ratio: Option<f64>,
++    pub position_seconds: Option<f64>,
++}
++
++fn placeholders(from: usize, count: usize) -> String {
++    (from..from + count).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",")
++}
++
++/// Statuts de PLUSIEURS fichiers en une requête. Tous les ids demandés sont
++/// renvoyés (« À voir » par défaut).
++pub fn media_states(
++    conn: &Connection,
++    profile_id: i64,
++    media_file_ids: &[i64],
++) -> rusqlite::Result<Vec<MediaWatchRow>> {
++    if media_file_ids.is_empty() {
++        return Ok(Vec::new());
++    }
++    let sql = format!(
++        "SELECT m.id, w.status, p.position_seconds, p.duration_seconds
++         FROM media_files m
++         LEFT JOIN media_watch_status w ON w.media_file_id = m.id AND w.profile_id = ?1
++         LEFT JOIN playback_progress p ON p.media_file_id = m.id AND p.profile_id = ?1
++         WHERE m.id IN ({})",
++        placeholders(2, media_file_ids.len())
++    );
++    let mut stmt = conn.prepare(&sql)?;
++    let args = std::iter::once(profile_id).chain(media_file_ids.iter().copied());
++    let rows = stmt.query_map(params_from_iter(args), |row| {
++        let status: Option<String> = row.get(1)?;
++        let position: Option<f64> = row.get(2)?;
++        let duration: Option<f64> = row.get(3)?;
++        let status = status.unwrap_or_else(|| STATUS_TODO.to_string());
++        let (ratio, pos) = match (status.as_str(), position, duration) {
++            (STATUS_IN_PROGRESS, Some(p), Some(d)) if d > 0.0 => {
++                (Some((p / d).clamp(0.0, 1.0)), Some(p))
++            }
++            _ => (None, None),
++        };
++        Ok(MediaWatchRow {
++            media_file_id: row.get(0)?,
++            status,
++            progress_ratio: ratio,
++            position_seconds: pos,
++        })
++    })?;
++    rows.collect()
++}
++
++/// Décomptes par titre, à partir desquels le domaine déduit le statut d'un titre.
++#[derive(Debug, Clone)]
++pub struct TitleCounts {
++    pub title_id: i64,
++    pub kind: String,
++    pub total: i64,
++    pub done: i64,
++    pub in_progress: i64,
++}
++
++pub fn title_counts(
++    conn: &Connection,
++    profile_id: i64,
++    title_ids: &[i64],
++) -> rusqlite::Result<Vec<TitleCounts>> {
++    if title_ids.is_empty() {
++        return Ok(Vec::new());
++    }
++    let ids = placeholders(2, title_ids.len());
++    // Films (`media_files.title_id`) et épisodes (`episodes.title_id`) : deux
++    // requêtes indexées réunies par UNION (dédoublonne un fichier éventuellement
++    // rattaché des deux façons), plutôt qu'un OR qui interdirait les index.
++    let sql = format!(
++        "WITH tm AS (
++            SELECT m.title_id AS tid, m.id AS mid FROM media_files m
++             WHERE m.is_available = 1 AND m.title_id IN ({ids})
++            UNION
++            SELECT e.title_id AS tid, m.id AS mid FROM media_files m
++              JOIN episodes e ON e.id = m.episode_id
++             WHERE m.is_available = 1 AND e.title_id IN ({ids})
++         )
++         SELECT t.id, t.kind, COUNT(tm.mid),
++                COALESCE(SUM(CASE WHEN w.status = 'done' THEN 1 ELSE 0 END), 0),
++                COALESCE(SUM(CASE WHEN w.status = 'in_progress' THEN 1 ELSE 0 END), 0)
++         FROM titles t
++         JOIN tm ON tm.tid = t.id
++         LEFT JOIN media_watch_status w ON w.media_file_id = tm.mid AND w.profile_id = ?1
++         WHERE t.id IN ({ids})
++         GROUP BY t.id"
++    );
++    let mut stmt = conn.prepare(&sql)?;
++    let args = std::iter::once(profile_id).chain(title_ids.iter().copied());
++    let rows = stmt.query_map(params_from_iter(args), |row| {
++        Ok(TitleCounts {
++            title_id: row.get(0)?,
++            kind: row.get(1)?,
++            total: row.get(2)?,
++            done: row.get(3)?,
++            in_progress: row.get(4)?,
++        })
++    })?;
++    rows.collect()
++}
++
++/// Un épisode d'une série avec son statut, dans l'ordre de lecture.
++#[derive(Debug, Clone, Serialize)]
++pub struct EpisodeRow {
++    pub media_file_id: i64,
++    pub episode_id: i64,
++    pub season_id: i64,
++    pub season_number: i64,
++    pub episode_number: i64,
++    pub status: String,
++    pub updated_at: Option<String>,
++    pub position_seconds: Option<f64>,
++}
++
++pub fn episode_rows(
++    conn: &Connection,
++    profile_id: i64,
++    title_id: i64,
++) -> rusqlite::Result<Vec<EpisodeRow>> {
++    let mut stmt = conn.prepare(
++        "SELECT m.id, e.id, s.id, s.season_number, e.episode_number,
++                COALESCE(w.status, 'todo'), w.updated_at, p.position_seconds
++         FROM media_files m
++         JOIN episodes e ON e.id = m.episode_id
++         JOIN seasons s ON s.id = e.season_id
++         LEFT JOIN media_watch_status w ON w.media_file_id = m.id AND w.profile_id = ?1
++         LEFT JOIN playback_progress p ON p.media_file_id = m.id AND p.profile_id = ?1
++         WHERE m.is_available = 1 AND e.title_id = ?2
++         ORDER BY s.season_number, e.episode_number",
++    )?;
++    let rows = stmt.query_map(params![profile_id, title_id], |row| {
++        Ok(EpisodeRow {
++            media_file_id: row.get(0)?,
++            episode_id: row.get(1)?,
++            season_id: row.get(2)?,
++            season_number: row.get(3)?,
++            episode_number: row.get(4)?,
++            status: row.get(5)?,
++            updated_at: row.get(6)?,
++            position_seconds: row.get(7)?,
++        })
++    })?;
++    rows.collect()
++}
++
++/// Reflète le statut AUTOMATIQUE d'un titre dans sa ligne de watchlist, SI le
++/// titre y figure (la watchlist reste une liste que l'utilisateur alimente : on
++/// n'y ajoute rien, on ne fait que garder son statut cohérent).
++pub fn mirror_into_watchlist(
++    conn: &Connection,
++    profile_id: i64,
++    title_id: i64,
++    status: &str,
++) -> rusqlite::Result<()> {
++    conn.execute(
++        "UPDATE watchlist_items SET status = ?3, updated_at = datetime('now')
++         WHERE profile_id = ?1 AND title_id = ?2 AND status != ?3",
++        params![profile_id, title_id, status],
++    )?;
++    Ok(())
++}
+diff --git a/apps/desktop/src-tauri/src/domain/mod.rs b/apps/desktop/src-tauri/src/domain/mod.rs
+index 8e7f3a3..01dac04 100644
+--- a/apps/desktop/src-tauri/src/domain/mod.rs
++++ b/apps/desktop/src-tauri/src/domain/mod.rs
+@@ -12,3 +12,4 @@ pub mod private_image;
+ pub mod private_video;
+ pub mod profile;
+ pub mod title;
++pub mod watch_state;
+diff --git a/apps/desktop/src-tauri/src/domain/playback.rs b/apps/desktop/src-tauri/src/domain/playback.rs
+index edef8b8..cce4824 100644
+--- a/apps/desktop/src-tauri/src/domain/playback.rs
++++ b/apps/desktop/src-tauri/src/domain/playback.rs
+@@ -11,14 +11,10 @@
+ //! `commands::playback`.
+ 
+ use crate::db::repositories::playback_repository::{self, PlaybackProgressRecord};
++use crate::domain::watch_state;
+ use crate::db::DbPool;
+ use rusqlite::OptionalExtension;
+ 
+-/// Fraction de la durée totale au-delà de laquelle un fichier est considéré
+-/// "terminé" plutôt que "en cours" — évite qu'un futur "Continuer la
+-/// lecture" (Étape 7) affiche un fichier regardé jusqu'au bout.
+-const COMPLETED_THRESHOLD: f64 = 0.95;
+-
+ pub fn get_progress(
+     pool: &DbPool,
+     profile_id: i64,
+@@ -37,9 +33,19 @@ pub fn save_progress(
+ ) -> Result<(), String> {
+     let conn = pool.get().map_err(|e| e.to_string())?;
+ 
+-    let is_completed = duration_seconds > 0.0 && position_seconds / duration_seconds >= COMPLETED_THRESHOLD;
++    // 0.7.9 : le seuil « terminé » n'est plus un 95 % fixe — il tient compte du
++    // générique de fin (voir `domain::watch_state`), qui pose aussi le statut
++    // « En cours » / « Vu » du média. Un média terminé n'a plus de position de
++    // reprise : le prochain clic repart du début.
++    let verdict = watch_state::record_progress(
++        &conn,
++        profile_id,
++        media_file_id,
++        position_seconds,
++        duration_seconds,
++    )?;
+ 
+-    if is_completed {
++    if matches!(verdict, watch_state::Verdict::Completed(_)) {
+         playback_repository::clear(&conn, profile_id, media_file_id).map_err(|e| e.to_string())
+     } else {
+         playback_repository::upsert(&conn, profile_id, media_file_id, position_seconds, duration_seconds)
+diff --git a/apps/desktop/src-tauri/src/domain/watch_state.rs b/apps/desktop/src-tauri/src/domain/watch_state.rs
+new file mode 100644
+index 0000000..30d72e5
+--- /dev/null
++++ b/apps/desktop/src-tauri/src/domain/watch_state.rs
+@@ -0,0 +1,773 @@
++//! Statuts de visionnage « À voir / En cours / Vu » (0.7.9) — règles métier.
++//!
++//! Trois états par fichier média et par profil :
++//! - **À voir**   : état initial de TOUS les médias (absence de ligne en base) ;
++//! - **En cours** : commencé (≥ 30 s et ≥ 1 %) mais pas terminé — un clic
++//!   reprend la lecture à la position sauvegardée (`playback_progress`) ;
++//! - **Vu**       : terminé, au sens large décrit ci-dessous.
++//!
++//! ## Quand un média est-il « Vu » ?
++//! Jamais « à 95 % » aveuglément : le générique de fin ne démarre pas au même
++//! endroit selon la durée. Ordre des règles (la première qui s'applique gagne) :
++//! 1. **Fin du fichier** atteinte (à 1,5 s près) → `ended`.
++//! 2. **Générique détecté** (segment `outro` d'un épisode, voir
++//!    `commands::segments`) : « Vu » dès `début du générique − 15 s` — arrêter
++//!    quelques secondes AVANT le générique compte, pendant ou après aussi
++//!    → `credits`. Un générique « détecté » avant 60 % de la durée est
++//!    considéré comme une fausse détection et ignoré.
++//! 3. **Queue de secours** quand le générique est inconnu (films, séries non
++//!    analysées) : les derniers 5 % de la durée, bornés entre 45 s et 6 min
++//!    (et jamais plus du quart du média) → `tail`.
++//!
++//! Le statut ne RECULE JAMAIS tout seul : revoir un film à moitié le laisse
++//! « Vu » (la position de reprise, elle, est bien mémorisée). Seule une action
++//! manuelle (« Marquer comme non vu ») remet un média à « À voir ».
++
++use crate::db::repositories::watch_state_repository::{
++    self as repo, EpisodeRow, STATUS_DONE, STATUS_IN_PROGRESS, STATUS_TODO,
++};
++use rusqlite::Connection;
++use serde::Serialize;
++
++/// Marge avant le début du générique : s'arrêter jusqu'à 15 s AVANT compte.
++pub const CREDITS_TOLERANCE_SECONDS: f64 = 15.0;
++/// Fin du fichier : à moins de 1,5 s de la durée, c'est terminé.
++pub const END_REACHED_MARGIN_SECONDS: f64 = 1.5;
++/// Queue de secours (générique inconnu) : 5 % de la durée…
++pub const TAIL_RATIO: f64 = 0.05;
++/// …mais au moins 45 s…
++pub const TAIL_MIN_SECONDS: f64 = 45.0;
++/// …et au plus 6 min (un documentaire de 4 h n'a pas 12 min de générique).
++pub const TAIL_MAX_SECONDS: f64 = 360.0;
++/// Garde-fou pour les très courts médias : la queue ne dépasse jamais 25 %.
++pub const TAIL_MAX_SHARE_OF_MEDIA: f64 = 0.25;
++/// Un générique détecté avant 60 % de la durée est jugé invraisemblable.
++pub const OUTRO_MIN_START_RATIO: f64 = 0.60;
++/// « En cours » : au moins 30 s de lecture ET au moins 1 % de la durée
++/// (un clic accidentel ou un aperçu de quelques secondes ne change rien).
++pub const IN_PROGRESS_MIN_SECONDS: f64 = 30.0;
++pub const IN_PROGRESS_MIN_RATIO: f64 = 0.01;
++/// Médias sans titre (musique…) : l'ancienne règle des 95 % est conservée.
++pub const LEGACY_COMPLETED_RATIO: f64 = 0.95;
++
++/// Pourquoi un média est considéré « Vu » (stocké dans `completed_by`).
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum CompletedBy {
++    Ended,
++    Credits,
++    Tail,
++}
++
++impl CompletedBy {
++    pub fn as_str(self) -> &'static str {
++        match self {
++            CompletedBy::Ended => "ended",
++            CompletedBy::Credits => "credits",
++            CompletedBy::Tail => "tail",
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum Verdict {
++    /// Trop peu regardé pour compter : le statut ne change pas.
++    NotStarted,
++    InProgress,
++    Completed(CompletedBy),
++}
++
++/// Durée de la queue de secours pour un média de `duration` secondes.
++pub fn tail_seconds(duration: f64) -> f64 {
++    (duration * TAIL_RATIO)
++        .clamp(TAIL_MIN_SECONDS, TAIL_MAX_SECONDS)
++        .min(duration * TAIL_MAX_SHARE_OF_MEDIA)
++}
++
++/// Début de générique exploitable (cohérent avec la durée), sinon `None`.
++pub fn plausible_outro_start(duration: f64, outro_start: Option<f64>) -> Option<f64> {
++    outro_start.filter(|s| s.is_finite() && *s >= duration * OUTRO_MIN_START_RATIO && *s < duration)
++}
++
++/// Position à partir de laquelle le média est « Vu », et la règle responsable.
++pub fn completion_point(duration: f64, outro_start: Option<f64>) -> (f64, CompletedBy) {
++    let tail_point = duration - tail_seconds(duration);
++    match plausible_outro_start(duration, outro_start) {
++        Some(start) => {
++            let credits_point = (start - CREDITS_TOLERANCE_SECONDS).max(0.0);
++            // Un générique détecté très tard ne doit jamais rendre le seuil
++            // plus exigeant que la queue de secours.
++            if credits_point < tail_point {
++                (credits_point, CompletedBy::Credits)
++            } else {
++                (tail_point, CompletedBy::Tail)
++            }
++        }
++        None => (tail_point, CompletedBy::Tail),
++    }
++}
++
++/// Verdict pour une position donnée (fonction pure, entièrement testée).
++pub fn evaluate(position: f64, duration: f64, outro_start: Option<f64>) -> Verdict {
++    if !(duration.is_finite() && duration > 0.0) || !position.is_finite() {
++        return Verdict::NotStarted;
++    }
++    let position = position.max(0.0);
++    if position >= duration - END_REACHED_MARGIN_SECONDS {
++        return Verdict::Completed(CompletedBy::Ended);
++    }
++    let (point, by) = completion_point(duration, outro_start);
++    if position >= point {
++        return Verdict::Completed(by);
++    }
++    if position >= IN_PROGRESS_MIN_SECONDS && position / duration >= IN_PROGRESS_MIN_RATIO {
++        return Verdict::InProgress;
++    }
++    Verdict::NotStarted
++}
++
++/// Ancienne règle (≥ 95 %) pour les fichiers sans titre.
++pub fn legacy_verdict(position: f64, duration: f64) -> Verdict {
++    if duration > 0.0 && position / duration >= LEGACY_COMPLETED_RATIO {
++        Verdict::Completed(CompletedBy::Tail)
++    } else {
++        Verdict::NotStarted
++    }
++}
++
++/// Statut d'un TITRE à partir de ses fichiers :
++/// - film : « Vu » dès qu'un fichier l'est (plusieurs versions du même film) ;
++/// - série : « Vu » si TOUS les épisodes le sont, « En cours » dès qu'un
++///   épisode est commencé ou terminé, « À voir » sinon.
++pub fn title_status(kind: &str, total: i64, done: i64, in_progress: i64) -> &'static str {
++    if total <= 0 {
++        return STATUS_TODO;
++    }
++    if kind == "movie" {
++        if done > 0 {
++            STATUS_DONE
++        } else if in_progress > 0 {
++            STATUS_IN_PROGRESS
++        } else {
++            STATUS_TODO
++        }
++    } else if done >= total {
++        STATUS_DONE
++    } else if done > 0 || in_progress > 0 {
++        STATUS_IN_PROGRESS
++    } else {
++        STATUS_TODO
++    }
++}
++
++/// Quel épisode proposer à « Continuer » ? (index dans `rows`, ordonnées par
++/// saison puis épisode)
++/// 1. l'épisode commencé le plus récemment ;
++/// 2. sinon l'épisode non vu qui SUIT le dernier épisode terminé ;
++/// 3. sinon le premier épisode non vu ; `None` si tout est vu.
++pub fn pick_resume_target(rows: &[EpisodeRow]) -> Option<usize> {
++    let latest = |status: &str| {
++        rows.iter()
++            .enumerate()
++            .filter(|(_, r)| r.status == status)
++            .max_by(|a, b| a.1.updated_at.cmp(&b.1.updated_at))
++            .map(|(i, _)| i)
++    };
++    if let Some(i) = latest(STATUS_IN_PROGRESS) {
++        return Some(i);
++    }
++    if let Some(done) = latest(STATUS_DONE) {
++        if let Some(next) = (done + 1..rows.len()).find(|&j| rows[j].status != STATUS_DONE) {
++            return Some(next);
++        }
++    }
++    rows.iter().position(|r| r.status != STATUS_DONE)
++}
++
++// ---- Orchestration (SQL via le dépôt) ---------------------------------------
++
++fn err(e: rusqlite::Error) -> String {
++    e.to_string()
++}
++
++/// Statut d'un titre pour le profil, avec les compteurs d'épisodes vus.
++#[derive(Debug, Clone, Serialize)]
++pub struct TitleWatchState {
++    pub title_id: i64,
++    pub status: String,
++    pub watched: i64,
++    pub total: i64,
++}
++
++/// Statut de plusieurs titres en une requête ; TOUS les ids demandés sont
++/// renvoyés (« À voir » pour un titre sans fichier ni historique).
++pub fn title_states(
++    conn: &Connection,
++    profile_id: i64,
++    title_ids: &[i64],
++) -> Result<Vec<TitleWatchState>, String> {
++    let counts = repo::title_counts(conn, profile_id, title_ids).map_err(err)?;
++    let mut seen = std::collections::HashSet::new();
++    let mut out = Vec::with_capacity(title_ids.len());
++    for id in title_ids {
++        if !seen.insert(*id) {
++            continue;
++        }
++        out.push(match counts.iter().find(|c| c.title_id == *id) {
++            Some(c) => TitleWatchState {
++                title_id: *id,
++                status: title_status(&c.kind, c.total, c.done, c.in_progress).to_string(),
++                watched: c.done,
++                total: c.total,
++            },
++            None => TitleWatchState {
++                title_id: *id,
++                status: STATUS_TODO.to_string(),
++                watched: 0,
++                total: 0,
++            },
++        });
++    }
++    Ok(out)
++}
++
++/// Garde la ligne de watchlist du titre (s'il y figure) alignée sur son statut.
++fn sync_watchlist(conn: &Connection, profile_id: i64, title_id: i64) -> Result<(), String> {
++    if let Some(state) = title_states(conn, profile_id, &[title_id])?.first() {
++        // Titre sans fichier disponible : rien à refléter (son statut « À voir »
++        // n'est qu'un défaut, pas une information).
++        if state.total > 0 {
++            repo::mirror_into_watchlist(conn, profile_id, title_id, &state.status).map_err(err)?;
++        }
++    }
++    Ok(())
++}
++
++/// Appelé à chaque sauvegarde de progression (toutes les 5 s en lecture, à
++/// l'arrêt et à la fin). Met le statut à jour et renvoie le verdict : le
++/// domaine `playback` en déduit s'il faut conserver ou effacer la position.
++pub fn record_progress(
++    conn: &Connection,
++    profile_id: i64,
++    media_file_id: i64,
++    position_seconds: f64,
++    duration_seconds: f64,
++) -> Result<Verdict, String> {
++    let context = repo::media_context(conn, media_file_id).map_err(err)?;
++    let Some(context) = context.filter(|c| c.has_title) else {
++        return Ok(legacy_verdict(position_seconds, duration_seconds));
++    };
++    let verdict = evaluate(position_seconds, duration_seconds, context.outro_start);
++    let changed = match verdict {
++        Verdict::Completed(by) => {
++            repo::mark_done(conn, profile_id, media_file_id, by.as_str()).map_err(err)?
++        }
++        Verdict::InProgress => repo::mark_in_progress(conn, profile_id, media_file_id).map_err(err)?,
++        Verdict::NotStarted => false,
++    };
++    if changed {
++        if let Some(title_id) = repo::title_of_media(conn, media_file_id).map_err(err)? {
++            sync_watchlist(conn, profile_id, title_id)?;
++        }
++    }
++    Ok(verdict)
++}
++
++/// Marquage manuel d'un fichier : `done` ou `todo` (remise à « À voir », qui
++/// efface aussi la position de reprise).
++pub fn set_media_status(
++    conn: &Connection,
++    profile_id: i64,
++    media_file_id: i64,
++    status: &str,
++) -> Result<(), String> {
++    apply_manual(conn, profile_id, media_file_id, status)?;
++    if let Some(title_id) = repo::title_of_media(conn, media_file_id).map_err(err)? {
++        sync_watchlist(conn, profile_id, title_id)?;
++    }
++    Ok(())
++}
++
++fn apply_manual(
++    conn: &Connection,
++    profile_id: i64,
++    media_file_id: i64,
++    status: &str,
++) -> Result<(), String> {
++    use crate::db::repositories::playback_repository;
++    match status {
++        STATUS_DONE => {
++            repo::mark_done_manual(conn, profile_id, media_file_id).map_err(err)?;
++        }
++        STATUS_TODO => {
++            repo::clear_status(conn, profile_id, media_file_id).map_err(err)?;
++        }
++        other => return Err(format!("Statut de visionnage inconnu : {other}")),
++    }
++    // Dans les deux cas la position de reprise n'a plus de sens (vu en entier,
++    // ou remis à zéro) : le prochain clic repart du début.
++    playback_repository::clear(conn, profile_id, media_file_id).map_err(err)
++}
++
++/// Marquage manuel d'un TITRE entier (tous ses épisodes, ou son film).
++pub fn set_title_status(
++    conn: &Connection,
++    profile_id: i64,
++    title_id: i64,
++    status: &str,
++) -> Result<(), String> {
++    if status != STATUS_DONE && status != STATUS_TODO {
++        return Err(format!("Statut de visionnage inconnu : {status}"));
++    }
++    let ids = repo::media_ids_of_title(conn, title_id).map_err(err)?;
++    let tx = conn.unchecked_transaction().map_err(err)?;
++    for id in ids {
++        apply_manual(&tx, profile_id, id, status)?;
++    }
++    tx.commit().map_err(err)?;
++    sync_watchlist(conn, profile_id, title_id)
++}
++
++/// Épisode à proposer pour « Continuer » une série.
++#[derive(Debug, Clone, Serialize)]
++pub struct ResumeTarget {
++    pub media_file_id: i64,
++    pub episode_id: i64,
++    pub season_id: i64,
++    pub season_number: i64,
++    pub episode_number: i64,
++    pub status: String,
++    /// Position de reprise (secondes) si l'épisode est « En cours ».
++    pub resume_seconds: Option<f64>,
++}
++
++pub fn resume_target(
++    conn: &Connection,
++    profile_id: i64,
++    title_id: i64,
++) -> Result<Option<ResumeTarget>, String> {
++    let rows = repo::episode_rows(conn, profile_id, title_id).map_err(err)?;
++    Ok(pick_resume_target(&rows).map(|i| {
++        let r = &rows[i];
++        ResumeTarget {
++            media_file_id: r.media_file_id,
++            episode_id: r.episode_id,
++            season_id: r.season_id,
++            season_number: r.season_number,
++            episode_number: r.episode_number,
++            status: r.status.clone(),
++            resume_seconds: if r.status == STATUS_IN_PROGRESS { r.position_seconds } else { None },
++        }
++    }))
++}
++
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::db::migrations::MIGRATIONS;
++
++    // ---- Règles pures ---------------------------------------------------
++
++    const FILM: f64 = 7200.0; // 2 h
++    const EPISODE: f64 = 1500.0; // 25 min
++
++    #[test]
++    fn film_sans_generique_connu_utilise_la_queue_de_secours_plafonnee() {
++        // 5 % de 2 h = 6 min = plafond → seuil à 6840 s.
++        assert_eq!(tail_seconds(FILM), 360.0);
++        assert_eq!(evaluate(6839.0, FILM, None), Verdict::InProgress);
++        assert_eq!(evaluate(6840.0, FILM, None), Verdict::Completed(CompletedBy::Tail));
++        assert_eq!(evaluate(7199.0, FILM, None), Verdict::Completed(CompletedBy::Ended));
++    }
++
++    #[test]
++    fn episode_court_a_une_queue_proportionnelle() {
++        // 5 % de 25 min = 75 s → seuil à 1425 s.
++        assert_eq!(tail_seconds(EPISODE), 75.0);
++        assert_eq!(evaluate(1424.0, EPISODE, None), Verdict::InProgress);
++        assert_eq!(evaluate(1425.0, EPISODE, None), Verdict::Completed(CompletedBy::Tail));
++    }
++
++    #[test]
++    fn tres_long_media_ne_compte_pas_5_pour_cent_de_generique() {
++        // Documentaire de 4 h : 5 % = 12 min, plafonné à 6 min.
++        assert_eq!(tail_seconds(4.0 * 3600.0), TAIL_MAX_SECONDS);
++    }
++
++    #[test]
++    fn arret_quelques_secondes_avant_le_generique_compte_comme_vu() {
++        // Générique à 1400 s → « Vu » dès 1385 s (15 s avant).
++        let outro = Some(1400.0);
++        assert_eq!(evaluate(1384.0, EPISODE, outro), Verdict::InProgress);
++        assert_eq!(evaluate(1385.0, EPISODE, outro), Verdict::Completed(CompletedBy::Credits));
++        // Pendant et après le générique : toujours « Vu ».
++        assert_eq!(evaluate(1400.0, EPISODE, outro), Verdict::Completed(CompletedBy::Credits));
++        assert_eq!(evaluate(1460.0, EPISODE, outro), Verdict::Completed(CompletedBy::Credits));
++    }
++
++    #[test]
++    fn faux_generique_trop_tot_est_ignore() {
++        // Détecté à 40 % de la durée : invraisemblable → on retombe sur la queue.
++        assert_eq!(plausible_outro_start(EPISODE, Some(600.0)), None);
++        assert_eq!(evaluate(900.0, EPISODE, Some(600.0)), Verdict::InProgress);
++        assert_eq!(evaluate(1425.0, EPISODE, Some(600.0)), Verdict::Completed(CompletedBy::Tail));
++    }
++
++    #[test]
++    fn generique_detecte_tres_tard_ne_rend_pas_le_seuil_plus_exigeant() {
++        // Générique à 1490 s → 1475 s, mais la queue de secours (1425 s) passe avant.
++        assert_eq!(evaluate(1430.0, EPISODE, Some(1490.0)), Verdict::Completed(CompletedBy::Tail));
++    }
++
++    #[test]
++    fn en_cours_demande_30_secondes_et_1_pour_cent() {
++        // Film de 2 h : 1 % = 72 s.
++        assert_eq!(evaluate(10.0, FILM, None), Verdict::NotStarted);
++        assert_eq!(evaluate(31.0, FILM, None), Verdict::NotStarted);
++        assert_eq!(evaluate(80.0, FILM, None), Verdict::InProgress);
++        // Épisode de 25 min : 1 % = 15 s, donc 30 s suffisent.
++        assert_eq!(evaluate(29.0, EPISODE, None), Verdict::NotStarted);
++        assert_eq!(evaluate(30.0, EPISODE, None), Verdict::InProgress);
++    }
++
++    #[test]
++    fn mesures_invalides_ne_changent_rien() {
++        assert_eq!(evaluate(100.0, 0.0, None), Verdict::NotStarted);
++        assert_eq!(evaluate(f64::NAN, EPISODE, None), Verdict::NotStarted);
++        assert_eq!(evaluate(100.0, f64::INFINITY, None), Verdict::NotStarted);
++        assert_eq!(evaluate(-5.0, EPISODE, None), Verdict::NotStarted);
++    }
++
++    #[test]
++    fn tres_court_media_reste_utilisable() {
++        // Clip de 40 s : queue = 10 s (25 % max) → « Vu » à partir de 30 s.
++        assert_eq!(tail_seconds(40.0), 10.0);
++        assert_eq!(evaluate(29.0, 40.0, None), Verdict::NotStarted);
++        assert_eq!(evaluate(30.0, 40.0, None), Verdict::Completed(CompletedBy::Tail));
++    }
++
++    #[test]
++    fn ancienne_regle_95_pour_cent_pour_les_fichiers_sans_titre() {
++        assert_eq!(legacy_verdict(94.0, 100.0), Verdict::NotStarted);
++        assert_eq!(legacy_verdict(95.0, 100.0), Verdict::Completed(CompletedBy::Tail));
++    }
++
++    #[test]
++    fn statut_de_titre() {
++        assert_eq!(title_status("movie", 0, 0, 0), "todo");
++        assert_eq!(title_status("movie", 1, 0, 0), "todo");
++        assert_eq!(title_status("movie", 1, 0, 1), "in_progress");
++        assert_eq!(title_status("movie", 1, 1, 0), "done");
++        assert_eq!(title_status("series", 10, 0, 0), "todo");
++        assert_eq!(title_status("series", 10, 0, 1), "in_progress");
++        assert_eq!(title_status("series", 10, 3, 0), "in_progress"); // entre deux épisodes
++        assert_eq!(title_status("series", 10, 9, 0), "in_progress");
++        assert_eq!(title_status("series", 10, 10, 0), "done");
++    }
++
++    fn row(season: i64, ep: i64, status: &str, at: Option<&str>) -> EpisodeRow {
++        EpisodeRow {
++            media_file_id: season * 100 + ep,
++            episode_id: season * 100 + ep,
++            season_id: season,
++            season_number: season,
++            episode_number: ep,
++            status: status.to_string(),
++            updated_at: at.map(str::to_string),
++            position_seconds: None,
++        }
++    }
++
++    #[test]
++    fn continuer_propose_l_episode_en_cours() {
++        let rows = vec![
++            row(1, 1, "done", Some("2026-11-01")),
++            row(1, 2, "in_progress", Some("2026-11-05")),
++            row(1, 3, "todo", None),
++        ];
++        assert_eq!(pick_resume_target(&rows), Some(1));
++    }
++
++    #[test]
++    fn continuer_propose_l_episode_suivant_le_dernier_termine() {
++        // L'utilisateur a sauté à l'épisode 5 puis l'a fini : on propose le 6,
++        // pas le 3 resté non vu.
++        let rows = vec![
++            row(1, 1, "done", Some("2026-11-01")),
++            row(1, 2, "done", Some("2026-11-02")),
++            row(1, 3, "todo", None),
++            row(1, 4, "todo", None),
++            row(1, 5, "done", Some("2026-11-08")),
++            row(1, 6, "todo", None),
++        ];
++        assert_eq!(pick_resume_target(&rows), Some(5));
++    }
++
++    #[test]
++    fn continuer_retombe_sur_le_premier_non_vu_puis_sur_rien() {
++        let rows = vec![
++            row(1, 1, "todo", None),
++            row(1, 2, "done", Some("2026-11-02")),
++        ];
++        // Le dernier terminé est le dernier épisode : on revient au premier non vu.
++        assert_eq!(pick_resume_target(&rows), Some(0));
++        let all_done = vec![row(1, 1, "done", Some("a")), row(1, 2, "done", Some("b"))];
++        assert_eq!(pick_resume_target(&all_done), None);
++        assert_eq!(pick_resume_target(&[]), None);
++        let fresh = vec![row(1, 1, "todo", None), row(1, 2, "todo", None)];
++        assert_eq!(pick_resume_target(&fresh), Some(0));
++    }
++
++    // ---- Base de données réelle (toutes les migrations, SQLite en mémoire) ----
++
++    const P: i64 = 1;
++
++    /// Les tables VaultTube sont créées par le code du service (pas par une
++    /// migration numérotée) mais les migrations 18 à 24 les modifient : on en
++    /// pose des coquilles pour pouvoir rejouer toute la chaîne en test.
++    fn open_with_legacy_tables() -> Connection {
++        let conn = Connection::open_in_memory().unwrap();
++        conn.execute_batch(
++            "PRAGMA foreign_keys = OFF;
++             CREATE TABLE vaulttube_subscriptions (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_videos (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_playlists (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_user_playlists (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_user_playlist_items (id INTEGER PRIMARY KEY);",
++        )
++        .unwrap();
++        conn
++    }
++
++    fn setup() -> Connection {
++        let conn = open_with_legacy_tables();
++        for m in MIGRATIONS {
++            conn.execute_batch(m.sql)
++                .unwrap_or_else(|e| panic!("migration {} : {e}", m.version));
++        }
++        conn
++    }
++
++    fn add_title(conn: &Connection, id: i64, kind: &str) {
++        conn.execute(
++            "INSERT INTO titles (id, category_id, kind, name, created_at, updated_at)
++             VALUES (?1, 1, ?2, ?3, 'x', 'x')",
++            rusqlite::params![id, kind, format!("Titre {id}")],
++        )
++        .unwrap();
++    }
++
++    fn add_file(conn: &Connection, id: i64, title_id: Option<i64>, episode_id: Option<i64>) {
++        conn.execute(
++            "INSERT INTO media_files (id, library_id, folder_id, path, file_name, size_bytes,
++                                      modified_at, discovered_at, updated_at, title_id, episode_id)
++             VALUES (?1, 1, 1, ?2, 'f', 1, 'x', 'x', 'x', ?3, ?4)",
++            rusqlite::params![id, format!("/m/{id}.mkv"), title_id, episode_id],
++        )
++        .unwrap();
++    }
++
++    /// Série n°10 : saison 1, épisodes 1..=3 (fichiers 101..=103, épisodes 1..=3).
++    fn add_series(conn: &Connection) {
++        add_title(conn, 10, "series");
++        conn.execute(
++            "INSERT INTO seasons (id, title_id, season_number, created_at) VALUES (1, 10, 1, 'x')",
++            [],
++        )
++        .unwrap();
++        for n in 1..=3 {
++            conn.execute(
++                "INSERT INTO episodes (id, title_id, season_id, episode_number, created_at)
++                 VALUES (?1, 10, 1, ?1, 'x')",
++                [n],
++            )
++            .unwrap();
++            add_file(conn, 100 + n, None, Some(n));
++        }
++    }
++
++    fn status_of(conn: &Connection, file: i64) -> String {
++        repo::media_states(conn, P, &[file]).unwrap()[0].status.clone()
++    }
++
++    #[test]
++    fn tout_est_a_voir_au_depart() {
++        let conn = setup();
++        add_title(&conn, 1, "movie");
++        add_file(&conn, 1, Some(1), None);
++        add_series(&conn);
++        assert_eq!(status_of(&conn, 1), "todo");
++        let states = title_states(&conn, P, &[1, 10, 999]).unwrap();
++        assert!(states.iter().all(|s| s.status == "todo"));
++        assert_eq!(states[1].total, 3);
++        assert_eq!(states[2].total, 0); // titre inconnu : « À voir » par défaut
++    }
++
++    #[test]
++    fn film_a_voir_en_cours_vu() {
++        let conn = setup();
++        add_title(&conn, 1, "movie");
++        add_file(&conn, 1, Some(1), None);
++
++        // Quelques secondes : aucun changement.
++        record_progress(&conn, P, 1, 12.0, FILM).unwrap();
++        assert_eq!(status_of(&conn, 1), "todo");
++        // 20 min : « En cours », avec progression exploitable pour la reprise.
++        conn.execute(
++            "INSERT INTO playback_progress VALUES (1, 1, 1200.0, 7200.0, 'x')",
++            [],
++        )
++        .unwrap();
++        record_progress(&conn, P, 1, 1200.0, FILM).unwrap();
++        let rows = repo::media_states(&conn, P, &[1]).unwrap();
++        assert_eq!(rows[0].status, "in_progress");
++        assert!((rows[0].progress_ratio.unwrap() - 1200.0 / 7200.0).abs() < 1e-9);
++        assert_eq!(title_states(&conn, P, &[1]).unwrap()[0].status, "in_progress");
++        // Arrêt dans la queue : « Vu ».
++        let v = record_progress(&conn, P, 1, 6900.0, FILM).unwrap();
++        assert_eq!(v, Verdict::Completed(CompletedBy::Tail));
++        assert_eq!(status_of(&conn, 1), "done");
++        assert_eq!(title_states(&conn, P, &[1]).unwrap()[0].status, "done");
++    }
++
++    #[test]
++    fn un_vu_ne_recule_jamais_tout_seul() {
++        let conn = setup();
++        add_title(&conn, 1, "movie");
++        add_file(&conn, 1, Some(1), None);
++        record_progress(&conn, P, 1, 7199.0, FILM).unwrap();
++        assert_eq!(status_of(&conn, 1), "done");
++        // Revoir 30 minutes ne le rend pas « En cours ».
++        record_progress(&conn, P, 1, 1800.0, FILM).unwrap();
++        assert_eq!(status_of(&conn, 1), "done");
++    }
++
++    #[test]
++    fn generique_detecte_d_un_episode_est_utilise() {
++        let conn = setup();
++        add_series(&conn);
++        crate::db::repositories::segment_repository::ensure_table(&conn).unwrap();
++        crate::db::repositories::segment_repository::upsert(&conn, 1, "outro", 1400.0, 1500.0, "auto")
++            .unwrap();
++        // Épisode 1 : générique à 1400 s → « Vu » dès 1385 s ; épisode 2 : queue (1425 s).
++        assert_eq!(record_progress(&conn, P, 101, 1380.0, EPISODE).unwrap(), Verdict::InProgress);
++        assert_eq!(
++            record_progress(&conn, P, 101, 1386.0, EPISODE).unwrap(),
++            Verdict::Completed(CompletedBy::Credits)
++        );
++        assert_eq!(record_progress(&conn, P, 102, 1386.0, EPISODE).unwrap(), Verdict::InProgress);
++    }
++
++    #[test]
++    fn statut_de_serie_et_reprise() {
++        let conn = setup();
++        add_series(&conn);
++        record_progress(&conn, P, 101, 1499.0, EPISODE).unwrap(); // épisode 1 vu
++        let s = &title_states(&conn, P, &[10]).unwrap()[0];
++        assert_eq!((s.status.as_str(), s.watched, s.total), ("in_progress", 1, 3));
++        // Aucun épisode en cours : on propose le suivant, l'épisode 2.
++        let target = resume_target(&conn, P, 10).unwrap().unwrap();
++        assert_eq!(target.episode_number, 2);
++        assert_eq!(target.resume_seconds, None);
++        // L'épisode 2 est commencé (position sauvegardée) : on propose de le reprendre.
++        conn.execute("INSERT INTO playback_progress VALUES (1, 102, 600.0, 1500.0, 'x')", [])
++            .unwrap();
++        record_progress(&conn, P, 102, 600.0, EPISODE).unwrap();
++        let target = resume_target(&conn, P, 10).unwrap().unwrap();
++        assert_eq!(target.episode_number, 2);
++        assert_eq!(target.resume_seconds, Some(600.0));
++        // Tout vu → série « Vu », plus rien à proposer.
++        record_progress(&conn, P, 102, 1499.0, EPISODE).unwrap();
++        record_progress(&conn, P, 103, 1499.0, EPISODE).unwrap();
++        assert_eq!(title_states(&conn, P, &[10]).unwrap()[0].status, "done");
++        assert!(resume_target(&conn, P, 10).unwrap().is_none());
++    }
++
++    #[test]
++    fn marquage_manuel_vu_et_a_voir() {
++        let conn = setup();
++        add_series(&conn);
++        conn.execute("INSERT INTO playback_progress VALUES (1, 101, 600.0, 1500.0, 'x')", [])
++            .unwrap();
++        set_media_status(&conn, P, 101, "done").unwrap();
++        assert_eq!(status_of(&conn, 101), "done");
++        // La position de reprise est effacée.
++        let left: i64 = conn
++            .query_row("SELECT COUNT(*) FROM playback_progress WHERE media_file_id = 101", [], |r| r.get(0))
++            .unwrap();
++        assert_eq!(left, 0);
++        // Titre entier : tout « Vu », puis tout remis à « À voir ».
++        set_title_status(&conn, P, 10, "done").unwrap();
++        assert_eq!(title_states(&conn, P, &[10]).unwrap()[0].status, "done");
++        set_title_status(&conn, P, 10, "todo").unwrap();
++        let s = &title_states(&conn, P, &[10]).unwrap()[0];
++        assert_eq!((s.status.as_str(), s.watched), ("todo", 0));
++        assert!(set_media_status(&conn, P, 101, "in_progress").is_err());
++    }
++
++    #[test]
++    fn statuts_separes_par_profil() {
++        let conn = setup();
++        add_title(&conn, 1, "movie");
++        add_file(&conn, 1, Some(1), None);
++        record_progress(&conn, 1, 1, 7199.0, FILM).unwrap();
++        assert_eq!(repo::media_states(&conn, 1, &[1]).unwrap()[0].status, "done");
++        assert_eq!(repo::media_states(&conn, 2, &[1]).unwrap()[0].status, "todo");
++    }
++
++    #[test]
++    fn la_watchlist_suit_le_statut_automatique() {
++        let conn = setup();
++        add_title(&conn, 1, "movie");
++        add_file(&conn, 1, Some(1), None);
++        conn.execute("INSERT INTO watchlist_items (profile_id, title_id) VALUES (1, 1)", []).unwrap();
++        let wl = |c: &Connection| -> String {
++            c.query_row("SELECT status FROM watchlist_items WHERE title_id = 1", [], |r| r.get(0)).unwrap()
++        };
++        assert_eq!(wl(&conn), "todo");
++        record_progress(&conn, P, 1, 1200.0, FILM).unwrap();
++        assert_eq!(wl(&conn), "in_progress");
++        record_progress(&conn, P, 1, 7199.0, FILM).unwrap();
++        assert_eq!(wl(&conn), "done");
++        // Un titre absent de la watchlist n'y est jamais ajouté.
++        add_title(&conn, 2, "movie");
++        add_file(&conn, 2, Some(2), None);
++        record_progress(&conn, P, 2, 7199.0, FILM).unwrap();
++        let n: i64 = conn
++            .query_row("SELECT COUNT(*) FROM watchlist_items WHERE title_id = 2", [], |r| r.get(0))
++            .unwrap();
++        assert_eq!(n, 0);
++    }
++
++    #[test]
++    fn fichiers_sans_titre_gardent_l_ancienne_regle() {
++        let conn = setup();
++        add_file(&conn, 50, None, None); // ex. un morceau de musique
++        assert_eq!(record_progress(&conn, P, 50, 190.0, 200.0).unwrap(), Verdict::Completed(CompletedBy::Tail));
++        assert_eq!(status_of(&conn, 50), "todo"); // aucun statut posé
++    }
++
++    #[test]
++    fn migration_reprend_l_existant() {
++        // Reproduit l'état d'une base 0.7.8 puis rejoue UNIQUEMENT la 0028.
++        let conn = open_with_legacy_tables();
++        for m in MIGRATIONS.iter().filter(|m| m.version < 28) {
++            conn.execute_batch(m.sql).unwrap();
++        }
++        conn.execute_batch(
++            "INSERT INTO profiles (id, name, profile_type, created_at) VALUES (1, 'a', 'admin', 'x');
++             INSERT INTO media_files (id, library_id, folder_id, path, file_name, size_bytes, modified_at, discovered_at, updated_at)
++               VALUES (1,1,1,'/1','f',1,'x','x','x'), (2,1,1,'/2','f',1,'x','x','x'), (3,1,1,'/3','f',1,'x','x','x');
++             INSERT INTO watch_history (profile_id, media_file_id, title_id, kind, category_key, position_seconds, duration_seconds, started_at, ended_at)
++               VALUES (1,1,1,'movie','films',7000,7200,'x','2026-10-01'),
++                      (1,3,1,'movie','films',900,7200,'x','2026-10-02');
++             INSERT INTO playback_progress VALUES (1,2,1200,7200,'2026-10-03'), (1,3,900,7200,'2026-10-02'), (1,1,50,7200,'x');",
++        )
++        .unwrap();
++        conn.execute_batch(MIGRATIONS.iter().find(|m| m.version == 28).unwrap().sql).unwrap();
++        // 1 : historique à ≥ 95 % → Vu (l'emporte sur la progression de 50 s) ;
++        // 2 : progression de 20 min → En cours ; 3 : session à 12 % + progression → En cours.
++        let st = |id: i64| status_of(&conn, id);
++        assert_eq!((st(1).as_str(), st(2).as_str(), st(3).as_str()), ("done", "in_progress", "in_progress"));
++    }
++}
+diff --git a/apps/desktop/src-tauri/src/lib.rs b/apps/desktop/src-tauri/src/lib.rs
+index 46925b4..fae611e 100644
+--- a/apps/desktop/src-tauri/src/lib.rs
++++ b/apps/desktop/src-tauri/src/lib.rs
+@@ -258,6 +258,12 @@ pub fn run() {
+             commands::user_lists::watchlist_remove,
+             commands::user_lists::watchlist_set_status,
+             commands::user_lists::watchlist_list,
++            commands::watch_state::list_title_watch_states,
++            commands::watch_state::list_media_watch_states,
++            commands::watch_state::set_media_watch_status,
++            commands::watch_state::set_title_watch_status,
++            commands::watch_state::get_title_resume_target,
++            commands::watch_state::get_watch_thresholds,
+             commands::settings::get_audio_cinema_level,
+             commands::settings::set_audio_cinema_level,
+             commands::security::get_vault_status,
+diff --git a/apps/desktop/src/features/userlists/TitleUserBadges.tsx b/apps/desktop/src/features/userlists/TitleUserBadges.tsx
+index a73abb4..29952ac 100644
+--- a/apps/desktop/src/features/userlists/TitleUserBadges.tsx
++++ b/apps/desktop/src/features/userlists/TitleUserBadges.tsx
+@@ -1,25 +1,35 @@
+ import { Bookmark, Star } from "lucide-react";
+-import { WATCH_STATUS_LABELS, type TitleUserState } from "./api";
++import type { TitleUserState } from "./api";
++import { WatchStateBadge } from "../watchState/WatchStateBadge";
++import type { TitleWatchState } from "../watchState/api";
+ 
+ /**
+- * Pastille de la note personnelle (« ★ 4,5 ») et marque-page de watchlist
+- * affichés sous une affiche. Ne rend rien si le titre n'a ni note ni statut.
++ * Pastilles affichées sous une affiche : statut de visionnage automatique
++ * (« À voir » / « En cours » / « Vu »), note personnelle (« ★ 4,5 ») et
++ * marque-page si le titre est dans la watchlist. Le statut de la watchlist
++ * n'est plus écrit en toutes lettres ici : il suit le statut automatique.
+  */
+-export function TitleUserBadges({ state }: { state?: TitleUserState }) {
+-  if (!state || (state.rating === null && state.watch_status === null)) return null;
++export function TitleUserBadges({
++  state,
++  watch,
++}: {
++  state?: TitleUserState;
++  watch?: TitleWatchState;
++}) {
++  const rating = state?.rating ?? null;
++  const inWatchlist = (state?.watch_status ?? null) !== null;
++  if (rating === null && !inWatchlist && !watch) return null;
+   return (
+     <div className="avm-userbadges">
+-      {state.rating !== null && (
+-        <span className="avm-userbadges__rating" title={`Ma note : ${state.rating} sur 5`}>
+-          <Star size={13} aria-hidden="true" /> {state.rating.toFixed(1).replace(".", ",")}
++      {watch && <WatchStateBadge status={watch.status} watched={watch.watched} total={watch.total} />}
++      {rating !== null && (
++        <span className="avm-userbadges__rating" title={`Ma note : ${rating} sur 5`}>
++          <Star size={13} aria-hidden="true" /> {rating.toFixed(1).replace(".", ",")}
+         </span>
+       )}
+-      {state.watch_status !== null && (
+-        <span
+-          className={`avm-userbadges__watch avm-userbadges__watch--${state.watch_status}`}
+-          title={`Watchlist : ${WATCH_STATUS_LABELS[state.watch_status]}`}
+-        >
+-          <Bookmark size={13} aria-hidden="true" /> {WATCH_STATUS_LABELS[state.watch_status]}
++      {inWatchlist && (
++        <span className="avm-userbadges__watch" title="Dans ma watchlist">
++          <Bookmark size={13} aria-hidden="true" />
+         </span>
+       )}
+     </div>
+diff --git a/apps/desktop/src/features/watchState/TitleWatchPanel.tsx b/apps/desktop/src/features/watchState/TitleWatchPanel.tsx
+new file mode 100644
+index 0000000..dcfd785
+--- /dev/null
++++ b/apps/desktop/src/features/watchState/TitleWatchPanel.tsx
+@@ -0,0 +1,120 @@
++import { Eye, EyeOff, Play } from "lucide-react";
++import { useNavigate } from "react-router-dom";
++import { Button } from "@aethervault/ui-kit";
++import type { TitleDetails } from "@aethervault/shared-types";
++import { formatTime } from "../../player/formatTime";
++import { WatchProgressBar, WatchStateBadge } from "./WatchStateBadge";
++import { useMediaWatchStates, useResumeTarget, useTitleWatchStates } from "./useWatchStates";
++import { watchStateApi, type WatchState } from "./api";
++import "./watchState.css";
++
++interface TitleWatchPanelProps {
++  title: TitleDetails;
++  /** Clé de catégorie de la route (`/category/:key/...`). */
++  categoryKey: string;
++  starting: boolean;
++  /** Lecture du film (reprend automatiquement à la position sauvegardée). */
++  onPlayMovie: () => void;
++}
++
++/**
++ * Page d'un titre : statut de visionnage, bouton de lecture « intelligent »
++ * (Lecture / Reprendre à 42:10 / Revoir pour un film ; Commencer / Reprendre /
++ * Épisode suivant pour une série) et marquage manuel Vu / non vu.
++ */
++export function TitleWatchPanel({ title, categoryKey, starting, onPlayMovie }: TitleWatchPanelProps) {
++  const navigate = useNavigate();
++  const isMovie = title.kind === "movie";
++  const movieFileId = isMovie ? title.media_file_id : null;
++  const mediaStates = useMediaWatchStates(movieFileId !== null ? [movieFileId] : null);
++  const titleStates = useTitleWatchStates([title.id]);
++  const resume = useResumeTarget(isMovie ? null : title.id);
++
++  const state = titleStates[title.id];
++  const status: WatchState = state?.status ?? "todo";
++  const media = movieFileId !== null ? mediaStates[movieFileId] : undefined;
++  const hasMedia = isMovie ? movieFileId !== null : (state?.total ?? 0) > 0;
++
++  const toggleSeen = () => {
++    const next = status === "done" ? "todo" : "done";
++    if (!isMovie && !window.confirm(
++      next === "done"
++        ? "Marquer tous les épisodes de cette série comme vus ?"
++        : "Remettre tous les épisodes de cette série à « À voir » ? Les positions de reprise seront effacées."
++    )) {
++      return;
++    }
++    void watchStateApi.setTitleStatus(title.id, next).catch(() => {});
++  };
++
++  let playLabel = "Lecture";
++  if (isMovie) {
++    if (media?.status === "in_progress" && media.position_seconds) {
++      playLabel = `Reprendre à ${formatTime(media.position_seconds)}`;
++    } else if (status === "done") {
++      playLabel = "Revoir";
++    }
++  } else if (resume) {
++    const episode = `S${resume.season_number} · É${resume.episode_number}`;
++    if (resume.status === "in_progress") {
++      playLabel =
++        resume.resume_seconds && resume.resume_seconds > 0
++          ? `Reprendre ${episode} à ${formatTime(resume.resume_seconds)}`
++          : `Reprendre ${episode}`;
++    } else if ((state?.watched ?? 0) > 0) {
++      playLabel = `Épisode suivant · ${episode}`;
++    } else {
++      playLabel = `Commencer · ${episode}`;
++    }
++  }
++
++  const playDisabled = isMovie ? starting || movieFileId === null : !resume;
++
++  return (
++    <div className="avm-watchpanel-wrap">
++      <div className="avm-watchpanel">
++        <WatchStateBadge status={status} watched={state?.watched} total={state?.total} />
++        {isMovie && media?.status === "in_progress" && (
++          <div style={{ width: 120 }}>
++            <WatchProgressBar ratio={media.progress_ratio} />
++          </div>
++        )}
++        {!isMovie && state && state.total > 1 && (
++          <span className="avm-watchpanel__hint">
++            {state.watched}/{state.total} épisodes vus
++          </span>
++        )}
++      </div>
++      <div className="avm-watchpanel">
++        {(isMovie || resume) && (
++          <Button
++            variant="primary"
++            disabled={playDisabled}
++            onClick={() => {
++              if (isMovie) {
++                onPlayMovie();
++              } else if (resume) {
++                navigate(
++                  `/category/${categoryKey}/title/${title.id}/season/${resume.season_id}?play=${resume.episode_id}`
++                );
++              }
++            }}
++          >
++            <Play size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
++            {playLabel}
++          </Button>
++        )}
++        {hasMedia && (
++          <Button variant="secondary" onClick={toggleSeen}>
++            {status === "done" ? (
++              <EyeOff size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
++            ) : (
++              <Eye size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
++            )}
++            {status === "done" ? "Marquer comme non vu" : "Marquer comme vu"}
++          </Button>
++        )}
++      </div>
++    </div>
++  );
++}
+diff --git a/apps/desktop/src/features/watchState/WatchStateBadge.tsx b/apps/desktop/src/features/watchState/WatchStateBadge.tsx
+new file mode 100644
+index 0000000..1f5ce5f
+--- /dev/null
++++ b/apps/desktop/src/features/watchState/WatchStateBadge.tsx
+@@ -0,0 +1,50 @@
++import { Check, Eye, Play } from "lucide-react";
++import { WATCH_STATE_LABELS, type WatchState } from "./api";
++import "./watchState.css";
++
++interface WatchStateBadgeProps {
++  status: WatchState;
++  /** Séries : épisodes vus / total (affichés pour « En cours »). */
++  watched?: number;
++  total?: number;
++}
++
++const ICONS = { todo: Eye, in_progress: Play, done: Check } as const;
++
++/**
++ * Petite annotation « À voir » / « En cours » / « Vu » (affiches, pages de
++ * titre, listes d'épisodes). Pour une série « En cours », ajoute « 3/10 ».
++ */
++export function WatchStateBadge({ status, watched, total }: WatchStateBadgeProps) {
++  const Icon = ICONS[status];
++  const isSeries = total !== undefined && total > 1;
++  const showCount = status === "in_progress" && isSeries && watched !== undefined;
++  const tooltip = isSeries
++    ? `${WATCH_STATE_LABELS[status]} — ${watched ?? 0} épisode(s) vu(s) sur ${total}`
++    : WATCH_STATE_LABELS[status];
++  return (
++    <span className={`avm-watchstate avm-watchstate--${status}`} title={tooltip}>
++      <Icon size={12} aria-hidden="true" />
++      {WATCH_STATE_LABELS[status]}
++      {showCount && <span className="avm-watchstate__count">{watched}/{total}</span>}
++    </span>
++  );
++}
++
++/** Fine barre de progression d'un média « En cours ». */
++export function WatchProgressBar({ ratio }: { ratio: number | null | undefined }) {
++  if (ratio === null || ratio === undefined) return null;
++  const percent = Math.min(100, Math.max(0, Math.round(ratio * 100)));
++  return (
++    <div
++      className="avm-watchprogress"
++      role="progressbar"
++      aria-valuemin={0}
++      aria-valuemax={100}
++      aria-valuenow={percent}
++      aria-label="Avancement"
++    >
++      <div className="avm-watchprogress__bar" style={{ width: `${percent}%` }} />
++    </div>
++  );
++}
+diff --git a/apps/desktop/src/features/watchState/api.ts b/apps/desktop/src/features/watchState/api.ts
+new file mode 100644
+index 0000000..810ee41
+--- /dev/null
++++ b/apps/desktop/src/features/watchState/api.ts
+@@ -0,0 +1,69 @@
++import { invoke } from "@tauri-apps/api/core";
++import { emit } from "@tauri-apps/api/event";
++
++/**
++ * Statut de visionnage automatique d'un média ou d'un titre, pour le profil actif.
++ * Posé par la lecture elle-même (voir `domain/watch_state.rs`) : tout média est
++ * « À voir » au départ, « En cours » une fois commencé, « Vu » une fois terminé
++ * (générique de fin compris).
++ */
++export type WatchState = "todo" | "in_progress" | "done";
++
++export const WATCH_STATE_LABELS: Record<WatchState, string> = {
++  todo: "À voir",
++  in_progress: "En cours",
++  done: "Vu",
++};
++
++/** Statut d'un titre ; pour une série `watched`/`total` comptent les épisodes. */
++export interface TitleWatchState {
++  title_id: number;
++  status: WatchState;
++  watched: number;
++  total: number;
++}
++
++/** Statut d'un fichier (film ou épisode) + avancement s'il est « En cours ». */
++export interface MediaWatchState {
++  media_file_id: number;
++  status: WatchState;
++  /** Fraction 0–1 de la position de reprise (seulement si « En cours »). */
++  progress_ratio: number | null;
++  position_seconds: number | null;
++}
++
++/** Épisode à proposer pour « Continuer » une série. */
++export interface ResumeTarget {
++  media_file_id: number;
++  episode_id: number;
++  season_id: number;
++  season_number: number;
++  episode_number: number;
++  status: WatchState;
++  resume_seconds: number | null;
++}
++
++/** Événement émis à chaque changement de statut (lecture, marquage manuel). */
++export const WATCH_STATE_EVENT = "watch-state:changed";
++
++export function notifyWatchStateChanged(): void {
++  emit(WATCH_STATE_EVENT).catch(() => {});
++}
++
++export const watchStateApi = {
++  /** Plusieurs titres en une requête (grilles) ; tous les ids demandés sont renvoyés. */
++  listTitleStates: (titleIds: number[]) =>
++    invoke<TitleWatchState[]>("list_title_watch_states", { titleIds }),
++  /** Plusieurs fichiers en une requête (listes d'épisodes, page d'un film). */
++  listMediaStates: (mediaFileIds: number[]) =>
++    invoke<MediaWatchState[]>("list_media_watch_states", { mediaFileIds }),
++  /** Marquage manuel d'un fichier : « Vu » ou « À voir » (efface la reprise). */
++  setMediaStatus: (mediaFileId: number, status: "done" | "todo") =>
++    invoke<void>("set_media_watch_status", { mediaFileId, status }).then(notifyWatchStateChanged),
++  /** Marquage manuel d'un titre entier (film, ou tous les épisodes d'une série). */
++  setTitleStatus: (titleId: number, status: "done" | "todo") =>
++    invoke<void>("set_title_watch_status", { titleId, status }).then(notifyWatchStateChanged),
++  /** Épisode à proposer pour « Continuer » (`null` si tout est vu). */
++  getResumeTarget: (titleId: number) =>
++    invoke<ResumeTarget | null>("get_title_resume_target", { titleId }),
++};
+diff --git a/apps/desktop/src/features/watchState/useWatchStates.ts b/apps/desktop/src/features/watchState/useWatchStates.ts
+new file mode 100644
+index 0000000..44a1e1d
+--- /dev/null
++++ b/apps/desktop/src/features/watchState/useWatchStates.ts
+@@ -0,0 +1,110 @@
++import { useEffect, useRef, useState } from "react";
++import { listen } from "@tauri-apps/api/event";
++import {
++  WATCH_STATE_EVENT,
++  watchStateApi,
++  type MediaWatchState,
++  type ResumeTarget,
++  type TitleWatchState,
++} from "./api";
++
++/** Délai de regroupement : une rafale d'événements ne déclenche qu'un rechargement. */
++const REFRESH_DEBOUNCE_MS = 350;
++
++/**
++ * Charge `fetcher(ids)` et recharge à chaque changement de statut (lecture,
++ * marquage manuel). L'effet ne se relance que si la LISTE d'ids change vraiment
++ * (clé stable), et l'ancien résultat reste affiché pendant un rechargement
++ * pour éviter tout clignotement des pastilles.
++ */
++function useWatchQuery<T>(
++  ids: number[] | null,
++  fetcher: (ids: number[]) => Promise<T[]>,
++  idOf: (row: T) => number
++): Record<number, T> {
++  const [rows, setRows] = useState<Record<number, T>>({});
++  const key = ids === null ? "" : ids.join(",");
++  const fetcherRef = useRef(fetcher);
++  fetcherRef.current = fetcher;
++  const idOfRef = useRef(idOf);
++  idOfRef.current = idOf;
++
++  useEffect(() => {
++    if (ids === null || ids.length === 0) {
++      setRows({});
++      return;
++    }
++    let alive = true;
++    let timer: number | undefined;
++    const load = () => {
++      fetcherRef
++        .current(ids)
++        .then((result) => {
++          if (!alive) return;
++          const map: Record<number, T> = {};
++          for (const row of result) map[idOfRef.current(row)] = row;
++          setRows(map);
++        })
++        .catch(() => {});
++    };
++    load();
++    const unlisten = listen(WATCH_STATE_EVENT, () => {
++      window.clearTimeout(timer);
++      timer = window.setTimeout(load, REFRESH_DEBOUNCE_MS);
++    });
++    return () => {
++      alive = false;
++      window.clearTimeout(timer);
++      void unlisten.then((stop) => stop());
++    };
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [key]);
++
++  return rows;
++}
++
++/** Statuts d'une liste de titres (grilles d'affiches), indexés par id de titre. */
++export function useTitleWatchStates(titleIds: number[] | null): Record<number, TitleWatchState> {
++  return useWatchQuery(titleIds, watchStateApi.listTitleStates, (row) => row.title_id);
++}
++
++/** Statuts d'une liste de fichiers (épisodes d'une saison, film), indexés par id de fichier. */
++export function useMediaWatchStates(
++  mediaFileIds: number[] | null
++): Record<number, MediaWatchState> {
++  return useWatchQuery(mediaFileIds, watchStateApi.listMediaStates, (row) => row.media_file_id);
++}
++
++/** Épisode à proposer pour « Continuer » une série (`null` : tout vu ou pas une série). */
++export function useResumeTarget(titleId: number | null): ResumeTarget | null {
++  const [target, setTarget] = useState<ResumeTarget | null>(null);
++
++  useEffect(() => {
++    if (titleId === null) {
++      setTarget(null);
++      return;
++    }
++    let alive = true;
++    let timer: number | undefined;
++    const load = () => {
++      watchStateApi
++        .getResumeTarget(titleId)
++        .then((result) => {
++          if (alive) setTarget(result);
++        })
++        .catch(() => {});
++    };
++    load();
++    const unlisten = listen(WATCH_STATE_EVENT, () => {
++      window.clearTimeout(timer);
++      timer = window.setTimeout(load, REFRESH_DEBOUNCE_MS);
++    });
++    return () => {
++      alive = false;
++      window.clearTimeout(timer);
++      void unlisten.then((stop) => stop());
++    };
++  }, [titleId]);
++
++  return target;
++}
+diff --git a/apps/desktop/src/features/watchState/watchState.css b/apps/desktop/src/features/watchState/watchState.css
+new file mode 100644
+index 0000000..cdaaabc
+--- /dev/null
++++ b/apps/desktop/src/features/watchState/watchState.css
+@@ -0,0 +1,78 @@
++/* Annotations « À voir / En cours / Vu » (0.7.9). */
++.avm-watchstate {
++  display: inline-flex;
++  align-items: center;
++  gap: 4px;
++  padding: 1px 8px 1px 6px;
++  border-radius: 999px;
++  border: 1px solid currentColor;
++  font-size: 0.72rem;
++  font-weight: 600;
++  line-height: 1.5;
++  white-space: nowrap;
++}
++.avm-watchstate--todo {
++  color: var(--color-text-muted, #9aa0aa);
++  border-color: color-mix(in srgb, currentColor 45%, transparent);
++}
++.avm-watchstate--in_progress {
++  color: #f59e0b;
++  background: color-mix(in srgb, #f59e0b 12%, transparent);
++}
++.avm-watchstate--done {
++  color: #22c55e;
++  background: color-mix(in srgb, #22c55e 12%, transparent);
++}
++.avm-watchstate__count {
++  margin-left: 2px;
++  opacity: 0.85;
++  font-variant-numeric: tabular-nums;
++}
++
++/* Barre d'avancement d'un média « En cours ». */
++.avm-watchprogress {
++  height: 3px;
++  margin-top: 6px;
++  border-radius: 2px;
++  background: color-mix(in srgb, var(--color-text-muted, #9aa0aa) 30%, transparent);
++  overflow: hidden;
++}
++.avm-watchprogress__bar {
++  height: 100%;
++  background: #f59e0b;
++  border-radius: 2px;
++}
++
++/* Bouton « Marquer comme vu / non vu » d'une ligne d'épisode. */
++.avm-watchtoggle {
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  width: 30px;
++  height: 30px;
++  margin-right: 6px;
++  border: none;
++  border-radius: 50%;
++  background: transparent;
++  color: var(--color-text-muted, #9aa0aa);
++  cursor: pointer;
++  flex-shrink: 0;
++}
++.avm-watchtoggle:hover,
++.avm-watchtoggle:focus-visible {
++  color: var(--color-text, #fff);
++  background: color-mix(in srgb, var(--color-text-muted, #9aa0aa) 22%, transparent);
++}
++
++/* Ligne d'état + actions sur la page d'un titre. */
++.avm-watchpanel {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 10px;
++  margin-top: 0.75rem;
++}
++.avm-watchpanel__hint {
++  color: var(--color-text-muted, #9aa0aa);
++  font-size: 0.85rem;
++}
+diff --git a/apps/desktop/src/pages/CategoryPage.tsx b/apps/desktop/src/pages/CategoryPage.tsx
+index 7a0cda2..938b956 100644
+--- a/apps/desktop/src/pages/CategoryPage.tsx
++++ b/apps/desktop/src/pages/CategoryPage.tsx
+@@ -29,6 +29,7 @@ import { usePlayer } from "../player/PlayerContext";
+ import { assetUrl } from "../lib/assetUrl";
+ import { TitleUserBadges } from "../features/userlists/TitleUserBadges";
+ import { useTitleUserStates } from "../features/userlists/useTitleUserStates";
++import { useTitleWatchStates } from "../features/watchState/useWatchStates";
+ import { useAnimatedBackdropActive } from "../hooks/useAnimatedBackdropActive";
+ import { ActiveFilterChips, TitleFilters } from "../features/search/TitleFilters";
+ import { useFacetCounts } from "../features/search/useFacetCounts";
+@@ -71,6 +72,8 @@ export function CategoryPage() {
+   const [titles, setTitles] = useState<TitleSummary[] | null>(null);
+   // Notes personnelles et watchlist du profil actif, en une requête pour toute la grille.
+   const userStates = useTitleUserStates(titles ? titles.map((t) => t.id) : null);
++  // Statut de visionnage automatique (À voir / En cours / Vu), recalculé à chaque lecture.
++  const watchStates = useTitleWatchStates(titles ? titles.map((t) => t.id) : null);
+   const [libraries, setLibraries] = useState<Library[]>([]);
+   const [modalOpen, setModalOpen] = useState(false);
+   const [deleteTarget, setDeleteTarget] = useState<TitleSummary | null>(null);
+@@ -449,7 +452,7 @@ export function CategoryPage() {
+                 }
+                 deleteLabel={`Supprimer « ${title.name} »`}
+               >
+-                <TitleUserBadges state={userStates[title.id]} />
++                <TitleUserBadges state={userStates[title.id]} watch={watchStates[title.id]} />
+               </Card>
+             ))}
+           </div>
+diff --git a/apps/desktop/src/pages/SeasonEpisodesPage.tsx b/apps/desktop/src/pages/SeasonEpisodesPage.tsx
+index 5ef098c..b90d531 100644
+--- a/apps/desktop/src/pages/SeasonEpisodesPage.tsx
++++ b/apps/desktop/src/pages/SeasonEpisodesPage.tsx
+@@ -1,6 +1,6 @@
+ import { useCallback, useEffect, useRef, useState } from "react";
+-import { useParams } from "react-router-dom";
+-import { Play, ScanLine } from "lucide-react";
++import { useParams, useSearchParams } from "react-router-dom";
++import { Eye, EyeOff, Play, ScanLine } from "lucide-react";
+ import { Button, EmptyState, PageHeader } from "@aethervault/ui-kit";
+ import { invoke } from "@tauri-apps/api/core";
+ import { listen } from "@tauri-apps/api/event";
+@@ -10,6 +10,9 @@ import { libraryApi } from "../features/library/api";
+ import { usePlayer } from "../player/PlayerContext";
+ import { assetUrl } from "../lib/assetUrl";
+ import { CastRow, GenreRow } from "../components/TitleRows";
++import { WatchProgressBar, WatchStateBadge } from "../features/watchState/WatchStateBadge";
++import { useMediaWatchStates } from "../features/watchState/useWatchStates";
++import { watchStateApi } from "../features/watchState/api";
+ import "./pages.css";
+ 
+ /**
+@@ -25,6 +28,15 @@ export function SeasonEpisodesPage() {
+   const { playQueue } = usePlayer();
+   const [title, setTitle] = useState<TitleDetails | null>(null);
+   const [episodes, setEpisodes] = useState<EpisodeSummary[] | null>(null);
++  // Statut de visionnage de chaque épisode (À voir / En cours / Vu) + avancement.
++  const watchStates = useMediaWatchStates(
++    episodes
++      ? episodes.flatMap((e) => (e.media_file_id !== null ? [e.media_file_id] : []))
++      : null
++  );
++  // `?play=<id d'épisode>` : lancé depuis « Continuer » de la page du titre.
++  const [searchParams, setSearchParams] = useSearchParams();
++  const autoPlayDoneRef = useRef(false);
+   const [starting, setStarting] = useState<number | null>(null);
+   const [detecting, setDetecting] = useState(false);
+   const [detectStatus, setDetectStatus] = useState<string | null>(null);
+@@ -157,6 +169,22 @@ export function SeasonEpisodesPage() {
+     }
+   };
+ 
++  useEffect(() => {
++    const wanted = searchParams.get("play");
++    if (!wanted || !episodes || !title || autoPlayDoneRef.current) return;
++    autoPlayDoneRef.current = true;
++    setSearchParams({}, { replace: true });
++    const episode = episodes.find((candidate) => String(candidate.id) === wanted);
++    if (episode && episode.media_file_id !== null) void handlePlay(episode);
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [searchParams, episodes, title]);
++
++  const toggleSeen = (episode: EpisodeSummary) => {
++    if (episode.media_file_id === null) return;
++    const seen = watchStates[episode.media_file_id]?.status === "done";
++    void watchStateApi.setMediaStatus(episode.media_file_id, seen ? "todo" : "done").catch(() => {});
++  };
++
+   return (
+     <div>
+       <PageHeader
+@@ -204,6 +232,8 @@ export function SeasonEpisodesPage() {
+         <ul className="avm-media-list">
+           {episodes.map((episode) => {
+             const still = assetUrl(episode.still);
++            const watch =
++              episode.media_file_id !== null ? watchStates[episode.media_file_id] : undefined;
+             return (
+               <li
+                 key={episode.id}
+@@ -216,14 +246,32 @@ export function SeasonEpisodesPage() {
+                     {episode.episode_number}. {episode.name ?? `Épisode ${episode.episode_number}`}
+                   </span>
+                   {episode.media_file_id !== null && (
+-                    <span className="avm-badge avm-badge--info" style={{ marginLeft: 8 }}>
+-                      Disponible
++                    <span style={{ marginLeft: 8, display: "inline-flex", gap: 6 }}>
++                      <WatchStateBadge status={watch?.status ?? "todo"} />
++                      {watch?.status === "todo" && (
++                        <span className="avm-badge avm-badge--info">Disponible</span>
++                      )}
+                     </span>
+                   )}
+                   {episode.description && (
+                     <span className="avm-card__subtitle">{episode.description}</span>
+                   )}
++                  {watch?.status === "in_progress" && <WatchProgressBar ratio={watch.progress_ratio} />}
+                 </div>
++                {episode.media_file_id !== null && (
++                  <button
++                    type="button"
++                    className="avm-watchtoggle"
++                    title={watch?.status === "done" ? "Marquer comme non vu" : "Marquer comme vu"}
++                    aria-label={watch?.status === "done" ? "Marquer comme non vu" : "Marquer comme vu"}
++                    onClick={(event) => {
++                      event.stopPropagation();
++                      toggleSeen(episode);
++                    }}
++                  >
++                    {watch?.status === "done" ? <EyeOff size={16} /> : <Eye size={16} />}
++                  </button>
++                )}
+                 <Play size={16} style={{ opacity: starting === episode.id ? 0.5 : 1 }} />
+               </li>
+             );
+diff --git a/apps/desktop/src/pages/TitleDetailPage.tsx b/apps/desktop/src/pages/TitleDetailPage.tsx
+index a42e11d..0625a85 100644
+--- a/apps/desktop/src/pages/TitleDetailPage.tsx
++++ b/apps/desktop/src/pages/TitleDetailPage.tsx
+@@ -4,7 +4,6 @@ import {
+   Clapperboard,
+   ImageUp,
+   ListPlus,
+-  Play,
+   RotateCcw,
+   Search,
+   Volume2,
+@@ -21,6 +20,7 @@ import { libraryApi } from "../features/library/api";
+ import { PersonalizableImage } from "../features/personalization/PersonalizableImage";
+ import { CastRow, GenreRow } from "../components/TitleRows";
+ import { TitleUserPanel } from "../features/userlists/TitleUserPanel";
++import { TitleWatchPanel } from "../features/watchState/TitleWatchPanel";
+ import { usePlayer } from "../player/PlayerContext";
+ import { assetUrl } from "../lib/assetUrl";
+ import "./pages.css";
+@@ -476,16 +476,14 @@ export function TitleDetailPage() {
+               <strong>Studios : </strong> {title.studios.join(", ")}
+             </p>
+           )}
+-          {title.kind === "movie" && (
+-            <Button
+-              variant="primary"
+-              onClick={handlePlay}
+-              disabled={starting || title.media_file_id === null}
+-            >
+-              <Play size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
+-              Lecture
+-            </Button>
+-          )}
++          {/* 0.7.9 : statut À voir / En cours / Vu, lecture « intelligente »
++              (reprise, épisode suivant) et marquage manuel. */}
++          <TitleWatchPanel
++            title={title}
++            categoryKey={key ?? ""}
++            starting={starting}
++            onPlayMovie={handlePlay}
++          />
+         </div>
+       </div>
+       {title.technical &&
+diff --git a/apps/desktop/src/player/PlayerContext.tsx b/apps/desktop/src/player/PlayerContext.tsx
+index 2971498..37a05b4 100644
+--- a/apps/desktop/src/player/PlayerContext.tsx
++++ b/apps/desktop/src/player/PlayerContext.tsx
+@@ -20,6 +20,7 @@ import { titleApi } from "../features/title/api";
+ import { windowApi } from "../features/window/api";
+ import { playerSettingsApi } from "../features/playerSettings/api";
+ import { friendsApi } from "../features/friends/api";
++import { notifyWatchStateChanged } from "../features/watchState/api";
+ import { getWindowLabel } from "../window/getWindowLabel";
+ import { applyNearMax } from "../window/nearMax";
+ 
+@@ -258,6 +259,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
+   const durationRef = useRef(0);
+   durationRef.current = duration;
+   const endedHandledRef = useRef<number | null>(null);
++  // 0.7.9 : dernier média dont le passage à « En cours » a déjà été signalé à l'interface.
++  const watchStartedNotifiedRef = useRef<number | null>(null);
+ 
+   const userPausedRef = useRef(false);
+   const seekDebounceRef = useRef<number | null>(null);
+@@ -289,6 +292,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
+     }
+     endedHandledRef.current = media.id;
+ 
++    // 0.7.9 : fin de lecture → on fige la progression sur la durée pour que le
++    // statut « Vu » soit posé à coup sûr (la dernière sauvegarde périodique peut
++    // dater de 5 s). Les médias privés (coffre) n'ont pas de statut de visionnage.
++    if (media.id >= 0 && !isOnlineMedia(media) && !media.isPrivate && durationRef.current > 0) {
++      playerApi
++        .saveProgress(media.id, durationRef.current, durationRef.current)
++        .then(() => notifyWatchStateChanged())
++        .catch(() => {});
++    }
++
+     // 0.9.1 : médias TV absents de la base → pas d'historique (idem en ligne).
+     if (
+       media.id >= 0 &&
+@@ -355,7 +368,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
+         const saveProgress = media.isPrivate
+           ? playerApi.savePrivateProgress
+           : playerApi.saveProgress;
+-        saveProgress(media.id, positionRef.current, durationRef.current).catch(() => {});
++        const startedMediaId = media.id;
++        saveProgress(media.id, positionRef.current, durationRef.current)
++          .then(() => {
++            // Premier passage de ce média au-delà de 30 s : il est maintenant
++            // « En cours » → on prévient les grilles et listes affichées.
++            if (
++              !media.isPrivate &&
++              positionRef.current >= 30 &&
++              watchStartedNotifiedRef.current !== startedMediaId
++            ) {
++              watchStartedNotifiedRef.current = startedMediaId;
++              notifyWatchStateChanged();
++            }
++          })
++          .catch(() => {});
+       }
+       publishActivity();
+     }
+@@ -714,6 +741,22 @@ useEffect(() => {
+             .recordWatch(media.id, positionRef.current, durationRef.current)
+             .catch(() => {});
+         }
++        // 0.7.9 : dernier instantané de progression à l'arrêt. Sans lui, la
++        // dernière sauvegarde périodique peut dater de 5 s et fausser « En cours /
++        // Vu » quand on quitte juste avant ou pendant le générique.
++        if (
++          media &&
++          media.id >= 0 &&
++          !isOnlineMedia(media) &&
++          !media.isPrivate &&
++          endedHandledRef.current !== media.id &&
++          durationRef.current > 0
++        ) {
++          playerApi
++            .saveProgress(media.id, positionRef.current, durationRef.current)
++            .then(() => notifyWatchStateChanged())
++            .catch(() => {});
++        }
+         endedHandledRef.current = null;
+         void playerApi.stop();
+         friendsApi.clearActivity().catch(() => {});

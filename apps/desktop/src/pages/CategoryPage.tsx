@@ -29,6 +29,7 @@ import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
 import { TitleUserBadges } from "../features/userlists/TitleUserBadges";
 import { useTitleUserStates } from "../features/userlists/useTitleUserStates";
+import { useTitleWatchStates } from "../features/watchState/useWatchStates";
 import { useAnimatedBackdropActive } from "../hooks/useAnimatedBackdropActive";
 import { ActiveFilterChips, TitleFilters } from "../features/search/TitleFilters";
 import { useFacetCounts } from "../features/search/useFacetCounts";
@@ -71,6 +72,8 @@ export function CategoryPage() {
   const [titles, setTitles] = useState<TitleSummary[] | null>(null);
   // Notes personnelles et watchlist du profil actif, en une requête pour toute la grille.
   const userStates = useTitleUserStates(titles ? titles.map((t) => t.id) : null);
+  // Statut de visionnage automatique (À voir / En cours / Vu), recalculé à chaque lecture.
+  const watchStates = useTitleWatchStates(titles ? titles.map((t) => t.id) : null);
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<TitleSummary | null>(null);
@@ -449,7 +452,7 @@ export function CategoryPage() {
                 }
                 deleteLabel={`Supprimer « ${title.name} »`}
               >
-                <TitleUserBadges state={userStates[title.id]} />
+                <TitleUserBadges state={userStates[title.id]} watch={watchStates[title.id]} />
               </Card>
             ))}
           </div>

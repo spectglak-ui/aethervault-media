@@ -19,6 +19,7 @@ import {
   type SearchResult,
   type UserPlaylist,
   type VaultTubeSubscription,
+  type VaultTubeVideo,
 } from "../features/vaulttube/api";
 import { usePlayer } from "../player/PlayerContext";
 import { formatDuration } from "./VaultTubeVideoGrid";
@@ -26,6 +27,15 @@ import { VaultTubePlaylistPicker, type PickableVideo } from "../components/Vault
 import "./pages.css";
 import { ModernPageHeader } from "../components/ModernPageHeader";
 import "../features/aetherfy/aetherfy-modern.css";
+// 0.8.0 — AetherFy Musique : interface premium (panneaux de verre).
+import {
+  MusicHub,
+  type MusicPlaylist,
+  type MusicSource,
+  type MusicSubscription,
+  type MusicTrack,
+} from "../features/aetherfy/MusicHub";
+import "../features/aetherfy/musicHub.css";
 
 const inputStyle: CSSProperties = {
   flex: 1,
@@ -100,7 +110,7 @@ function ModeBadge({ mode }: { mode?: string }) {
 }
 
 /** Carte carrée façon Spotify : vignette 1:1, badges source/mode,
- * bouton play rond et bascule de mode au survol. */
+bouton play rond et bascule de mode au survol. */
 function AetherCard({
   title,
   subtitle,
@@ -306,26 +316,71 @@ const sectionTitle: CSSProperties = {
 };
 
 /**
- * FONCTIONNALITÉ (refonte UI AetherFy, Phase 1 — séparation navigation) :
- * `defaultMode` filtre l'affichage sur les chaînes/playlists de ce mode
- * (`sub.mode`/`p.mode`, déjà stocké par élément — aucun changement
- * backend nécessaire). `undefined` = comportement d'origine, tout
- * confondu (route `/vaulttube` historique, conservée pour compatibilité
- * des liens existants). Voir `router.tsx` (`/vaulttube/video`,
- * `/vaulttube/music`) et `layout/Sidebar.tsx` pour les deux nouvelles
- * entrées de navigation.
- */
+FONCTIONNALITÉ (refonte UI AetherFy, Phase 1 — séparation navigation) :
+`defaultMode` filtre l'affichage sur les chaînes/playlists de ce mode
+(`sub.mode`/`p.mode`, déjà stocké par élément — aucun changement
+backend nécessaire). `undefined` = comportement d'origine, tout
+confondu (route `/vaulttube` historique, conservée pour compatibilité
+des liens existants). Voir `router.tsx` (`/vaulttube/video`,
+`/vaulttube/music`) et `layout/Sidebar.tsx` pour les deux nouvelles
+entrées de navigation.
+0.8.0 : le mode "audio" rend désormais le hub premium `MusicHub`
+(panneaux de verre, héro, rail « lecture en cours ») ; les modes
+"video" et mixte conservent EXACTEMENT l'ancien rendu.
+*/
 export interface VaultTubePageProps {
   defaultMode?: PlaybackMode;
 }
 
+/** 0.8.0 — resserre toute source vers l'union attendue par MusicHub. */
+function toMusicSource(source: string): "youtube" | "dailymotion" {
+  return source === "dailymotion" ? "dailymotion" : "youtube";
+}
+
+/** 0.8.0 — devine l'artiste depuis un titre « Artiste - Titre » (les
+playlists musicales multi-artistes ne stockent pas le canal par
+vidéo ; `channel` contient alors le propriétaire de la playlist,
+ex. « Spectglack S »). Gère les préfixes type « RÉACTION | Artiste - … ». */
+function guessArtist(title: string, fallback: string): string {
+  const afterPipe = title.includes("|") ? title.slice(title.lastIndexOf("|") + 1) : title;
+  const m = afterPipe.match(/^\s*(.+?)\s+[-–—]\s+/);
+  const candidate = (m?.[1] ?? "").trim();
+  if (candidate.length >= 2 && candidate.length <= 60) return candidate;
+  return fallback;
+}
+
+/** 0.8.0 — pochettes HD : CDN image YouTube (maxres 1280×720, repli
+hqdefault 480×360 si maxres n'existe pas pour la vidéo). */
+function youtubeCovers(
+  source: string,
+  youtubeId: string | null,
+  stored: string | null
+): { cover: string | null; coverFallback: string | null } {
+  if (source !== "youtube" || !youtubeId) return { cover: stored, coverFallback: null };
+  return {
+    cover: `https://i.ytimg.com/vi/${youtubeId}/maxresdefault.jpg`,
+    coverFallback: `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`,
+  };
+}
+
 /** 0.4.0 — AetherFy : hub multi-sources façon Spotify (YouTube,
- * Dailymotion, Vimeo, PeerTube) — abonnements, playlists locales avec
- * mode musique/vidéo, recherche unifiée, lecture en un clic. */
+Dailymotion, Vimeo, PeerTube) — abonnements, playlists locales avec
+mode musique/vidéo, recherche unifiée, lecture en un clic. */
 export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
   const navigate = useNavigate();
-  const { playQueue } = usePlayer();
-
+  // 0.8.0 — champs RÉELS du PlayerContextValue (l'ancien cast
+  // « PlayerExtras » pointait vers des champs inexistants : le rail
+  // Lecteur du hub restait mort et la progression ne s'affichait pas).
+  const {
+    playQueue,
+    currentMedia,
+    isPlaying,
+    position,
+    duration,
+    togglePlay,
+    playNext,
+    playPrevious,
+  } = usePlayer();
   const [subscriptions, setSubscriptions] = useState<VaultTubeSubscription[]>([]);
   const [userPlaylists, setUserPlaylists] = useState<UserPlaylist[]>([]);
   const [newUrl, setNewUrl] = useState("");
@@ -334,15 +389,15 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
-
   const [searchQuery, setSearchQuery] = useState("");
   const [searchSource, setSearchSource] = useState<"all" | "youtube" | "dailymotion">("all");
   const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [busyUrl, setBusyUrl] = useState<string | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const [pickerVideo, setPickerVideo] = useState<PickableVideo | null>(null);
+  // 0.8.0 — vidéos des abonnements musicaux (liste principale du hub).
+  const [audioVideos, setAudioVideos] = useState<VaultTubeVideo[]>([]);
 
   const refresh = useCallback(() => {
     vaultTubeApi.listSubscriptions().then(setSubscriptions).catch(() => setSubscriptions([]));
@@ -361,6 +416,25 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // 0.8.0 — charge les vidéos des abonnements du mode audio uniquement.
+  useEffect(() => {
+    if (defaultMode !== "audio") return;
+    let alive = true;
+    const subs = subscriptions.filter((s) => s.mode === "audio");
+    if (subs.length === 0) {
+      setAudioVideos([]);
+      return;
+    }
+    Promise.all(subs.map((s) => vaultTubeApi.listVideos(s.id).catch(() => [] as VaultTubeVideo[])))
+      .then((lists) => {
+        if (alive) setAudioVideos(lists.flat());
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [subscriptions, defaultMode]);
 
   // Recherche debounced multi-sources
   useEffect(() => {
@@ -391,6 +465,20 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
     try {
       await vaultTubeApi.addSubscription(url);
       setNewUrl("");
+      refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  // 0.8.0 — suivi par URL fourni directement par le hub musique.
+  const handleFollowUrl = async (url: string) => {
+    setAdding(true);
+    setError(null);
+    try {
+      await vaultTubeApi.addSubscription(url);
       refresh();
     } catch (e) {
       setError(String(e));
@@ -444,7 +532,7 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
   };
 
   // Lecture « Tout lire » façon Spotify
-    const handlePlayAllSub = async (sub: VaultTubeSubscription) => {
+  const handlePlayAllSub = async (sub: VaultTubeSubscription) => {
     const vids = await vaultTubeApi.listVideos(sub.id);
     if (vids.length === 0) return;
     playQueue(
@@ -474,7 +562,7 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
     );
   };
 
-    const handleSearchPlayVideo = (r: SearchResult) => {
+  const handleSearchPlayVideo = (r: SearchResult) => {
     playQueue([{ id: 0, title: r.title, path: r.url, libraryId: -1, mode: "video" }], 0);
   };
 
@@ -496,33 +584,193 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
     if (m) navigate(`/vaulttube/playlist/${m[1]}`);
   };
 
+  /* ────────────────────────────────────────────────────────────────
+     0.8.0 — MODE AUDIO : hub premium MusicHub.
+     Retour anticipé : tout ce qui suit (ancien rendu) reste réservé
+     aux modes "video" et mixte, strictement inchangés.
+     ──────────────────────────────────────────────────────────────── */
+  if (defaultMode === "audio") {
+    const searchingNow = searching;
+    const resultVideos =
+      searchResults !== null ? searchResults.filter((r) => r.kind === "video") : null;
+
+    // 0.8.0 — décrit une piste UNE seule fois (artiste déduit du titre,
+    // pochette HD + repli) pour que LISTE, FILE, HUB et LECTEUR
+    // partagent exactement les mêmes données.
+    const describe = (item: SearchResult | VaultTubeVideo, isResult: boolean) => {
+      const r = isResult ? (item as SearchResult) : null;
+      const v = isResult ? null : (item as VaultTubeVideo);
+      const source = isResult ? r!.source : v!.source;
+      const ytId = source === "youtube" ? (isResult ? r!.id : v!.youtube_id) : null;
+      const covers = youtubeCovers(
+        source,
+        ytId,
+        isResult ? r!.thumbnail_url : v!.thumbnail_url
+      );
+      const artist = isResult
+        ? (r!.channel ?? guessArtist(r!.title, "AetherFy"))
+        : guessArtist(v!.title, v!.channel ?? "AetherFy");
+      return { r, v, source, ytId, covers, artist };
+    };
+
+    const tracks: MusicTrack[] = (resultVideos ?? audioVideos).map((item) => {
+      const isResult = resultVideos !== null;
+      const d = describe(item, isResult);
+      return {
+        id: isResult ? `${d.r!.source}:${d.r!.id}` : String(d.v!.id ?? d.v!.youtube_id),
+        title: isResult ? d.r!.title : d.v!.title,
+        artist: d.artist,
+        duration: formatDuration(isResult ? d.r!.duration_seconds : d.v!.duration_seconds),
+        cover: d.covers.cover,
+        coverFallback: d.covers.coverFallback,
+        source: toMusicSource(d.source),
+      };
+    });
+
+    // File de lecture : transporte pochette HD + artiste + id YouTube
+    // → l'overlay immersif et la mini-barre affichent EXACTEMENT la
+    // même image et le même nom que la liste MusicHub.
+    // `PlayableMedia` attend `string | undefined` (pas `null`) pour
+    // `youtubeId` → conversion explicite.
+    const queueItems = (resultVideos ?? audioVideos).map((item, i) => {
+      const isResult = resultVideos !== null;
+      const d = describe(item, isResult);
+      return {
+        id: isResult ? i + 1 : d.v!.id || i + 1,
+        title: isResult ? d.r!.title : d.v!.title,
+        path: isResult ? d.r!.url : watchUrl(d.v!.source, d.v!.youtube_id),
+        libraryId: -1,
+        mode: "audio" as PlaybackMode,
+        // `PlayableMedia` attend `string | undefined` (pas `null`)
+        // pour `thumbnail` et `youtubeId` → conversions explicites.
+        thumbnail: d.covers.cover ?? undefined,
+        youtubeId: d.ytId ?? undefined,
+        channel: d.artist,
+      };
+    });
+
+    const playlists: MusicPlaylist[] = visibleUserPlaylists.map((p) => ({
+      id: String(p.id),
+      name: p.name,
+      cover: null,
+      count: p.item_count,
+      local: true,
+    }));
+
+    const musicSubs: MusicSubscription[] = visibleSubscriptions.map((s) => ({
+      id: String(s.id),
+      name: s.name,
+      cover: s.thumbnail_url,
+      kind: s.kind === "playlist" ? "playlist" : "channel",
+    }));
+
+    // Piste en cours : reprise de la pochette/artiste de la liste si le
+    // titre correspond, sinon déduction directe depuis currentMedia.
+    const currentBase = currentMedia && currentMedia.mode === "audio" ? currentMedia : null;
+    let currentTrack: MusicTrack | null = null;
+    if (currentBase) {
+      const match = tracks.find((t) => t.title === currentBase.title) ?? null;
+      const ytId =
+        currentBase.youtubeId ??
+        (currentBase.path.match(/[?&]v=([^&]+)/)?.[1] ?? null);
+      const covers = youtubeCovers(
+        currentBase.path.includes("dailymotion") ? "dailymotion" : "youtube",
+        ytId,
+        currentBase.thumbnail ?? null
+      );
+      currentTrack = {
+        id: match?.id ?? String(currentBase.id),
+        title: currentBase.title,
+        artist: match?.artist ?? currentBase.channel ?? guessArtist(currentBase.title, "AetherFy"),
+        duration: formatDuration(duration > 0 ? duration : null),
+        cover: match?.cover ?? covers.cover,
+        coverFallback: match?.coverFallback ?? covers.coverFallback,
+        source: match?.source ?? "youtube",
+      };
+    }
+
+    const playFromIndex = (index: number) => {
+      if (queueItems.length === 0) return;
+      playQueue(queueItems, Math.max(0, Math.min(index, queueItems.length - 1)));
+    };
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {error && (
+          <div
+            style={{
+              padding: "9px 12px",
+              borderRadius: 8,
+              background: "rgba(239,68,68,.12)",
+              color: "#fca5a5",
+              fontSize: 13,
+            }}
+          >
+            {error}
+          </div>
+        )}
+        <MusicHub
+          tracks={tracks}
+          playlists={playlists}
+          subscriptions={musicSubs}
+          current={currentTrack}
+          playing={isPlaying}
+          progress={duration > 0 ? { position, duration } : null}
+          queue={tracks.filter((t) => t.id !== currentTrack?.id).slice(0, 5)}
+          query={searchQuery}
+          onQuery={setSearchQuery}
+          source={searchSource as MusicSource}
+          onSource={(s) => setSearchSource(s)}
+          onPlayTrack={(id) => {
+            const index = tracks.findIndex((t) => t.id === id);
+            if (index >= 0) playFromIndex(index);
+          }}
+          onPlayAll={() => playFromIndex(0)}
+          onShuffle={() => {
+            if (queueItems.length === 0) return;
+            const shuffled = [...queueItems].sort(() => Math.random() - 0.5);
+            playQueue(shuffled, 0);
+          }}
+          onToggleLike={() => {
+            /* Favoris AetherFy : non câblés backend pour l'instant. */
+          }}
+          onCreatePlaylist={(name) => {
+            void vaultTubeApi.createUserPlaylist(name, "audio").then(() => refresh());
+          }}
+          onOpenPlaylist={(id) => navigate(`/vaulttube/myplaylist/${id}`)}
+          onOpenSubscription={(id) => navigate(`/vaulttube/${id}`)}
+          onFollowUrl={(url) => void handleFollowUrl(url)}
+          onTogglePlay={togglePlay}
+          onNext={playNext}
+          onPrev={playPrevious}
+        />
+        {searchingNow && (
+          <p style={{ fontSize: 12, color: "var(--color-text-muted, #9a9aa3)" }}>Recherche…</p>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div>
       {/* En-tête moderne (même langage que l'accueil). Le mot-symbole
-          « AetherFy » garde la police Major Mono Display ; « Vidéo » /
-          « Musique » restent dans la police de titres. */}
+          « AetherFy » garde la police Major Mono Display ; « Vidéo »
+          reste dans la police de titres.
+          0.8.0 : le mode audio retourne plus haut (MusicHub) — il n'y a
+          donc plus AUCUNE comparaison « audio » ici (code mort qui
+          déclenchait TS2367). */}
       <ModernPageHeader
-        icon={
-          defaultMode === "audio" ? (
-            <Music size={26} />
-          ) : defaultMode === "video" ? (
-            <Video size={26} />
-          ) : (
-            <Radio size={26} />
-          )
-        }
-        tint={defaultMode === "audio" ? "29, 185, 84" : defaultMode === "video" ? "255, 46, 99" : "124, 92, 255"}
+        icon={defaultMode === "video" ? <Video size={26} /> : <Radio size={26} />}
+        tint={defaultMode === "video" ? "255, 46, 99" : "124, 92, 255"}
         kicker={
-          defaultMode === "audio"
-            ? "Vos playlists et chaînes musicales"
-            : defaultMode === "video"
-              ? "Vos chaînes et playlists vidéo"
-              : "Streaming multi-sources"
+          defaultMode === "video"
+            ? "Vos chaînes et playlists vidéo"
+            : "Streaming multi-sources"
         }
         title={
           <>
             <span className="avm-brand-aetherfy">AetherFy</span>
-            {defaultMode === "audio" ? " Musique" : defaultMode === "video" ? " Vidéo" : ""}
+            {defaultMode === "video" ? " Vidéo" : ""}
           </>
         }
       />
@@ -571,7 +819,6 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
           )}
         </div>
       </div>
-
       {/* Résultats de recherche */}
       {searchResults !== null && (
         <div
@@ -734,7 +981,6 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
           )}
         </div>
       )}
-
       {/* Mes playlists (locales) */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
         <div style={sectionTitle}>Mes playlists</div>
@@ -790,7 +1036,6 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
           </p>
         )}
       </div>
-
       {/* Abonnements (chaînes + playlists suivies, toutes sources) */}
       <div style={sectionTitle}>Abonnements</div>
       <div style={gridStyle}>
@@ -816,7 +1061,6 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
           </p>
         )}
       </div>
-
       {/* Ajout par URL */}
       <div style={{ display: "flex", gap: 8, marginTop: 26 }}>
         <input
@@ -833,7 +1077,6 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
           {adding ? "Ajout…" : "Suivre"}
         </Button>
       </div>
-
       {error && (
         <div
           style={{
@@ -848,7 +1091,6 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
           {error}
         </div>
       )}
-
       {pickerVideo && (
         <VaultTubePlaylistPicker video={pickerVideo} onClose={() => setPickerVideo(null)} />
       )}

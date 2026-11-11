@@ -12,3 +12,4 @@ pub mod private_image;
 pub mod private_video;
 pub mod profile;
 pub mod title;
+pub mod watch_state;

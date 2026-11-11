@@ -2,6 +2,18 @@
 
 Toutes les modifications notables apportées à ce projet seront documentées dans ce fichier.
 
+## [0.7.9] - 2026-11-11
+
+### Ajouté
+- **Statuts de visionnage automatiques « À voir / En cours / Vu »** (migration 28), par profil et par média. Tous les médias sont « À voir » au départ ; un média commencé (au moins 30 s et 1 %) passe « En cours » et un nouveau clic reprend la lecture à la position où elle s'était arrêtée ; un média terminé passe « Vu ». Annotation sous les affiches des catégories, sur la page d'un titre et sur chaque épisode (avec barre d'avancement). Une série est « En cours » dès qu'un épisode est commencé ou terminé, « Vu » quand tous les épisodes le sont (« 3/10 »).
+- **Seuil « Vu » intelligent** (plus de 95 % fixe) : fin du fichier atteinte, OU arrêt jusqu'à 15 s avant le début du générique de fin détecté (épisodes analysés), pendant ou après celui-ci ; à défaut de générique connu, queue de secours de 5 % de la durée bornée entre 45 s et 6 min. Un générique « détecté » avant 60 % de la durée est ignoré. Un média « Vu » ne repasse jamais « En cours » tout seul (revoir un film à moitié le laisse « Vu »).
+- **Page d'un titre** : bouton de lecture adapté (Lecture / Reprendre à 42:10 / Revoir pour un film ; Commencer / Reprendre / Épisode suivant · S1 · É4 pour une série) et **Marquer comme vu / non vu** (un film, un épisode ou une série entière).
+- Dernier instantané de progression enregistré à l'arrêt et à la fin de la lecture (la sauvegarde périodique, toutes les 5 s, pouvait fausser le statut).
+
+### Changé
+- Les médias déjà regardés avant la mise à jour sont repris : historique terminé à ≥ 95 % → « Vu », progression existante → « En cours ».
+- Le statut de la **Watchlist** suit désormais le statut automatique pour les titres qu'elle contient, et marquer « Vu » / « À voir » dans la Watchlist s'applique aussi aux médias. Sous les affiches, la Watchlist n'est plus qu'un marque-page.
+
 ## [0.7.8 « Orbite »] - 2026-11-05
 
 ### Ajouté

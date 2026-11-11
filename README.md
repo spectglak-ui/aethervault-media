@@ -28,7 +28,7 @@
 - **Bibliothèque universelle** : films, séries, anime, documentaires, manga, webtoons, bandes dessinées et romans
 - **Open Source** : MIT License
 
-**Version actuelle** : 0.7.8 « Orbite »
+**Version actuelle** : 0.7.9 « Orbite »
 
 ### 🌐 Site web
 Découvrez le projet en détail : **[aethervault-website](https://spectglak-ui.github.io/aethervault-website/#/)**

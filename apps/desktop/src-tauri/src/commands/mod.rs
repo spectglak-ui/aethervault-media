@@ -36,3 +36,4 @@ pub mod private_tags;
 pub mod reading;
 pub mod tv;
 pub mod user_lists;
+pub mod watch_state;
