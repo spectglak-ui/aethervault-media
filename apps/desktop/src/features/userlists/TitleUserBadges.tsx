@@ -1,25 +1,35 @@
 import { Bookmark, Star } from "lucide-react";
-import { WATCH_STATUS_LABELS, type TitleUserState } from "./api";
+import type { TitleUserState } from "./api";
+import { WatchStateBadge } from "../watchState/WatchStateBadge";
+import type { TitleWatchState } from "../watchState/api";
 
 /**
- * Pastille de la note personnelle (« ★ 4,5 ») et marque-page de watchlist
- * affichés sous une affiche. Ne rend rien si le titre n'a ni note ni statut.
+ * Pastilles affichées sous une affiche : statut de visionnage automatique
+ * (« À voir » / « En cours » / « Vu »), note personnelle (« ★ 4,5 ») et
+ * marque-page si le titre est dans la watchlist. Le statut de la watchlist
+ * n'est plus écrit en toutes lettres ici : il suit le statut automatique.
  */
-export function TitleUserBadges({ state }: { state?: TitleUserState }) {
-  if (!state || (state.rating === null && state.watch_status === null)) return null;
+export function TitleUserBadges({
+  state,
+  watch,
+}: {
+  state?: TitleUserState;
+  watch?: TitleWatchState;
+}) {
+  const rating = state?.rating ?? null;
+  const inWatchlist = (state?.watch_status ?? null) !== null;
+  if (rating === null && !inWatchlist && !watch) return null;
   return (
     <div className="avm-userbadges">
-      {state.rating !== null && (
-        <span className="avm-userbadges__rating" title={`Ma note : ${state.rating} sur 5`}>
-          <Star size={13} aria-hidden="true" /> {state.rating.toFixed(1).replace(".", ",")}
+      {watch && <WatchStateBadge status={watch.status} watched={watch.watched} total={watch.total} />}
+      {rating !== null && (
+        <span className="avm-userbadges__rating" title={`Ma note : ${rating} sur 5`}>
+          <Star size={13} aria-hidden="true" /> {rating.toFixed(1).replace(".", ",")}
         </span>
       )}
-      {state.watch_status !== null && (
-        <span
-          className={`avm-userbadges__watch avm-userbadges__watch--${state.watch_status}`}
-          title={`Watchlist : ${WATCH_STATUS_LABELS[state.watch_status]}`}
-        >
-          <Bookmark size={13} aria-hidden="true" /> {WATCH_STATUS_LABELS[state.watch_status]}
+      {inWatchlist && (
+        <span className="avm-userbadges__watch" title="Dans ma watchlist">
+          <Bookmark size={13} aria-hidden="true" />
         </span>
       )}
     </div>

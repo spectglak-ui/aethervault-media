@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
-import { Play, ScanLine } from "lucide-react";
+import { useParams, useSearchParams } from "react-router-dom";
+import { Eye, EyeOff, Play, ScanLine } from "lucide-react";
 import { Button, EmptyState, PageHeader } from "@aethervault/ui-kit";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -10,6 +10,9 @@ import { libraryApi } from "../features/library/api";
 import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
 import { CastRow, GenreRow } from "../components/TitleRows";
+import { WatchProgressBar, WatchStateBadge } from "../features/watchState/WatchStateBadge";
+import { useMediaWatchStates } from "../features/watchState/useWatchStates";
+import { watchStateApi } from "../features/watchState/api";
 import "./pages.css";
 
 /**
@@ -25,6 +28,15 @@ export function SeasonEpisodesPage() {
   const { playQueue } = usePlayer();
   const [title, setTitle] = useState<TitleDetails | null>(null);
   const [episodes, setEpisodes] = useState<EpisodeSummary[] | null>(null);
+  // Statut de visionnage de chaque épisode (À voir / En cours / Vu) + avancement.
+  const watchStates = useMediaWatchStates(
+    episodes
+      ? episodes.flatMap((e) => (e.media_file_id !== null ? [e.media_file_id] : []))
+      : null
+  );
+  // `?play=<id d'épisode>` : lancé depuis « Continuer » de la page du titre.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const autoPlayDoneRef = useRef(false);
   const [starting, setStarting] = useState<number | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [detectStatus, setDetectStatus] = useState<string | null>(null);
@@ -157,6 +169,22 @@ export function SeasonEpisodesPage() {
     }
   };
 
+  useEffect(() => {
+    const wanted = searchParams.get("play");
+    if (!wanted || !episodes || !title || autoPlayDoneRef.current) return;
+    autoPlayDoneRef.current = true;
+    setSearchParams({}, { replace: true });
+    const episode = episodes.find((candidate) => String(candidate.id) === wanted);
+    if (episode && episode.media_file_id !== null) void handlePlay(episode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, episodes, title]);
+
+  const toggleSeen = (episode: EpisodeSummary) => {
+    if (episode.media_file_id === null) return;
+    const seen = watchStates[episode.media_file_id]?.status === "done";
+    void watchStateApi.setMediaStatus(episode.media_file_id, seen ? "todo" : "done").catch(() => {});
+  };
+
   return (
     <div>
       <PageHeader
@@ -204,6 +232,8 @@ export function SeasonEpisodesPage() {
         <ul className="avm-media-list">
           {episodes.map((episode) => {
             const still = assetUrl(episode.still);
+            const watch =
+              episode.media_file_id !== null ? watchStates[episode.media_file_id] : undefined;
             return (
               <li
                 key={episode.id}
@@ -216,14 +246,32 @@ export function SeasonEpisodesPage() {
                     {episode.episode_number}. {episode.name ?? `Épisode ${episode.episode_number}`}
                   </span>
                   {episode.media_file_id !== null && (
-                    <span className="avm-badge avm-badge--info" style={{ marginLeft: 8 }}>
-                      Disponible
+                    <span style={{ marginLeft: 8, display: "inline-flex", gap: 6 }}>
+                      <WatchStateBadge status={watch?.status ?? "todo"} />
+                      {watch?.status === "todo" && (
+                        <span className="avm-badge avm-badge--info">Disponible</span>
+                      )}
                     </span>
                   )}
                   {episode.description && (
                     <span className="avm-card__subtitle">{episode.description}</span>
                   )}
+                  {watch?.status === "in_progress" && <WatchProgressBar ratio={watch.progress_ratio} />}
                 </div>
+                {episode.media_file_id !== null && (
+                  <button
+                    type="button"
+                    className="avm-watchtoggle"
+                    title={watch?.status === "done" ? "Marquer comme non vu" : "Marquer comme vu"}
+                    aria-label={watch?.status === "done" ? "Marquer comme non vu" : "Marquer comme vu"}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleSeen(episode);
+                    }}
+                  >
+                    {watch?.status === "done" ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                )}
                 <Play size={16} style={{ opacity: starting === episode.id ? 0.5 : 1 }} />
               </li>
             );

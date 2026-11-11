@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ChevronDown,
   ListMusic,
@@ -17,20 +17,49 @@ import { usePlayer } from "./PlayerContext";
 import { formatDuration } from "../pages/VaultTubeVideoGrid";
 import { VisualizerCanvas } from "./visualizer/VisualizerCanvas";
 
-/** 0.4.0 — Déduit la miniature depuis les métadonnées OU l'URL de lecture
-(YouTube / Dailymotion), même si la file ne fournit pas `thumbnail`. */
-function artFromMedia(m: {
-  thumbnail?: string;
-  youtubeId?: string;
+/** 0.8.0 — chaîne de candidats pochette, du plus net au plus sûr :
+miniature fournie par la file (maxres HD), puis maxres déduit de
+l'URL, puis hqdefault, puis Dailymotion. Le composant `ArtImg`
+bascule automatiquement sur le candidat suivant en cas d'erreur
+(maxres absent pour certaines vidéos). */
+function artChainFromMedia(m: {
+  thumbnail?: string | null;
+  youtubeId?: string | null;
   path: string;
-}): string | null {
-  if (m.thumbnail) return m.thumbnail;
-  if (m.youtubeId) return `https://i.ytimg.com/vi/${m.youtubeId}/hqdefault.jpg`;
-  const yt = m.path.match(/[?&]v=([^&]+)/) ?? m.path.match(/youtu\.be\/([^?/&]+)/);
-  if (yt) return `https://i.ytimg.com/vi/${yt[1]}/hqdefault.jpg`;
-  const dm = m.path.match(/dailymotion\.com\/video\/([^?/&]+)/);
-  if (dm) return `https://www.dailymotion.com/thumbnail/video/${dm[1]}`;
-  return null;
+}): string[] {
+  const out: string[] = [];
+  if (m.thumbnail) out.push(m.thumbnail);
+  let ytId = m.youtubeId ?? null;
+  if (!ytId) {
+    const yt = m.path.match(/[?&]v=([^&]+)/) ?? m.path.match(/youtu\.be\/([^?/&]+)/);
+    ytId = yt?.[1] ?? null;
+  }
+  if (ytId) {
+    out.push(`https://i.ytimg.com/vi/${ytId}/maxresdefault.jpg`);
+    out.push(`https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`);
+  } else {
+    const dm = m.path.match(/dailymotion\.com\/video\/([^?/&]+)/);
+    if (dm) out.push(`https://www.dailymotion.com/thumbnail/video/${dm[1]}`);
+  }
+  return [...new Set(out)];
+}
+
+/** Image avec repli automatique sur le candidat suivant (onError). */
+function ArtImg({ chain, style }: { chain: string[]; style?: React.CSSProperties }) {
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    setIndex(0);
+  }, [chain[0]]);
+  if (chain.length === 0) return null;
+  const safe = Math.min(index, chain.length - 1);
+  return (
+    <img
+      src={chain[safe]}
+      alt=""
+      style={style}
+      onError={() => setIndex((i) => Math.min(i + 1, chain.length - 1))}
+    />
+  );
 }
 
 /**
@@ -43,6 +72,9 @@ le canvas est monté dans un calque `zIndex: -1`. La racine de l'overlay
 calque négatif y est peint AU-DESSUS du dégradé de fond de la racine,
 mais SOUS tous les descendants en flux normal (colonnes, boutons) —
 exactement la place voulue pour un fond réactif.
+0.8.0 — pochette HD partagée avec la liste MusicHub (chaîne de
+candidats maxres → hq) ; l'artiste affiché vient de `channel`,
+désormais transporté par la file d'attente.
 */
 export function AudioPlayerOverlay() {
   const {
@@ -70,10 +102,8 @@ export function AudioPlayerOverlay() {
     queueNext,
   } = usePlayer();
   const [showQueue, setShowQueue] = useState(true);
-
   if (!currentMedia) return null;
-  const thumb = artFromMedia(currentMedia);
-
+  const chain = artChainFromMedia(currentMedia);
   return (
     <div
       style={{
@@ -91,7 +121,6 @@ export function AudioPlayerOverlay() {
       >
         <VisualizerCanvas />
       </div>
-
       {/* ----- Colonne principale ----- */}
       <div
         style={{
@@ -155,12 +184,8 @@ export function AudioPlayerOverlay() {
             flexShrink: 0,
           }}
         >
-          {thumb ? (
-            <img
-              src={thumb}
-              alt=""
-              style={{ width: "100%", height: "100%", objectFit: "cover" }}
-            />
+          {chain.length > 0 ? (
+            <ArtImg chain={chain} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           ) : (
             <Music size={72} style={{ opacity: 0.4 }} />
           )}
@@ -353,7 +378,7 @@ export function AudioPlayerOverlay() {
           <div style={{ flex: 1, overflowY: "auto", padding: "0 10px 16px" }}>
             {queue.items.map((item, i) => {
               const isCurrent = i === queue.currentIndex;
-              const itemThumb = artFromMedia(item);
+              const itemChain = artChainFromMedia(item);
               return (
                 <div
                   key={`${item.id}-${i}`}
@@ -386,10 +411,9 @@ export function AudioPlayerOverlay() {
                   >
                     {i + 1}
                   </span>
-                  {itemThumb ? (
-                    <img
-                      src={itemThumb}
-                      alt=""
+                  {itemChain.length > 0 ? (
+                    <ArtImg
+                      chain={itemChain}
                       style={{
                         width: 44,
                         height: 44,

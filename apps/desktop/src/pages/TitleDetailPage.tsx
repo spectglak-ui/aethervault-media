@@ -4,7 +4,6 @@ import {
   Clapperboard,
   ImageUp,
   ListPlus,
-  Play,
   RotateCcw,
   Search,
   Volume2,
@@ -21,6 +20,7 @@ import { libraryApi } from "../features/library/api";
 import { PersonalizableImage } from "../features/personalization/PersonalizableImage";
 import { CastRow, GenreRow } from "../components/TitleRows";
 import { TitleUserPanel } from "../features/userlists/TitleUserPanel";
+import { TitleWatchPanel } from "../features/watchState/TitleWatchPanel";
 import { usePlayer } from "../player/PlayerContext";
 import { assetUrl } from "../lib/assetUrl";
 import "./pages.css";
@@ -476,16 +476,14 @@ export function TitleDetailPage() {
               <strong>Studios : </strong> {title.studios.join(", ")}
             </p>
           )}
-          {title.kind === "movie" && (
-            <Button
-              variant="primary"
-              onClick={handlePlay}
-              disabled={starting || title.media_file_id === null}
-            >
-              <Play size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
-              Lecture
-            </Button>
-          )}
+          {/* 0.7.9 : statut À voir / En cours / Vu, lecture « intelligente »
+              (reprise, épisode suivant) et marquage manuel. */}
+          <TitleWatchPanel
+            title={title}
+            categoryKey={key ?? ""}
+            starting={starting}
+            onPlayMovie={handlePlay}
+          />
         </div>
       </div>
       {title.technical &&

@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, Slider } from "@aethervault/ui-kit";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import { Plus, Trash2 } from "lucide-react";
+import {
+  addAnimatedBackdrops,
+  getAnimatedBackdropLibrary,
+  getSelectedId,
+  removeAnimatedBackdrop,
+  setSelectedId,
+} from "../../lib/animatedBackdropLibrary";
 import {
   armUiSounds,
   getUiSoundSettings,
@@ -332,5 +342,136 @@ export function TransparentThemeSection() {
         </>
       )}
     </section>
+  );
+}
+
+/**
+Paramètres → Fond animé (panneau FUSIONNÉ, 0.8.0) : bibliothèque
+personnelle de fonds animés. Vidéos locales (mp4, webm…) lues en
+boucle, muettes, derrière toute l'interface ; la vidéo sélectionnée
+ici est prioritaire sur les fonds intégrés et sur l'ancienne vidéo
+personnelle. Rendu SANS <section> propre : ce bloc s'insère dans le
+panneau « Fond animé » de SettingsPage.
+*/
+export function AnimatedBackdropLibrarySection() {
+  const [library, setLibrary] = useState(getAnimatedBackdropLibrary);
+  const [selected, setSelected] = useState<string | null>(getSelectedId);
+  useEffect(() => {
+    const refresh = () => {
+      setLibrary(getAnimatedBackdropLibrary());
+      setSelected(getSelectedId());
+    };
+    window.addEventListener("avm-home-backdrop-changed", refresh);
+    return () => window.removeEventListener("avm-home-backdrop-changed", refresh);
+  }, []);
+
+  const pick = async () => {
+    const picked = await open({
+      multiple: true,
+      filters: [{ name: "Vidéo", extensions: ["mp4", "webm", "mov", "mkv"] }],
+    });
+    if (!picked) return;
+    const paths = (Array.isArray(picked) ? picked : [picked]).map(String);
+    setLibrary(addAnimatedBackdrops(paths));
+  };
+
+  return (
+    <div>
+      <h3 style={{ fontSize: 15, fontWeight: 700, margin: "18px 0 6px" }}>
+        Bibliothèque personnelle
+      </h3>
+      <p className="avm-settings-muted">
+        Ajoutez vos propres vidéos de fond : survolez une vignette pour l'animer, cliquez
+        pour l'activer — elle devient prioritaire sur les fonds intégrés.
+      </p>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        <Button variant="secondary" onClick={() => void pick()}>
+          <Plus size={14} /> Ajouter des vidéos…
+        </Button>
+        {selected !== null && (
+          <Button variant="ghost" onClick={() => setSelectedId(null)}>
+            Revenir aux fonds par défaut
+          </Button>
+        )}
+      </div>
+      {library.length === 0 ? (
+        <p className="avm-settings-muted">Aucune vidéo personnelle pour l'instant.</p>
+      ) : (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {library.map((entry) => {
+            const isOn = selected === entry.id;
+            return (
+              <div
+                key={entry.id}
+                style={{
+                  border: `1px solid ${isOn ? "var(--color-accent, #7c5cff)" : "rgba(255,255,255,.08)"}`,
+                  borderRadius: 12,
+                  padding: 8,
+                  background: isOn ? "rgba(124,92,255,.12)" : "rgba(255,255,255,.03)",
+                }}
+              >
+                <video
+                  src={convertFileSrc(entry.path)}
+                  muted
+                  loop
+                  playsInline
+                  preload="metadata"
+                  onClick={() => setSelectedId(entry.id)}
+                  onMouseEnter={(e) => void e.currentTarget.play().catch(() => {})}
+                  onMouseLeave={(e) => e.currentTarget.pause()}
+                  style={{
+                    width: "100%",
+                    aspectRatio: "16/9",
+                    objectFit: "cover",
+                    borderRadius: 8,
+                    background: "#000",
+                    cursor: "pointer",
+                    display: "block",
+                  }}
+                />
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedId(entry.id)}
+                    style={{
+                      flex: 1,
+                      textAlign: "left",
+                      background: "transparent",
+                      border: "none",
+                      color: "inherit",
+                      cursor: "pointer",
+                      fontSize: 12.5,
+                      fontWeight: isOn ? 700 : 500,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {entry.name}
+                  </button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setLibrary(removeAnimatedBackdrop(entry.id))}
+                  >
+                    <Trash2 size={13} />
+                  </Button>
+                </div>
+                {isOn && (
+                  <p style={{ fontSize: 11, color: "var(--color-accent, #7c5cff)", margin: "4px 0 0" }}>
+                    Fond actif
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }

@@ -24,3 +24,4 @@ pub mod segment_repository;
 pub mod private_tag_repository;
 pub mod reading_repository;
 pub mod user_list_repository;
+pub mod watch_state_repository;
