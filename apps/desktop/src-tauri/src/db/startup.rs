@@ -120,6 +120,29 @@ mod tests {
         assert!(last_order > others_max, "rang de Lecture non distinct : {cats:?}");
     }
 
+    /// Base laissée à moitié initialisée par l'ancien défaut : tables VaultTube au
+    /// schéma final (créées hors migrations) + migrations 1 à 17 seulement.
+    #[test]
+    fn une_base_a_moitie_initialisee_est_reparee() {
+        let db = TempDb::new("moitie");
+        VaultTubeRepository::new(db.pool.clone()).create_tables().unwrap();
+        {
+            let conn = db.pool.get().unwrap();
+            for m in migrations::MIGRATIONS.iter().filter(|m| m.version <= 17) {
+                conn.execute_batch(m.sql).unwrap();
+                conn.pragma_update(None, "user_version", m.version).unwrap();
+            }
+        }
+        prepare_database(&db.pool).expect("la base à moitié initialisée doit être réparée");
+        let version: i32 = db
+            .pool
+            .get()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, migrations::MIGRATIONS.last().unwrap().version);
+    }
+
     /// Mise à jour d'une base existante à laquelle manque la catégorie Lecture.
     #[test]
     fn une_base_existante_sans_lecture_la_recoit_une_seule_fois() {

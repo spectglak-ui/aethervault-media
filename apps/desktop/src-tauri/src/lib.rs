@@ -43,7 +43,9 @@ fn show_fatal_startup_error(handle: &tauri::AppHandle, what: &str, err: &dyn std
             .title("AetherVault Media — démarrage impossible")
             .kind(MessageDialogKind::Error)
             .blocking_show();
-        handle.exit(1);
+        // Sortie immédiate : la base n'est pas prête, aucun gestionnaire d'arrêt
+        // de l'application (qui consulterait l'état) ne doit s'exécuter.
+        std::process::exit(1);
     });
 }
 

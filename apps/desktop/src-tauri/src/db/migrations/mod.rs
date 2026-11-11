@@ -195,7 +195,7 @@ pub fn apply_migrations(pool: &DbPool) -> Result<(), Box<dyn std::error::Error>>
             migration.version,
             migration.description
         );
-        conn.execute_batch(migration.sql)?;
+        run_migration(&conn, migration.sql)?;
         conn.pragma_update(None, "user_version", migration.version)?;
         applied += 1;
     }
@@ -208,4 +208,133 @@ pub fn apply_migrations(pool: &DbPool) -> Result<(), Box<dyn std::error::Error>>
     }
 
     Ok(())
+}
+
+// ---- Exécution tolérante aux colonnes déjà présentes (0.7.9) ------------------
+//
+// Les tables VaultTube sont créées HORS migrations par `VaultTubeRepository::
+// create_tables()` — avant elles, car les migrations 18 à 24 les modifient — et
+// avec leur schéma FINAL (colonnes `source`, `mode`, `is_short` comprises). Sur
+// une base neuve, ces migrations (de simples `ALTER TABLE … ADD COLUMN`) tentaient
+// donc d'ajouter des colonnes déjà là : « duplicate column name: source » et
+// l'application ne démarrait pas. Même cas pour une base laissée à moitié
+// initialisée par un démarrage raté de ce type.
+//
+// SQLite n'a pas de `ADD COLUMN IF NOT EXISTS` : si le lot échoue pour cette seule
+// raison, on le rejoue instruction par instruction en ignorant uniquement cette
+// erreur-là. Toute autre erreur reste fatale.
+
+fn is_duplicate_column(error: &rusqlite::Error) -> bool {
+    error.to_string().contains("duplicate column name")
+}
+
+/// Découpe un script SQL en instructions (point-virgule hors apostrophes ;
+/// commentaires `-- …` ignorés). Suffisant pour les migrations qui n'ont que des
+/// instructions simples ; ne gère pas les déclencheurs `BEGIN … END`.
+fn split_statements(sql: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+    let mut chars = sql.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                in_quote = !in_quote;
+                current.push(c);
+            }
+            '-' if !in_quote && chars.peek() == Some(&'-') => {
+                while let Some(&next) = chars.peek() {
+                    if next == '\n' {
+                        break;
+                    }
+                    chars.next();
+                }
+            }
+            ';' if !in_quote => {
+                let statement = current.trim();
+                if !statement.is_empty() {
+                    statements.push(statement.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+    let rest = current.trim();
+    if !rest.is_empty() {
+        statements.push(rest.to_string());
+    }
+    statements
+}
+
+fn run_migration(conn: &rusqlite::Connection, sql: &str) -> rusqlite::Result<()> {
+    match conn.execute_batch(sql) {
+        Err(error) if is_duplicate_column(&error) => {
+            log::warn!("Colonne déjà présente : la migration est rejouée instruction par instruction.");
+            for statement in split_statements(sql) {
+                match conn.execute_batch(&statement) {
+                    Err(e) if is_duplicate_column(&e) => {
+                        log::info!("Instruction ignorée (colonne déjà présente) : {statement}");
+                    }
+                    other => other?,
+                }
+            }
+            Ok(())
+        }
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn decoupe_les_instructions_et_ignore_les_commentaires() {
+        let sql = "-- en-tête ; avec point-virgule\nALTER TABLE a ADD COLUMN x TEXT DEFAULT 'a;b';\n\
+                   ALTER TABLE a ADD COLUMN y INTEGER; -- fin\n\n";
+        assert_eq!(
+            split_statements(sql),
+            vec![
+                "ALTER TABLE a ADD COLUMN x TEXT DEFAULT 'a;b'".to_string(),
+                "ALTER TABLE a ADD COLUMN y INTEGER".to_string(),
+            ]
+        );
+        assert!(split_statements("  \n-- rien\n").is_empty());
+    }
+
+    #[test]
+    fn colonne_deja_presente_est_ignoree_les_autres_sont_ajoutees() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, source TEXT);").unwrap();
+        // `source` existe déjà (schéma final créé hors migrations), `mode` non.
+        run_migration(
+            &conn,
+            "ALTER TABLE t ADD COLUMN source TEXT NOT NULL DEFAULT 'youtube';\n\
+             ALTER TABLE t ADD COLUMN mode TEXT NOT NULL DEFAULT 'video';",
+        )
+        .expect("une colonne déjà présente ne doit pas bloquer la migration");
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('t')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(columns.contains(&"mode".to_string()), "colonne manquante ajoutée : {columns:?}");
+    }
+
+    #[test]
+    fn les_autres_erreurs_restent_fatales() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(run_migration(&conn, "ALTER TABLE inexistante ADD COLUMN x TEXT;").is_err());
+        // Même après une colonne en double, une vraie erreur plus loin n'est pas masquée.
+        conn.execute_batch("CREATE TABLE t (source TEXT);").unwrap();
+        let result = run_migration(
+            &conn,
+            "ALTER TABLE t ADD COLUMN source TEXT;\nALTER TABLE inexistante ADD COLUMN x TEXT;",
+        );
+        assert!(result.is_err());
+    }
 }
