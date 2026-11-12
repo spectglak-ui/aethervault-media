@@ -1,7 +1,17 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Button, Modal } from "@aethervault/ui-kit";
 import type { Profile, ProfilePermissions, ProfileType } from "@aethervault/shared-types";
+import { useActiveProfile } from "../../profile/ActiveProfileContext";
 import { profileApi } from "./api";
+import { ProfileSecurityPanel } from "./ProfileSecurityPanel";
+import { RecoveryCodeBox } from "./RecoveryCodeBox";
+import { SecretFields } from "./SecretFields";
+import {
+  EMPTY_SECRET_FORM,
+  secretPayload,
+  validateSecretForm,
+  type SecretFormState,
+} from "./secret";
 
 const TYPE_LABELS: Record<ProfileType, string> = {
   admin: "Administrateur",
@@ -34,6 +44,10 @@ interface ProfileFormModalProps {
 
 export function ProfileFormModal({ open, profile, onClose, onSaved }: ProfileFormModalProps) {
   const isEditing = profile !== null;
+  const { activeProfile } = useActiveProfile();
+  // Protection du nouveau compte (création) et code de récupération à montrer.
+  const [secretForm, setSecretForm] = useState<SecretFormState>(EMPTY_SECRET_FORM);
+  const [createdRecovery, setCreatedRecovery] = useState<{ code: string; name: string } | null>(null);
   const [name, setName] = useState("");
   const [profileType, setProfileType] = useState<ProfileType>("user");
   const [permissions, setPermissions] = useState<ProfilePermissions>(TYPE_DEFAULT_PERMISSIONS.user);
@@ -56,6 +70,8 @@ export function ProfileFormModal({ open, profile, onClose, onSaved }: ProfileFor
       setPermissions(TYPE_DEFAULT_PERMISSIONS.user);
     }
     setError(null);
+    setSecretForm(EMPTY_SECRET_FORM);
+    setCreatedRecovery(null);
   }, [open, profile]);
 
   const handleTypeChange = (nextType: ProfileType) => {
@@ -79,6 +95,14 @@ export function ProfileFormModal({ open, profile, onClose, onSaved }: ProfileFor
       return;
     }
 
+    if (!isEditing) {
+      const problem = validateSecretForm(secretForm);
+      if (problem) {
+        setError(problem);
+        return;
+      }
+    }
+
     setSubmitting(true);
     setError(null);
 
@@ -89,16 +113,47 @@ export function ProfileFormModal({ open, profile, onClose, onSaved }: ProfileFor
         }
         await profileApi.updatePermissions(profile.id, permissions);
       } else {
-        await profileApi.create(trimmed, profileType, permissions);
+        const { secret, kind } = secretPayload(secretForm);
+        const [, recoveryCode] = await profileApi.createWithSecret(
+          trimmed,
+          profileType,
+          permissions,
+          secret,
+          kind
+        );
+        if (recoveryCode) {
+          // Le code de récupération n'est montré qu'une fois : on garde la fenêtre
+          // ouverte jusqu'à ce que l'utilisateur confirme l'avoir noté.
+          onSaved();
+          setCreatedRecovery({ code: recoveryCode, name: trimmed });
+          return;
+        }
       }
       onSaved();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Enregistrement impossible.");
+      setError(
+        typeof err === "string" ? err : err instanceof Error ? err.message : "Enregistrement impossible."
+      );
     } finally {
       setSubmitting(false);
     }
   };
+
+  if (createdRecovery) {
+    return (
+      <Modal open={open} onClose={onClose} title="Profil créé">
+        <RecoveryCodeBox
+          code={createdRecovery.code}
+          profileName={createdRecovery.name}
+          onDone={() => {
+            setCreatedRecovery(null);
+            onClose();
+          }}
+        />
+      </Modal>
+    );
+  }
 
   return (
     <Modal open={open} onClose={onClose} title={isEditing ? "Modifier le profil" : "Créer un profil"}>
@@ -128,6 +183,24 @@ export function ProfileFormModal({ open, profile, onClose, onSaved }: ProfileFor
               ))}
             </select>
           </label>
+        )}
+
+        {!isEditing && (
+          <fieldset className="avm-profile-form__secret">
+            <legend>Protection du compte</legend>
+            <SecretFields value={secretForm} onChange={setSecretForm} disabled={submitting} />
+          </fieldset>
+        )}
+
+        {isEditing && profile && (
+          <fieldset className="avm-profile-form__secret">
+            <legend>Mot de passe / code PIN</legend>
+            <ProfileSecurityPanel
+              profile={profile}
+              isSelf={profile.id === activeProfile?.id}
+              onChanged={onSaved}
+            />
+          </fieldset>
         )}
 
         <fieldset className="avm-profile-form__permissions">

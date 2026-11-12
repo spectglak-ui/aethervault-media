@@ -13,3 +13,4 @@ pub mod kdf;
 pub mod permissions;
 pub mod vault;
 pub mod profile_auth;
+pub mod login_throttle;

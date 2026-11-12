@@ -20,6 +20,18 @@ import { applyNearMax } from "../window/nearMax";
 import { metadataApi } from "../features/settings/api";
 import { StarfieldBackdrop } from "../components/StarfieldBackdrop";
 import { playUiSound } from "../features/sound/uiSounds";
+import { RecoveryCodeBox } from "../features/profile/RecoveryCodeBox";
+import { SecretFields } from "../features/profile/SecretFields";
+import {
+  EMPTY_SECRET_FORM,
+  kindOfProfile,
+  secretLabel,
+  secretPayload,
+  validateSecret,
+  validateSecretForm,
+  type SecretFormState,
+  type SecretKind,
+} from "../features/profile/secret";
 import "./auth.css";
 
 interface LoginProfile {
@@ -27,6 +39,8 @@ interface LoginProfile {
   name: string;
   profile_type: string;
   password_hash: string | null;
+  /** `"password"` | `"pin"` | `null` (compte sans protection). */
+  auth_kind?: string | null;
 }
 
 interface LoginState {
@@ -49,23 +63,38 @@ const authApi = {
   getQuickAccessEnabled: () => invoke<boolean>("get_quick_access_enabled"),
   quickLogin: (profileId: number) =>
     invoke<LoginProfile>("quick_login_profile", { profileId }),
-  setupFirstAdmin: (name: string, password?: string) =>
+  setupFirstAdmin: (name: string, password?: string, kind?: SecretKind) =>
     invoke<[LoginProfile, string | null]>("setup_first_admin", {
       name,
       password: password ?? null,
+      kind: kind ?? null,
     }),
-  createProfile: (name: string, profileType: string) =>
-    invoke<LoginProfile>("create_profile", { name, profileType, permissions: null }),
+  /** Crée le compte AVEC son secret (validé avant toute écriture) et renvoie son
+   * code de récupération. */
+  createProfileWithSecret: (
+    name: string,
+    profileType: string,
+    secret: string | null,
+    kind: SecretKind | null
+  ) =>
+    invoke<[LoginProfile, string | null]>("create_profile_with_secret", {
+      name,
+      profileType,
+      permissions: null,
+      secret,
+      secretKind: kind,
+    }),
   setProfilePassword: (profileId: number, password: string) =>
     invoke<string | null>("admin_reset_password", {
       targetProfileId: profileId,
       newPassword: password,
     }),
-  recover: (profileId: number, recoveryCode: string, newPassword?: string) =>
+  recover: (profileId: number, recoveryCode: string, newPassword?: string, kind?: SecretKind) =>
     invoke<string | null>("recover_with_code", {
       profileId,
       recoveryCode,
       newPassword: newPassword ?? null,
+      kind: kind ?? null,
     }),
 };
 
@@ -143,6 +172,8 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
   const [recovering, setRecovering] = useState(false);
   const [recoveryCode, setRecoveryCode] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  // Nouveau code de récupération remis après une récupération d'accès réussie.
+  const [recoveredCode, setRecoveredCode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [avatars, setAvatars] = useState<Record<number, string>>({});
@@ -198,13 +229,29 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
     setBusy(true);
     setError(null);
     try {
+      const kind = kindOfProfile(selected);
       if (recovering) {
-        await authApi.recover(selected.id, recoveryCode.trim(), newPassword || undefined);
-      } else {
-        await authApi.login(
+        // Le nouveau secret garde le type de l'ancien (PIN reste PIN).
+        if (newPassword && kind) {
+          const problem = validateSecret(kind, newPassword);
+          if (problem) {
+            setError(problem);
+            setBusy(false);
+            return;
+          }
+        }
+        const newCode = await authApi.recover(
           selected.id,
-          selected.password_hash ? password : undefined
+          recoveryCode.trim(),
+          newPassword || undefined,
+          newPassword && kind ? kind : undefined
         );
+        if (newCode) {
+          setRecoveredCode(newCode);
+          return;
+        }
+      } else {
+        await authApi.login(selected.id, kind ? password : undefined);
       }
       onDone();
     } catch (err) {
@@ -213,6 +260,23 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
       setBusy(false);
     }
   };
+
+  if (recoveredCode) {
+    return (
+      <div className="avm-auth__card">
+        <RecoveryCodeBox
+          variant="auth"
+          code={recoveredCode}
+          profileName={selected?.name}
+          onDone={onDone}
+        />
+      </div>
+    );
+  }
+
+  const selectedKind: SecretKind | null = selected ? kindOfProfile(selected) : null;
+  const pinMode = selectedKind === "pin";
+  const secretName = selectedKind ? secretLabel(selectedKind) : "mot de passe";
 
   return (
     <div className="avm-auth__card">
@@ -282,24 +346,37 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
                 />
               </label>
               <label className="avm-auth__label">
-                Nouveau mot de passe (optionnel)
+                Nouveau {secretName} (optionnel)
                 <input
                   className="avm-auth__input"
                   type="password"
+                  inputMode={pinMode ? "numeric" : undefined}
+                  maxLength={pinMode ? 8 : undefined}
+                  autoComplete="new-password"
                   value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
+                  onChange={(e) =>
+                    setNewPassword(pinMode ? e.target.value.replace(/\D/g, "").slice(0, 8) : e.target.value)
+                  }
                 />
               </label>
+              <p className="avm-auth__hint">
+                Laissé vide, ce compte ne sera plus protégé.
+              </p>
             </>
           ) : (
-            selected.password_hash && (
+            selectedKind && (
               <label className="avm-auth__label">
-                Mot de passe
+                {pinMode ? "Code PIN" : "Mot de passe"}
                 <input
                   className="avm-auth__input"
                   type="password"
+                  inputMode={pinMode ? "numeric" : undefined}
+                  maxLength={pinMode ? 8 : undefined}
+                  autoComplete="current-password"
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(e) =>
+                    setPassword(pinMode ? e.target.value.replace(/\D/g, "").slice(0, 8) : e.target.value)
+                  }
                   autoFocus
                 />
               </label>
@@ -310,13 +387,13 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
             <button className="avm-btn avm-btn--primary" type="submit" disabled={busy}>
               {recovering ? "Récupérer l'accès" : "Entrer"}
             </button>
-            {selected.password_hash && !recovering && (
+            {selectedKind && !recovering && (
               <button
                 className="avm-btn avm-btn--ghost"
                 type="button"
                 onClick={() => setRecovering(true)}
               >
-                Mot de passe oublié ?
+                {pinMode ? "Code PIN oublié ?" : "Mot de passe oublié ?"}
               </button>
             )}
             {recovering && (
@@ -338,29 +415,36 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
 function Onboarding({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState<"admin" | "code" | "extra">("admin");
   const [name, setName] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
+  const [secretForm, setSecretForm] = useState<SecretFormState>(EMPTY_SECRET_FORM);
   const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [ack, setAck] = useState(false);
   const [extras, setExtras] = useState<LoginProfile[]>([]);
   const [extraName, setExtraName] = useState("");
   const [extraType, setExtraType] = useState("Utilisateur");
-  const [extraPassword, setExtraPassword] = useState("");
+  const [extraSecret, setExtraSecret] = useState<SecretFormState>(EMPTY_SECRET_FORM);
+  // Codes de récupération des comptes ajoutés (à noter : montrés une seule fois).
+  const [extraCodes, setExtraCodes] = useState<{ name: string; code: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const submitAdmin = async (e: FormEvent) => {
     e.preventDefault();
     if (busy || !name.trim()) return;
-    if (password && password !== confirm) {
-      setError("Les deux mots de passe ne correspondent pas.");
+    const problem = validateSecretForm(secretForm);
+    if (problem) {
+      setError(problem);
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const [, code] = await authApi.setupFirstAdmin(name.trim(), password || undefined);
+      const { secret, kind } = secretPayload(secretForm);
+      const [, code] = await authApi.setupFirstAdmin(
+        name.trim(),
+        secret ?? undefined,
+        kind ?? undefined
+      );
       if (code) {
         setRecoveryCode(code);
         setStep("code");
@@ -377,16 +461,27 @@ function Onboarding({ onDone }: { onDone: () => void }) {
   const addExtra = async (e: FormEvent) => {
     e.preventDefault();
     if (busy || !extraName.trim()) return;
+    const problem = validateSecretForm(extraSecret);
+    if (problem) {
+      setError(problem);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const created = await authApi.createProfile(extraName.trim(), extraType);
-      if (extraPassword) {
-        await authApi.setProfilePassword(created.id, extraPassword);
-      }
+      // Secret validé AVANT la création : un secret refusé ne laisse pas un compte
+      // à moitié créé.
+      const { secret, kind } = secretPayload(extraSecret);
+      const [created, code] = await authApi.createProfileWithSecret(
+        extraName.trim(),
+        extraType,
+        secret,
+        kind
+      );
       setExtras((list) => [...list, created]);
+      if (code) setExtraCodes((list) => [...list, { name: created.name, code }]);
       setExtraName("");
-      setExtraPassword("");
+      setExtraSecret(EMPTY_SECRET_FORM);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -421,24 +516,11 @@ function Onboarding({ onDone }: { onDone: () => void }) {
               autoFocus
             />
           </label>
-          <label className="avm-auth__label">
-            Mot de passe (optionnel mais recommandé)
-            <input
-              className="avm-auth__input"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </label>
-          <label className="avm-auth__label">
-            Confirmer le mot de passe
-            <input
-              className="avm-auth__input"
-              type="password"
-              value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
-            />
-          </label>
+          <p className="avm-auth__hint">
+            Protégez ce compte par un mot de passe ou un code PIN (recommandé) — vous pourrez le
+            changer plus tard dans Paramètres.
+          </p>
+          <SecretFields variant="auth" value={secretForm} onChange={setSecretForm} disabled={busy} />
           {error && <p className="avm-auth__error">{error}</p>}
           <div className="avm-auth__actions">
             <button className="avm-btn avm-btn--primary" type="submit" disabled={busy}>
@@ -484,9 +566,22 @@ function Onboarding({ onDone }: { onDone: () => void }) {
               {extras.map((p) => (
                 <li key={p.id}>
                   {p.name} ({p.profile_type})
+                  {p.auth_kind === "pin" ? " — code PIN" : p.auth_kind === "password" ? " — mot de passe" : ""}
                 </li>
               ))}
             </ul>
+          )}
+          {extraCodes.length > 0 && (
+            <div className="avm-auth__extra-codes">
+              <p className="avm-auth__hint">
+                Notez ces codes de récupération : ils ne seront plus affichés.
+              </p>
+              {extraCodes.map((entry) => (
+                <p key={entry.name + entry.code} className="avm-auth__hint">
+                  <strong>{entry.name}</strong> : <code>{entry.code}</code>
+                </p>
+              ))}
+            </div>
           )}
           <form onSubmit={addExtra} className="avm-auth__extra-form">
             <input
@@ -505,12 +600,11 @@ function Onboarding({ onDone }: { onDone: () => void }) {
               <option>Enfant</option>
               <option>Administrateur</option>
             </select>
-            <input
-              className="avm-auth__input"
-              type="password"
-              value={extraPassword}
-              onChange={(e) => setExtraPassword(e.target.value)}
-              placeholder="Mot de passe (optionnel)"
+            <SecretFields
+              variant="auth"
+              value={extraSecret}
+              onChange={setExtraSecret}
+              disabled={busy}
             />
             <button className="avm-btn avm-btn--ghost" type="submit" disabled={busy}>
               <UserPlus size={14} /> Ajouter

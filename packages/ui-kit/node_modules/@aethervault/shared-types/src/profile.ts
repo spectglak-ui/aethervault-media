@@ -20,4 +20,8 @@ export interface Profile extends ProfilePermissions {
   name: string;
   profile_type: ProfileType;
   created_at: string;
+  /** Hash du secret (mot de passe ou PIN) — présent si le compte est protégé. */
+  password_hash?: string | null;
+  /** Type du secret : `"password"` ou `"pin"` (`null` = compte sans protection). */
+  auth_kind?: "password" | "pin" | null;
 }

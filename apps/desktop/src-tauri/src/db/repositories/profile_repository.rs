@@ -24,11 +24,15 @@ pub struct ProfileRecord {
     /// Hash Argon2id du code de récupération (Étape 6c) — `None` si
     /// aucun code n'a été généré.
     pub recovery_code_hash: Option<String>,
+    /// Type du secret : `"password"` ou `"pin"` (4 à 8 chiffres) — `None` si le
+    /// profil n'a pas de secret. Lu par l'écran de connexion pour afficher le bon
+    /// champ (0.7.9).
+    pub auth_kind: Option<String>,
 }
 
 const SELECT_COLUMNS: &str = "id, name, profile_type, can_access_private, \
     can_manage_global_settings, can_manage_profiles, created_at, \
-    password_hash, recovery_code_hash";
+    password_hash, recovery_code_hash, auth_kind";
 
 fn map_row(row: &rusqlite::Row) -> rusqlite::Result<ProfileRecord> {
     Ok(ProfileRecord {
@@ -41,6 +45,7 @@ fn map_row(row: &rusqlite::Row) -> rusqlite::Result<ProfileRecord> {
         created_at: row.get(6)?,
         password_hash: row.get(7)?,
         recovery_code_hash: row.get(8)?,
+        auth_kind: row.get(9)?,
     })
 }
 
@@ -133,9 +138,23 @@ pub fn update_auth(
     password_hash: Option<&str>,
     recovery_code_hash: Option<&str>,
 ) -> rusqlite::Result<()> {
+    // Sans précision, un secret est un mot de passe (comportement d'origine).
+    update_auth_with_kind(conn, id, password_hash, recovery_code_hash, password_hash.map(|_| "password"))
+}
+
+/// Comme `update_auth`, en précisant le type du secret (`"password"` | `"pin"`).
+/// Sans hash, le type est toujours effacé.
+pub fn update_auth_with_kind(
+    conn: &Connection,
+    id: i64,
+    password_hash: Option<&str>,
+    recovery_code_hash: Option<&str>,
+    auth_kind: Option<&str>,
+) -> rusqlite::Result<()> {
+    let auth_kind = if password_hash.is_some() { auth_kind } else { None };
     conn.execute(
-        "UPDATE profiles SET password_hash = ?1, recovery_code_hash = ?2 WHERE id = ?3",
-        rusqlite::params![password_hash, recovery_code_hash, id],
+        "UPDATE profiles SET password_hash = ?1, recovery_code_hash = ?2, auth_kind = ?3 WHERE id = ?4",
+        rusqlite::params![password_hash, recovery_code_hash, auth_kind, id],
     )?;
     Ok(())
 }

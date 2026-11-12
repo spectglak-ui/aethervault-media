@@ -173,6 +173,11 @@ pub const MIGRATIONS: &[Migration] = &[
         description: "Statuts de visionnage automatiques (À voir / En cours / Vu), par profil et par média",
         sql: include_str!("0028_media_watch_status.sql"),
     },
+    Migration {
+        version: 29,
+        description: "Type de secret des profils : mot de passe ou code PIN",
+        sql: include_str!("0029_profile_auth_kind.sql"),
+    },
 ];
 
 /// Applique, dans l'ordre, toutes les migrations dont la version est

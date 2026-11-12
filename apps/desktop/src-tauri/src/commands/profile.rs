@@ -36,12 +36,21 @@ pub fn switch_active_profile(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Profil introuvable.".to_string())?;
 
-    // Vérifie le mot de passe si le profil cible en a un
+    // Vérifie le secret (mot de passe ou PIN) si le profil cible en a un ; les
+    // essais répétés sont ralentis (0.7.9).
     if let Some(hash) = &target.password_hash {
-        let pwd = password.ok_or_else(|| "Ce profil requiert un mot de passe.".to_string())?;
+        let label = crate::commands::auth::secret_label(&target);
+        crate::security::login_throttle::check(target.id)?;
+        let pwd = password.ok_or_else(|| format!("Ce profil requiert un {label}."))?;
         if !crate::security::profile_auth::verify_password(&pwd, hash)? {
-            return Err("Mot de passe incorrect.".to_string());
+            crate::security::login_throttle::record_failure(target.id);
+            return Err(if label == "code PIN" {
+                "Code PIN incorrect.".to_string()
+            } else {
+                "Mot de passe incorrect.".to_string()
+            });
         }
+        crate::security::login_throttle::record_success(target.id);
     }
 
     // Authentification réussie : bascule
@@ -63,6 +72,37 @@ pub fn create_profile(
 ) -> Result<ProfileRecord, String> {
     let active_profile_id = state.read_active_profile_id()?;
     profile::create_profile(&state.db_pool, active_profile_id, &name, &profile_type, permissions)
+}
+
+/// Crée un profil AVEC son secret (mot de passe ou PIN) en une seule opération :
+/// le secret est validé avant toute écriture, donc un secret refusé ne laisse pas
+/// de profil à moitié créé. Renvoie le profil et son code de récupération (à
+/// montrer une seule fois) si un secret est défini.
+#[tauri::command]
+pub fn create_profile_with_secret(
+    state: tauri::State<AppState>,
+    name: String,
+    profile_type: String,
+    permissions: Option<ProfilePermissions>,
+    secret: Option<String>,
+    secret_kind: Option<String>,
+) -> Result<(ProfileRecord, Option<String>), String> {
+    let active_profile_id = state.read_active_profile_id()?;
+    let prepared = secret
+        .as_deref()
+        .map(|s| crate::domain::profile_secret::prepare_secret(s, secret_kind.as_deref()))
+        .transpose()?;
+    let created =
+        profile::create_profile(&state.db_pool, active_profile_id, &name, &profile_type, permissions)?;
+    let Some(prepared) = prepared else {
+        return Ok((created, None));
+    };
+    let conn = state.get_conn()?;
+    crate::domain::profile_secret::apply_secret(&conn, created.id, &prepared)?;
+    let updated = profile_repository::get_by_id(&conn, created.id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Profil créé introuvable.".to_string())?;
+    Ok((updated, Some(prepared.recovery_code)))
 }
 
 #[tauri::command]

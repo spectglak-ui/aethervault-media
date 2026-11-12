@@ -212,6 +212,7 @@ pub fn run() {
             commands::profile::get_active_profile,
             commands::profile::switch_active_profile,
             commands::profile::create_profile,
+            commands::profile::create_profile_with_secret,
             commands::profile::rename_profile,
             commands::profile::update_profile_permissions,
             commands::profile::delete_profile,

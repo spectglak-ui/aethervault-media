@@ -1,0 +1,2101 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index a528994..614363b 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ Toutes les modifications notables apportées à ce projet seront documentées da
+ ## [0.7.9] - 2026-11-11
+ 
+ ### Ajouté
++- **Mot de passe ou code PIN pour chaque compte** (migration 29) : à la création du premier compte, des comptes ajoutés à l'installation et du bouton « Créer un profil », choix entre aucune protection, mot de passe ou code PIN (4 à 8 chiffres), avec confirmation. Le PIN s'utilise comme le mot de passe (clavier numérique à la connexion, « Code PIN oublié ? » avec le code de récupération). Un compte existant peut changer ou retirer son secret dans Paramètres → Mon compte, et un administrateur peut réinitialiser celui d'un autre compte depuis « Modifier le profil ». Après cinq échecs consécutifs, les essais sont ralentis (30 s, doublant jusqu'à 10 min).
+ - **Statuts de visionnage automatiques « À voir / En cours / Vu »** (migration 28), par profil et par média. Tous les médias sont « À voir » au départ ; un média commencé (au moins 30 s et 1 %) passe « En cours » et un nouveau clic reprend la lecture à la position où elle s'était arrêtée ; un média terminé passe « Vu ». Annotation sous les affiches des catégories, sur la page d'un titre et sur chaque épisode (avec barre d'avancement). Une série est « En cours » dès qu'un épisode est commencé ou terminé, « Vu » quand tous les épisodes le sont (« 3/10 »).
+ - **Seuil « Vu » intelligent** (plus de 95 % fixe) : fin du fichier atteinte, OU arrêt jusqu'à 15 s avant le début du générique de fin détecté (épisodes analysés), pendant ou après celui-ci ; à défaut de générique connu, queue de secours de 5 % de la durée bornée entre 45 s et 6 min. Un générique « détecté » avant 60 % de la durée est ignoré. Un média « Vu » ne repasse jamais « En cours » tout seul (revoir un film à moitié le laisse « Vu »).
+ - **Page d'un titre** : bouton de lecture adapté (Lecture / Reprendre à 42:10 / Revoir pour un film ; Commencer / Reprendre / Épisode suivant · S1 · É4 pour une série) et **Marquer comme vu / non vu** (un film, un épisode ou une série entière).
+@@ -17,6 +18,10 @@ Toutes les modifications notables apportées à ce projet seront documentées da
+ - macOS : libmpv installée avec Homebrew (`/opt/homebrew`, `/usr/local`) ou MacPorts est désormais trouvée (dlopen ne parcourt pas ces dossiers) ; idem pour les outils sous Linux hors chemin par défaut.
+ - Le statut de la **Watchlist** suit désormais le statut automatique pour les titres qu'elle contient, et marquer « Vu » / « À voir » dans la Watchlist s'applique aussi aux médias. Sous les affiches, la Watchlist n'est plus qu'un marque-page.
+ 
++### Corrigé
++- **Mot de passe impossible à définir** : la génération du code de récupération appliquait la politique des mots de passe (qui exige une minuscule) à un code composé de majuscules et de chiffres et échouait donc toujours ; définir un mot de passe (création d'un compte, réinitialisation, récupération) échouait systématiquement. De plus le secret est maintenant validé AVANT de créer le compte (un mot de passe refusé laissait un administrateur sans protection et bloquait le formulaire avec « Un profil existe déjà »), le code de récupération des comptes ajoutés à l'installation n'est plus perdu, et changer son mot de passe ne supprime plus le code de récupération.
++- **Premier lancement sur une base neuve** (installation fraîche, nouveau profil Windows) : l'application se fermait sans message. La catégorie « Lecture » était créée avant les migrations dont elle dépend, et les migrations VaultTube 18 à 24 tentaient d'ajouter des colonnes déjà créées (« duplicate column name: source ») ; les bases laissées à moitié initialisées sont réparées. Les erreurs de démarrage s'affichent dans une boîte de dialogue et les paniques sont écrites dans le journal.
++
+ ## [0.7.8 « Orbite »] - 2026-11-05
+ 
+ ### Ajouté
+diff --git a/apps/desktop/src-tauri/src/commands/auth.rs b/apps/desktop/src-tauri/src/commands/auth.rs
+index a15e415..72b6f21 100644
+--- a/apps/desktop/src-tauri/src/commands/auth.rs
++++ b/apps/desktop/src-tauri/src/commands/auth.rs
+@@ -1,8 +1,8 @@
+ //! Commandes d'authentification des profils (Étape 6c, doc §6.5).
+ 
+ use crate::db::repositories::profile_repository::{self, ProfileRecord};
+-use crate::domain::profile;
+-use crate::security::profile_auth;
++use crate::domain::{profile, profile_secret};
++use crate::security::{login_throttle, profile_auth};
+ use crate::state::AppState;
+ use serde::Serialize;
+ 
+@@ -21,6 +21,58 @@ pub fn get_login_state(state: tauri::State<AppState>) -> Result<LoginState, Stri
+     })
+ }
+ 
++/// Échec de vérification : « secret incorrect » (compté par le ralentisseur) ou
++/// autre erreur (requête incomplète, hash illisible…), qui ne l'est pas.
++enum LoginError {
++    Wrong(String),
++    Other(String),
++}
++
++/// Nom du secret du profil, pour les messages (« mot de passe » ou « code PIN »).
++pub(crate) fn secret_label(profile: &ProfileRecord) -> &'static str {
++    if profile.auth_kind.as_deref() == Some("pin") {
++        "code PIN"
++    } else {
++        "mot de passe"
++    }
++}
++
++fn verify_login(
++    profile: &ProfileRecord,
++    hash: &str,
++    password: Option<String>,
++    recovery_code: Option<String>,
++) -> Result<(), LoginError> {
++    let label = secret_label(profile);
++    match (password, recovery_code) {
++        (Some(pwd), None) => {
++            if profile_auth::verify_password(&pwd, hash).map_err(LoginError::Other)? {
++                Ok(())
++            } else if label == "code PIN" {
++                Err(LoginError::Wrong("Code PIN incorrect.".to_string()))
++            } else {
++                Err(LoginError::Wrong("Mot de passe incorrect.".to_string()))
++            }
++        }
++        (None, Some(code)) => match profile.recovery_code_hash {
++            Some(ref recovery_hash) => {
++                if profile_auth::verify_recovery_code(&code, recovery_hash).map_err(LoginError::Other)? {
++                    Ok(())
++                } else {
++                    Err(LoginError::Wrong("Code de récupération incorrect.".to_string()))
++                }
++            }
++            None => Err(LoginError::Other(
++                "Aucun code de récupération n'a été généré pour ce profil.".to_string(),
++            )),
++        },
++        (Some(_), Some(_)) => Err(LoginError::Other(
++            "Fournir soit un mot de passe, soit un code de récupération, pas les deux.".to_string(),
++        )),
++        (None, None) => Err(LoginError::Other(format!("Ce profil requiert un {label}."))),
++    }
++}
++
+ #[tauri::command]
+ pub fn login_profile(
+     state: tauri::State<AppState>,
+@@ -34,27 +86,15 @@ pub fn login_profile(
+         .ok_or_else(|| "Profil introuvable.".to_string())?;
+ 
+     if let Some(ref hash) = profile.password_hash {
+-        match (password, recovery_code) {
+-            (Some(pwd), None) => {
+-                if !profile_auth::verify_password(&pwd, hash)? {
+-                    return Err("Mot de passe incorrect.".to_string());
+-                }
+-            }
+-            (None, Some(code)) => {
+-                if let Some(ref recovery_hash) = profile.recovery_code_hash {
+-                    if !profile_auth::verify_recovery_code(&code, recovery_hash)? {
+-                        return Err("Code de récupération incorrect.".to_string());
+-                    }
+-                } else {
+-                    return Err("Aucun code de récupération n'a été généré pour ce profil.".to_string());
+-                }
+-            }
+-            (Some(_), Some(_)) => {
+-                return Err("Fournir soit un mot de passe, soit un code de récupération, pas les deux.".to_string());
+-            }
+-            (None, None) => {
+-                return Err("Ce profil requiert un mot de passe.".to_string());
++        // 0.7.9 : essais répétés ralentis (indispensable pour un PIN de 4 chiffres).
++        login_throttle::check(profile.id)?;
++        match verify_login(&profile, hash, password, recovery_code) {
++            Ok(()) => login_throttle::record_success(profile.id),
++            Err(LoginError::Wrong(message)) => {
++                login_throttle::record_failure(profile.id);
++                return Err(message);
+             }
++            Err(LoginError::Other(message)) => return Err(message),
+         }
+     }
+ 
+@@ -111,21 +151,33 @@ pub fn logout_profile(state: tauri::State<AppState>) -> Result<(), String> {
+     Ok(())
+ }
+ 
++/// Crée le premier administrateur. `password` est le secret (mot de passe ou PIN
++/// selon `kind` : `"password"` par défaut, `"pin"`). Le secret est VALIDÉ avant toute
++/// écriture : un secret refusé ne laisse pas d'administrateur sans protection.
+ #[tauri::command]
+ pub fn setup_first_admin(
+     state: tauri::State<AppState>,
+     name: String,
+     password: Option<String>,
++    kind: Option<String>,
+ ) -> Result<(ProfileRecord, Option<String>), String> {
+     let conn = state.get_conn()?;
+     let existing = profile_repository::list_all(&conn).map_err(|e| e.to_string())?;
+     if !existing.is_empty() {
+         return Err("Un profil existe déjà.".to_string());
+     }
++    if name.trim().is_empty() {
++        return Err("Le nom du compte ne peut pas être vide.".to_string());
++    }
++
++    let prepared = password
++        .as_deref()
++        .map(|secret| profile_secret::prepare_secret(secret, kind.as_deref()))
++        .transpose()?;
+ 
+     let profile_id = profile_repository::create(
+         &conn,
+-        &name,
++        name.trim(),
+         "Administrateur",
+         true,
+         true,
+@@ -133,14 +185,12 @@ pub fn setup_first_admin(
+     )
+     .map_err(|e| e.to_string())?;
+ 
+-    let recovery_code = if let Some(ref pwd) = password {
+-        let hash = profile_auth::hash_password(pwd)?;
+-        let (code, code_hash) = profile_auth::generate_recovery_code()?;
+-        profile_repository::update_auth(&conn, profile_id, Some(&hash), Some(&code_hash))
+-            .map_err(|e| e.to_string())?;
+-        Some(code)
+-    } else {
+-        None
++    let recovery_code = match prepared {
++        Some(ref secret) => {
++            profile_secret::apply_secret(&conn, profile_id, secret)?;
++            Some(secret.recovery_code.clone())
++        }
++        None => None,
+     };
+ 
+     let profile = profile_repository::get_by_id(&conn, profile_id)
+@@ -156,12 +206,16 @@ pub fn setup_first_admin(
+     Ok((profile, recovery_code))
+ }
+ 
++/// Change (ou retire, si `new_password` est vide) le secret du profil ACTIF.
++/// Exige le secret actuel s'il y en a un. Renvoie le NOUVEAU code de récupération
++/// (l'ancien n'est plus valable) quand un secret est défini.
+ #[tauri::command]
+ pub fn change_own_password(
+     state: tauri::State<AppState>,
+     old_password: Option<String>,
+     new_password: Option<String>,
+-) -> Result<(), String> {
++    kind: Option<String>,
++) -> Result<Option<String>, String> {
+     let active_profile_id = state.read_active_profile_id()?;
+     let conn = state.get_conn()?;
+     let profile = profile_repository::get_by_id(&conn, active_profile_id)
+@@ -169,29 +223,27 @@ pub fn change_own_password(
+         .ok_or_else(|| "Profil actif introuvable.".to_string())?;
+ 
+     if let Some(ref hash) = profile.password_hash {
+-        let old_pwd = old_password.ok_or_else(|| "Ancien mot de passe requis.".to_string())?;
+-        if !profile_auth::verify_password(&old_pwd, hash)? {
+-            return Err("Ancien mot de passe incorrect.".to_string());
++        let label = secret_label(&profile);
++        login_throttle::check(active_profile_id)?;
++        let old = old_password.ok_or_else(|| format!("Le {label} actuel est requis."))?;
++        if !profile_auth::verify_password(&old, hash)? {
++            login_throttle::record_failure(active_profile_id);
++            return Err(format!("Le {label} actuel est incorrect."));
+         }
++        login_throttle::record_success(active_profile_id);
+     }
+ 
+-    let new_hash = if let Some(ref new_pwd) = new_password {
+-        Some(profile_auth::hash_password(new_pwd)?)
+-    } else {
+-        None
+-    };
+-
+-    profile_repository::update_auth(&conn, active_profile_id, new_hash.as_deref(), None)
+-        .map_err(|e| e.to_string())?;
+-
+-    Ok(())
++    profile_secret::set_secret(&conn, active_profile_id, new_password.as_deref(), kind.as_deref())
+ }
+ 
++/// Définit (ou retire) le secret d'un profil par un administrateur. Renvoie le
++/// nouveau code de récupération quand un secret est défini.
+ #[tauri::command]
+ pub fn admin_reset_password(
+     state: tauri::State<AppState>,
+     target_profile_id: i64,
+     new_password: Option<String>,
++    kind: Option<String>,
+ ) -> Result<Option<String>, String> {
+     let active_profile_id = state.read_active_profile_id()?;
+     let conn = state.get_conn()?;
+@@ -203,27 +255,18 @@ pub fn admin_reset_password(
+         return Err("Permission refusée.".to_string());
+     }
+ 
+-    let recovery_code = if let Some(ref pwd) = new_password {
+-        let hash = profile_auth::hash_password(pwd)?;
+-        let (code, code_hash) = profile_auth::generate_recovery_code()?;
+-        profile_repository::update_auth(&conn, target_profile_id, Some(&hash), Some(&code_hash))
+-            .map_err(|e| e.to_string())?;
+-        Some(code)
+-    } else {
+-        profile_repository::update_auth(&conn, target_profile_id, None, None)
+-            .map_err(|e| e.to_string())?;
+-        None
+-    };
+-
+-    Ok(recovery_code)
++    profile_secret::set_secret(&conn, target_profile_id, new_password.as_deref(), kind.as_deref())
+ }
+ 
++/// Récupération d'accès avec le code de récupération : définit un nouveau secret
++/// (`new_password` vide = profil sans secret) et ouvre la session.
+ #[tauri::command]
+ pub fn recover_with_code(
+     state: tauri::State<AppState>,
+     profile_id: i64,
+     recovery_code: String,
+     new_password: Option<String>,
++    kind: Option<String>,
+ ) -> Result<Option<String>, String> {
+     let conn = state.get_conn()?;
+     let profile = profile_repository::get_by_id(&conn, profile_id)
+@@ -232,23 +275,19 @@ pub fn recover_with_code(
+ 
+     let recovery_hash = profile
+         .recovery_code_hash
++        .clone()
+         .ok_or_else(|| "Aucun code de récupération n'a été généré pour ce profil.".to_string())?;
+ 
++    login_throttle::check(profile_id)?;
+     if !profile_auth::verify_recovery_code(&recovery_code, &recovery_hash)? {
++        login_throttle::record_failure(profile_id);
+         return Err("Code de récupération incorrect.".to_string());
+     }
++    login_throttle::record_success(profile_id);
+ 
+-    let new_recovery_code = if let Some(ref pwd) = new_password {
+-        let hash = profile_auth::hash_password(pwd)?;
+-        let (code, code_hash) = profile_auth::generate_recovery_code()?;
+-        profile_repository::update_auth(&conn, profile_id, Some(&hash), Some(&code_hash))
+-            .map_err(|e| e.to_string())?;
+-        Some(code)
+-    } else {
+-        profile_repository::update_auth(&conn, profile_id, None, None)
+-            .map_err(|e| e.to_string())?;
+-        None
+-    };
++    // Validé AVANT d'écrire : un nouveau secret refusé laisse l'ancien en place.
++    let new_recovery_code =
++        profile_secret::set_secret(&conn, profile_id, new_password.as_deref(), kind.as_deref())?;
+ 
+     let mut guard = state
+         .active_profile_id
+@@ -257,4 +296,4 @@ pub fn recover_with_code(
+     *guard = Some(profile.id);
+ 
+     Ok(new_recovery_code)
+-}
+\ No newline at end of file
++}
+diff --git a/apps/desktop/src-tauri/src/commands/profile.rs b/apps/desktop/src-tauri/src/commands/profile.rs
+index ad3d722..7e16293 100644
+--- a/apps/desktop/src-tauri/src/commands/profile.rs
++++ b/apps/desktop/src-tauri/src/commands/profile.rs
+@@ -36,12 +36,21 @@ pub fn switch_active_profile(
+         .map_err(|e| e.to_string())?
+         .ok_or_else(|| "Profil introuvable.".to_string())?;
+ 
+-    // Vérifie le mot de passe si le profil cible en a un
++    // Vérifie le secret (mot de passe ou PIN) si le profil cible en a un ; les
++    // essais répétés sont ralentis (0.7.9).
+     if let Some(hash) = &target.password_hash {
+-        let pwd = password.ok_or_else(|| "Ce profil requiert un mot de passe.".to_string())?;
++        let label = crate::commands::auth::secret_label(&target);
++        crate::security::login_throttle::check(target.id)?;
++        let pwd = password.ok_or_else(|| format!("Ce profil requiert un {label}."))?;
+         if !crate::security::profile_auth::verify_password(&pwd, hash)? {
+-            return Err("Mot de passe incorrect.".to_string());
++            crate::security::login_throttle::record_failure(target.id);
++            return Err(if label == "code PIN" {
++                "Code PIN incorrect.".to_string()
++            } else {
++                "Mot de passe incorrect.".to_string()
++            });
+         }
++        crate::security::login_throttle::record_success(target.id);
+     }
+ 
+     // Authentification réussie : bascule
+@@ -65,6 +74,37 @@ pub fn create_profile(
+     profile::create_profile(&state.db_pool, active_profile_id, &name, &profile_type, permissions)
+ }
+ 
++/// Crée un profil AVEC son secret (mot de passe ou PIN) en une seule opération :
++/// le secret est validé avant toute écriture, donc un secret refusé ne laisse pas
++/// de profil à moitié créé. Renvoie le profil et son code de récupération (à
++/// montrer une seule fois) si un secret est défini.
++#[tauri::command]
++pub fn create_profile_with_secret(
++    state: tauri::State<AppState>,
++    name: String,
++    profile_type: String,
++    permissions: Option<ProfilePermissions>,
++    secret: Option<String>,
++    secret_kind: Option<String>,
++) -> Result<(ProfileRecord, Option<String>), String> {
++    let active_profile_id = state.read_active_profile_id()?;
++    let prepared = secret
++        .as_deref()
++        .map(|s| crate::domain::profile_secret::prepare_secret(s, secret_kind.as_deref()))
++        .transpose()?;
++    let created =
++        profile::create_profile(&state.db_pool, active_profile_id, &name, &profile_type, permissions)?;
++    let Some(prepared) = prepared else {
++        return Ok((created, None));
++    };
++    let conn = state.get_conn()?;
++    crate::domain::profile_secret::apply_secret(&conn, created.id, &prepared)?;
++    let updated = profile_repository::get_by_id(&conn, created.id)
++        .map_err(|e| e.to_string())?
++        .ok_or_else(|| "Profil créé introuvable.".to_string())?;
++    Ok((updated, Some(prepared.recovery_code)))
++}
++
+ #[tauri::command]
+ pub fn rename_profile(
+     state: tauri::State<AppState>,
+diff --git a/apps/desktop/src-tauri/src/db/migrations/0029_profile_auth_kind.sql b/apps/desktop/src-tauri/src/db/migrations/0029_profile_auth_kind.sql
+new file mode 100644
+index 0000000..a325f69
+--- /dev/null
++++ b/apps/desktop/src-tauri/src/db/migrations/0029_profile_auth_kind.sql
+@@ -0,0 +1,12 @@
++-- Migration 29 — Type de secret des profils : mot de passe OU code PIN.
++--
++-- `password_hash` contient désormais le hash Argon2id d'un secret de l'un des deux
++-- types, `auth_kind` dit lequel : 'password' (mot de passe complet) ou 'pin'
++-- (4 à 8 chiffres). L'interface en a besoin AVANT la connexion pour afficher le
++-- bon champ (clavier numérique pour un PIN). NULL = profil sans secret.
++
++ALTER TABLE profiles ADD COLUMN auth_kind TEXT NULL
++    CHECK (auth_kind IS NULL OR auth_kind IN ('password', 'pin'));
++
++-- Les profils existants qui ont un secret ont un mot de passe.
++UPDATE profiles SET auth_kind = 'password' WHERE password_hash IS NOT NULL;
+diff --git a/apps/desktop/src-tauri/src/db/migrations/mod.rs b/apps/desktop/src-tauri/src/db/migrations/mod.rs
+index 57be615..78100e5 100644
+--- a/apps/desktop/src-tauri/src/db/migrations/mod.rs
++++ b/apps/desktop/src-tauri/src/db/migrations/mod.rs
+@@ -173,6 +173,11 @@ pub const MIGRATIONS: &[Migration] = &[
+         description: "Statuts de visionnage automatiques (À voir / En cours / Vu), par profil et par média",
+         sql: include_str!("0028_media_watch_status.sql"),
+     },
++    Migration {
++        version: 29,
++        description: "Type de secret des profils : mot de passe ou code PIN",
++        sql: include_str!("0029_profile_auth_kind.sql"),
++    },
+ ];
+ 
+ /// Applique, dans l'ordre, toutes les migrations dont la version est
+diff --git a/apps/desktop/src-tauri/src/db/repositories/profile_repository.rs b/apps/desktop/src-tauri/src/db/repositories/profile_repository.rs
+index ff345dc..89a7c31 100644
+--- a/apps/desktop/src-tauri/src/db/repositories/profile_repository.rs
++++ b/apps/desktop/src-tauri/src/db/repositories/profile_repository.rs
+@@ -24,11 +24,15 @@ pub struct ProfileRecord {
+     /// Hash Argon2id du code de récupération (Étape 6c) — `None` si
+     /// aucun code n'a été généré.
+     pub recovery_code_hash: Option<String>,
++    /// Type du secret : `"password"` ou `"pin"` (4 à 8 chiffres) — `None` si le
++    /// profil n'a pas de secret. Lu par l'écran de connexion pour afficher le bon
++    /// champ (0.7.9).
++    pub auth_kind: Option<String>,
+ }
+ 
+ const SELECT_COLUMNS: &str = "id, name, profile_type, can_access_private, \
+     can_manage_global_settings, can_manage_profiles, created_at, \
+-    password_hash, recovery_code_hash";
++    password_hash, recovery_code_hash, auth_kind";
+ 
+ fn map_row(row: &rusqlite::Row) -> rusqlite::Result<ProfileRecord> {
+     Ok(ProfileRecord {
+@@ -41,6 +45,7 @@ fn map_row(row: &rusqlite::Row) -> rusqlite::Result<ProfileRecord> {
+         created_at: row.get(6)?,
+         password_hash: row.get(7)?,
+         recovery_code_hash: row.get(8)?,
++        auth_kind: row.get(9)?,
+     })
+ }
+ 
+@@ -133,9 +138,23 @@ pub fn update_auth(
+     password_hash: Option<&str>,
+     recovery_code_hash: Option<&str>,
+ ) -> rusqlite::Result<()> {
++    // Sans précision, un secret est un mot de passe (comportement d'origine).
++    update_auth_with_kind(conn, id, password_hash, recovery_code_hash, password_hash.map(|_| "password"))
++}
++
++/// Comme `update_auth`, en précisant le type du secret (`"password"` | `"pin"`).
++/// Sans hash, le type est toujours effacé.
++pub fn update_auth_with_kind(
++    conn: &Connection,
++    id: i64,
++    password_hash: Option<&str>,
++    recovery_code_hash: Option<&str>,
++    auth_kind: Option<&str>,
++) -> rusqlite::Result<()> {
++    let auth_kind = if password_hash.is_some() { auth_kind } else { None };
+     conn.execute(
+-        "UPDATE profiles SET password_hash = ?1, recovery_code_hash = ?2 WHERE id = ?3",
+-        rusqlite::params![password_hash, recovery_code_hash, id],
++        "UPDATE profiles SET password_hash = ?1, recovery_code_hash = ?2, auth_kind = ?3 WHERE id = ?4",
++        rusqlite::params![password_hash, recovery_code_hash, auth_kind, id],
+     )?;
+     Ok(())
+ }
+\ No newline at end of file
+diff --git a/apps/desktop/src-tauri/src/domain/mod.rs b/apps/desktop/src-tauri/src/domain/mod.rs
+index 01dac04..413bc9b 100644
+--- a/apps/desktop/src-tauri/src/domain/mod.rs
++++ b/apps/desktop/src-tauri/src/domain/mod.rs
+@@ -11,5 +11,6 @@ pub mod privacy;
+ pub mod private_image;
+ pub mod private_video;
+ pub mod profile;
++pub mod profile_secret;
+ pub mod title;
+ pub mod watch_state;
+diff --git a/apps/desktop/src-tauri/src/domain/profile_secret.rs b/apps/desktop/src-tauri/src/domain/profile_secret.rs
+new file mode 100644
+index 0000000..01de0f5
+--- /dev/null
++++ b/apps/desktop/src-tauri/src/domain/profile_secret.rs
+@@ -0,0 +1,170 @@
++//! Secret d'un profil — mot de passe OU code PIN (0.7.9).
++//!
++//! Un secret se VALIDE et se hashe d'abord (`prepare_secret`), puis s'ÉCRIT
++//! (`apply_secret`) : ainsi un secret refusé par la politique n'abîme jamais l'état
++//! — avant, `setup_first_admin` créait le profil PUIS hashait le mot de passe ;
++//! un mot de passe trop faible laissait donc un administrateur sans mot de passe
++//! et bloquait le formulaire (« Un profil existe déjà » au second essai).
++//!
++//! Chaque (re)définition d'un secret génère un NOUVEAU code de récupération (le
++//! précédent n'est plus valable) ; il n'est affiché qu'une fois.
++
++use rusqlite::Connection;
++
++use crate::db::repositories::profile_repository;
++use crate::security::profile_auth::{self, SecretKind};
++
++/// Secret validé et hashé, prêt à être écrit.
++pub struct PreparedSecret {
++    hash: String,
++    kind: SecretKind,
++    /// Code de récupération en clair, à montrer une seule fois.
++    pub recovery_code: String,
++    recovery_hash: String,
++}
++
++fn db_err(e: rusqlite::Error) -> String {
++    e.to_string()
++}
++
++pub fn prepare_secret(secret: &str, kind: Option<&str>) -> Result<PreparedSecret, String> {
++    let kind = SecretKind::parse(kind)?;
++    let hash = profile_auth::hash_secret(secret, kind)?;
++    let (recovery_code, recovery_hash) = profile_auth::generate_recovery_code()?;
++    Ok(PreparedSecret { hash, kind, recovery_code, recovery_hash })
++}
++
++pub fn apply_secret(conn: &Connection, profile_id: i64, prepared: &PreparedSecret) -> Result<(), String> {
++    profile_repository::update_auth_with_kind(
++        conn,
++        profile_id,
++        Some(&prepared.hash),
++        Some(&prepared.recovery_hash),
++        Some(prepared.kind.as_str()),
++    )
++    .map_err(db_err)
++}
++
++/// Définit (`Some`) ou retire (`None`) le secret d'un profil. Renvoie le nouveau
++/// code de récupération quand un secret est défini.
++pub fn set_secret(
++    conn: &Connection,
++    profile_id: i64,
++    secret: Option<&str>,
++    kind: Option<&str>,
++) -> Result<Option<String>, String> {
++    match secret {
++        Some(secret) => {
++            let prepared = prepare_secret(secret, kind)?;
++            apply_secret(conn, profile_id, &prepared)?;
++            Ok(Some(prepared.recovery_code))
++        }
++        None => {
++            profile_repository::update_auth_with_kind(conn, profile_id, None, None, None).map_err(db_err)?;
++            Ok(None)
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::db::migrations::MIGRATIONS;
++
++    /// Les tables VaultTube sont créées hors migrations mais modifiées par elles.
++    fn open(max_version: i32) -> Connection {
++        let conn = Connection::open_in_memory().unwrap();
++        conn.execute_batch(
++            "PRAGMA foreign_keys = OFF;
++             CREATE TABLE vaulttube_subscriptions (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_videos (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_playlists (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_user_playlists (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_user_playlist_items (id INTEGER PRIMARY KEY);",
++        )
++        .unwrap();
++        for m in MIGRATIONS.iter().filter(|m| m.version <= max_version) {
++            conn.execute_batch(m.sql).unwrap_or_else(|e| panic!("migration {} : {e}", m.version));
++        }
++        conn
++    }
++
++    fn new_profile(conn: &Connection, name: &str) -> i64 {
++        profile_repository::create(conn, name, "Utilisateur", false, false, false).unwrap()
++    }
++
++    fn record(conn: &Connection, id: i64) -> profile_repository::ProfileRecord {
++        profile_repository::get_by_id(conn, id).unwrap().unwrap()
++    }
++
++    #[test]
++    fn un_pin_est_stocke_avec_son_type_et_un_code_de_recuperation() {
++        let conn = open(i32::MAX);
++        let id = new_profile(&conn, "Camille");
++        let code = set_secret(&conn, id, Some("4821"), Some("pin")).unwrap().expect("code de récupération");
++        assert_eq!(code.len(), 19); // XXXX-XXXX-XXXX-XXXX
++        let r = record(&conn, id);
++        assert_eq!(r.auth_kind.as_deref(), Some("pin"));
++        assert!(profile_auth::verify_password("4821", r.password_hash.as_deref().unwrap()).unwrap());
++        assert!(profile_auth::verify_recovery_code(&code, r.recovery_code_hash.as_deref().unwrap()).unwrap());
++    }
++
++    #[test]
++    fn mot_de_passe_par_defaut_puis_remplacement_par_un_pin_et_retrait() {
++        let conn = open(i32::MAX);
++        let id = new_profile(&conn, "Alex");
++        let first = set_secret(&conn, id, Some("Secret#2026"), None).unwrap().unwrap();
++        assert_eq!(record(&conn, id).auth_kind.as_deref(), Some("password"));
++        // Changer de secret invalide l'ancien code de récupération.
++        let second = set_secret(&conn, id, Some("9087"), Some("pin")).unwrap().unwrap();
++        assert_ne!(first, second);
++        let r = record(&conn, id);
++        assert_eq!(r.auth_kind.as_deref(), Some("pin"));
++        assert!(!profile_auth::verify_recovery_code(&first, r.recovery_code_hash.as_deref().unwrap()).unwrap());
++        // Retrait : plus de secret, plus de type, plus de code.
++        assert_eq!(set_secret(&conn, id, None, None).unwrap(), None);
++        let r = record(&conn, id);
++        assert!((r.password_hash.is_none(), r.recovery_code_hash.is_none(), r.auth_kind.is_none()) == (true, true, true));
++    }
++
++    #[test]
++    fn un_secret_refuse_ne_modifie_rien() {
++        let conn = open(i32::MAX);
++        let id = new_profile(&conn, "Sam");
++        set_secret(&conn, id, Some("1234"), Some("pin")).unwrap();
++        let before = record(&conn, id).password_hash;
++        assert!(set_secret(&conn, id, Some("12"), Some("pin")).is_err()); // PIN trop court
++        assert!(set_secret(&conn, id, Some("faible"), None).is_err()); // mot de passe trop faible
++        assert!(set_secret(&conn, id, Some("1234"), Some("biometrie")).is_err());
++        let after = record(&conn, id);
++        assert_eq!(after.password_hash, before);
++        assert_eq!(after.auth_kind.as_deref(), Some("pin"));
++    }
++
++    #[test]
++    fn l_ancienne_fonction_update_auth_pose_un_mot_de_passe() {
++        let conn = open(i32::MAX);
++        let id = new_profile(&conn, "Ancien");
++        profile_repository::update_auth(&conn, id, Some("hash"), Some("code")).unwrap();
++        assert_eq!(record(&conn, id).auth_kind.as_deref(), Some("password"));
++        profile_repository::update_auth(&conn, id, None, None).unwrap();
++        assert_eq!(record(&conn, id).auth_kind, None);
++    }
++
++    /// Mise à jour d'une base existante : les secrets déjà posés sont des mots de passe.
++    #[test]
++    fn la_migration_29_marque_les_secrets_existants_comme_mots_de_passe() {
++        let conn = open(28);
++        conn.execute_batch(
++            "INSERT INTO profiles (id, name, profile_type, created_at, password_hash) VALUES (1, 'Avec', 'admin', 'x', '$argon2id$x');
++             INSERT INTO profiles (id, name, profile_type, created_at) VALUES (2, 'Sans', 'user', 'x');",
++        )
++        .unwrap();
++        let sql = MIGRATIONS.iter().find(|m| m.version == 29).unwrap().sql;
++        conn.execute_batch(sql).unwrap();
++        assert_eq!(record(&conn, 1).auth_kind.as_deref(), Some("password"));
++        assert_eq!(record(&conn, 2).auth_kind, None);
++        // La contrainte refuse un type inconnu.
++        assert!(conn.execute("UPDATE profiles SET auth_kind = 'autre' WHERE id = 2", []).is_err());
++    }
++}
+diff --git a/apps/desktop/src-tauri/src/lib.rs b/apps/desktop/src-tauri/src/lib.rs
+index a4c11b8..154a3df 100644
+--- a/apps/desktop/src-tauri/src/lib.rs
++++ b/apps/desktop/src-tauri/src/lib.rs
+@@ -190,6 +190,7 @@ pub fn run() {
+             commands::profile::get_active_profile,
+             commands::profile::switch_active_profile,
+             commands::profile::create_profile,
++            commands::profile::create_profile_with_secret,
+             commands::profile::rename_profile,
+             commands::profile::update_profile_permissions,
+             commands::profile::delete_profile,
+diff --git a/apps/desktop/src-tauri/src/security/login_throttle.rs b/apps/desktop/src-tauri/src/security/login_throttle.rs
+new file mode 100644
+index 0000000..ac88626
+--- /dev/null
++++ b/apps/desktop/src-tauri/src/security/login_throttle.rs
+@@ -0,0 +1,156 @@
++//! Ralentissement des tentatives de connexion répétées (0.7.9).
++//!
++//! Un PIN de 4 chiffres n'a que 10 000 combinaisons : sans frein, on les essaie
++//! toutes en quelques minutes. Après 5 échecs consécutifs sur un profil, les
++//! essais suivants sont refusés pendant un délai qui double à chaque échec
++//! supplémentaire (30 s, 1 min, 2 min, 4 min, 8 min, puis 10 min au maximum). Un
++//! succès remet le compteur à zéro. L'état est en mémoire : redémarrer
++//! l'application le réinitialise (le frein vise l'essai répété depuis l'interface,
++//! pas quelqu'un qui peut déjà lire le disque).
++
++use std::collections::HashMap;
++use std::sync::{Mutex, OnceLock};
++use std::time::{Duration, Instant};
++
++/// Échecs consécutifs tolérés avant le premier blocage.
++pub const FREE_ATTEMPTS: u32 = 5;
++const BASE_LOCK_SECONDS: u64 = 30;
++const MAX_LOCK_SECONDS: u64 = 600;
++
++/// Durée du blocage après `failures` échecs consécutifs.
++pub fn lock_seconds(failures: u32) -> u64 {
++    if failures < FREE_ATTEMPTS {
++        return 0;
++    }
++    let doublings = (failures - FREE_ATTEMPTS).min(10);
++    (BASE_LOCK_SECONDS << doublings).min(MAX_LOCK_SECONDS)
++}
++
++#[derive(Default)]
++struct Entry {
++    failures: u32,
++    locked_until: Option<Instant>,
++}
++
++/// Compteurs par profil (cœur testable : l'heure est passée en paramètre).
++#[derive(Default)]
++pub struct Throttle {
++    entries: HashMap<i64, Entry>,
++}
++
++impl Throttle {
++    /// `Err(secondes restantes)` si le profil est bloqué à l'instant `now`.
++    pub fn check(&self, profile_id: i64, now: Instant) -> Result<(), u64> {
++        match self.entries.get(&profile_id).and_then(|e| e.locked_until) {
++            Some(until) if until > now => Err((until - now).as_secs() + 1),
++            _ => Ok(()),
++        }
++    }
++
++    pub fn failure(&mut self, profile_id: i64, now: Instant) {
++        let entry = self.entries.entry(profile_id).or_default();
++        entry.failures = entry.failures.saturating_add(1);
++        let lock = lock_seconds(entry.failures);
++        entry.locked_until = (lock > 0).then(|| now + Duration::from_secs(lock));
++    }
++
++    pub fn success(&mut self, profile_id: i64) {
++        self.entries.remove(&profile_id);
++    }
++}
++
++fn global() -> &'static Mutex<Throttle> {
++    static STATE: OnceLock<Mutex<Throttle>> = OnceLock::new();
++    STATE.get_or_init(|| Mutex::new(Throttle::default()))
++}
++
++fn locked_message(seconds: u64) -> String {
++    if seconds >= 90 {
++        format!("Trop de tentatives. Réessayez dans {} min.", seconds.div_ceil(60))
++    } else {
++        format!("Trop de tentatives. Réessayez dans {seconds} s.")
++    }
++}
++
++/// À appeler AVANT de vérifier un secret : refuse tant que le profil est bloqué.
++pub fn check(profile_id: i64) -> Result<(), String> {
++    let state = global().lock().map_err(|_| "Verrou interne indisponible.".to_string())?;
++    state.check(profile_id, Instant::now()).map_err(locked_message)
++}
++
++/// Secret incorrect.
++pub fn record_failure(profile_id: i64) {
++    if let Ok(mut state) = global().lock() {
++        state.failure(profile_id, Instant::now());
++    }
++}
++
++/// Secret correct : le compteur repart de zéro.
++pub fn record_success(profile_id: i64) {
++    if let Ok(mut state) = global().lock() {
++        state.success(profile_id);
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn delais_progressifs_plafonnes() {
++        let expected = [(0, 0), (4, 0), (5, 30), (6, 60), (7, 120), (8, 240), (9, 480), (10, 600), (50, 600)];
++        for (failures, seconds) in expected {
++            assert_eq!(lock_seconds(failures), seconds, "après {failures} échecs");
++        }
++    }
++
++    #[test]
++    fn cinq_essais_libres_puis_blocage_puis_deblocage() {
++        let mut t = Throttle::default();
++        let start = Instant::now();
++        for _ in 0..4 {
++            t.failure(1, start);
++            assert!(t.check(1, start).is_ok());
++        }
++        t.failure(1, start); // 5e échec
++        let remaining = t.check(1, start).unwrap_err();
++        assert!((30..=31).contains(&remaining), "{remaining}");
++        assert!(t.check(1, start + Duration::from_secs(29)).is_err());
++        assert!(t.check(1, start + Duration::from_secs(31)).is_ok());
++    }
++
++    #[test]
++    fn le_delai_double_a_chaque_echec_suivant() {
++        let mut t = Throttle::default();
++        let start = Instant::now();
++        for _ in 0..5 {
++            t.failure(1, start);
++        }
++        let later = start + Duration::from_secs(40);
++        t.failure(1, later); // 6e échec : 60 s
++        assert!(t.check(1, later + Duration::from_secs(59)).is_err());
++        assert!(t.check(1, later + Duration::from_secs(61)).is_ok());
++    }
++
++    #[test]
++    fn un_succes_remet_a_zero_et_les_profils_sont_independants() {
++        let mut t = Throttle::default();
++        let now = Instant::now();
++        for _ in 0..5 {
++            t.failure(1, now);
++        }
++        assert!(t.check(1, now).is_err());
++        assert!(t.check(2, now).is_ok()); // autre profil non concerné
++        t.success(1);
++        assert!(t.check(1, now).is_ok());
++        t.failure(1, now); // repart de 1 échec, pas de 6
++        assert!(t.check(1, now).is_ok());
++    }
++
++    #[test]
++    fn messages_lisibles() {
++        assert_eq!(locked_message(30), "Trop de tentatives. Réessayez dans 30 s.");
++        assert_eq!(locked_message(120), "Trop de tentatives. Réessayez dans 2 min.");
++        assert_eq!(locked_message(600), "Trop de tentatives. Réessayez dans 10 min.");
++    }
++}
+diff --git a/apps/desktop/src-tauri/src/security/mod.rs b/apps/desktop/src-tauri/src/security/mod.rs
+index 62ab60b..25e6d76 100644
+--- a/apps/desktop/src-tauri/src/security/mod.rs
++++ b/apps/desktop/src-tauri/src/security/mod.rs
+@@ -12,4 +12,5 @@
+ pub mod kdf;
+ pub mod permissions;
+ pub mod vault;
+-pub mod profile_auth;
+\ No newline at end of file
++pub mod profile_auth;
++pub mod login_throttle;
+diff --git a/apps/desktop/src-tauri/src/security/profile_auth.rs b/apps/desktop/src-tauri/src/security/profile_auth.rs
+index 0b99eb2..01f85ef 100644
+--- a/apps/desktop/src-tauri/src/security/profile_auth.rs
++++ b/apps/desktop/src-tauri/src/security/profile_auth.rs
+@@ -51,6 +51,74 @@ pub fn hash_password(password: &str) -> Result<String, String> {
+     Ok(hash.to_string())
+ }
+ 
++/// Type de secret d'un profil (0.7.9) : un mot de passe complet ou un code PIN.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum SecretKind {
++    Password,
++    Pin,
++}
++
++/// Longueurs autorisées d'un PIN.
++pub const PIN_MIN_LENGTH: usize = 4;
++pub const PIN_MAX_LENGTH: usize = 8;
++
++impl SecretKind {
++    /// `None` = mot de passe (valeur d'origine des anciennes versions).
++    pub fn parse(raw: Option<&str>) -> Result<SecretKind, String> {
++        match raw {
++            None | Some("password") => Ok(SecretKind::Password),
++            Some("pin") => Ok(SecretKind::Pin),
++            Some(other) => Err(format!("Type de secret inconnu : {other}")),
++        }
++    }
++
++    pub fn as_str(self) -> &'static str {
++        match self {
++            SecretKind::Password => "password",
++            SecretKind::Pin => "pin",
++        }
++    }
++}
++
++/// Hash un secret (mot de passe OU PIN) après validation de la politique propre
++/// à son type. La vérification (`verify_password`) est la même pour les deux.
++///
++/// Un PIN n'est PAS un mot de passe fort : 4 à 8 chiffres seulement, et le fichier
++/// de base de données n'est pas chiffré. Il protège contre un autre utilisateur de
++/// la même session (l'accès à l'application et aux profils), pas contre quelqu'un
++/// qui lit le disque. Les essais successifs sont ralentis (`login_throttle`).
++pub fn hash_secret(secret: &str, kind: SecretKind) -> Result<String, String> {
++    match kind {
++        SecretKind::Password => hash_password(secret),
++        SecretKind::Pin => {
++            validate_pin_policy(secret)?;
++            hash_unchecked(secret)
++        }
++    }
++}
++
++/// Politique du PIN : uniquement des chiffres, de 4 à 8.
++pub fn validate_pin_policy(pin: &str) -> Result<(), String> {
++    let length = pin.chars().count();
++    if !pin.chars().all(|c| c.is_ascii_digit()) {
++        return Err("Le code PIN ne doit contenir que des chiffres.".to_string());
++    }
++    if !(PIN_MIN_LENGTH..=PIN_MAX_LENGTH).contains(&length) {
++        return Err(format!(
++            "Le code PIN doit contenir entre {PIN_MIN_LENGTH} et {PIN_MAX_LENGTH} chiffres."
++        ));
++    }
++    Ok(())
++}
++
++fn hash_unchecked(secret: &str) -> Result<String, String> {
++    let salt = SaltString::generate(&mut OsRng);
++    Argon2::default()
++        .hash_password(secret.as_bytes(), &salt)
++        .map(|h| h.to_string())
++        .map_err(|e| format!("Échec du hash du secret : {e}"))
++}
++
+ /// Valide qu'un mot de passe respecte la politique de sécurité
+ fn validate_password_policy(password: &str) -> Result<(), String> {
+     if password.len() < 8 {
+@@ -100,7 +168,13 @@ pub fn generate_recovery_code() -> Result<(String, String), String> {
+         .collect::<Vec<_>>()
+         .join("-");
+ 
+-    let hash = hash_password(&code)?;
++    // Le code est un secret aléatoire de 16 caractères (80 bits) : il n'est PAS un
++    // mot de passe saisi par l'utilisateur et ne doit donc pas passer par la
++    // politique des mots de passe. Avant 0.7.9 il y passait — et cette politique
++    // exige une minuscule, que ce code (majuscules et chiffres) n'a jamais : la
++    // génération échouait TOUJOURS, donc définir un mot de passe (création d'un
++    // compte, réinitialisation, récupération) échouait systématiquement.
++    let hash = hash_unchecked(&code)?;
+     Ok((code, hash))
+ }
+ 
+@@ -108,4 +182,67 @@ pub fn generate_recovery_code() -> Result<(String, String), String> {
+ /// `verify_password`, mais séparé pour la clarté sémantique).
+ pub fn verify_recovery_code(code: &str, hash: &str) -> Result<bool, String> {
+     verify_password(code, hash)
+-}
+\ No newline at end of file
++}
++
++#[cfg(test)]
++mod secret_tests {
++    use super::*;
++
++    #[test]
++    fn pin_accepte_4_a_8_chiffres() {
++        for pin in ["1234", "0000", "123456", "12345678"] {
++            assert!(validate_pin_policy(pin).is_ok(), "{pin} devrait être accepté");
++        }
++    }
++
++    #[test]
++    fn pin_refuse_longueur_et_caracteres_invalides() {
++        assert!(validate_pin_policy("123").is_err()); // trop court
++        assert!(validate_pin_policy("123456789").is_err()); // trop long
++        assert!(validate_pin_policy("12a4").is_err());
++        assert!(validate_pin_policy("12 34").is_err());
++        assert!(validate_pin_policy("").is_err());
++        assert!(validate_pin_policy("１２３４").is_err()); // chiffres pleine chasse, pas ASCII
++        assert!(validate_pin_policy("-123").is_err());
++    }
++
++    #[test]
++    fn un_pin_n_est_pas_soumis_a_la_politique_des_mots_de_passe() {
++        // « 1234 » serait refusé comme mot de passe (8 caractères, majuscule…)
++        // mais est un PIN valide.
++        assert!(hash_secret("1234", SecretKind::Password).is_err());
++        let hash = hash_secret("1234", SecretKind::Pin).expect("PIN valide");
++        assert!(verify_password("1234", &hash).unwrap());
++        assert!(!verify_password("1235", &hash).unwrap());
++    }
++
++    #[test]
++    fn un_mot_de_passe_reste_soumis_a_sa_politique() {
++        assert!(hash_secret("Secret#2026", SecretKind::Password).is_ok());
++        assert!(hash_secret("motdepasse", SecretKind::Password).is_err());
++        // Un mot de passe n'est pas accepté en tant que PIN.
++        assert!(hash_secret("Secret#2026", SecretKind::Pin).is_err());
++    }
++
++    #[test]
++    fn le_code_de_recuperation_se_genere_et_se_verifie() {
++        // Régression : la génération échouait toujours (politique des mots de passe
++        // appliquée à un code sans minuscule).
++        for _ in 0..3 {
++            let (code, hash) = generate_recovery_code().expect("génération du code de récupération");
++            assert_eq!(code.len(), 19);
++            assert!(code.chars().all(|c| c == '-' || c.is_ascii_uppercase() || c.is_ascii_digit()));
++            assert!(verify_recovery_code(&code, &hash).unwrap());
++            assert!(!verify_recovery_code("AAAA-AAAA-AAAA-AAAA", &hash).unwrap());
++        }
++    }
++
++    #[test]
++    fn type_de_secret_inconnu_est_refuse() {
++        assert_eq!(SecretKind::parse(None), Ok(SecretKind::Password));
++        assert_eq!(SecretKind::parse(Some("password")), Ok(SecretKind::Password));
++        assert_eq!(SecretKind::parse(Some("pin")), Ok(SecretKind::Pin));
++        assert!(SecretKind::parse(Some("biometrie")).is_err());
++        assert_eq!(SecretKind::Pin.as_str(), "pin");
++    }
++}
+diff --git a/apps/desktop/src/auth/AuthGate.tsx b/apps/desktop/src/auth/AuthGate.tsx
+index 48689e9..c8db9b7 100644
+--- a/apps/desktop/src/auth/AuthGate.tsx
++++ b/apps/desktop/src/auth/AuthGate.tsx
+@@ -20,6 +20,18 @@ import { applyNearMax } from "../window/nearMax";
+ import { metadataApi } from "../features/settings/api";
+ import { StarfieldBackdrop } from "../components/StarfieldBackdrop";
+ import { playUiSound } from "../features/sound/uiSounds";
++import { RecoveryCodeBox } from "../features/profile/RecoveryCodeBox";
++import { SecretFields } from "../features/profile/SecretFields";
++import {
++  EMPTY_SECRET_FORM,
++  kindOfProfile,
++  secretLabel,
++  secretPayload,
++  validateSecret,
++  validateSecretForm,
++  type SecretFormState,
++  type SecretKind,
++} from "../features/profile/secret";
+ import "./auth.css";
+ 
+ interface LoginProfile {
+@@ -27,6 +39,8 @@ interface LoginProfile {
+   name: string;
+   profile_type: string;
+   password_hash: string | null;
++  /** `"password"` | `"pin"` | `null` (compte sans protection). */
++  auth_kind?: string | null;
+ }
+ 
+ interface LoginState {
+@@ -49,23 +63,38 @@ const authApi = {
+   getQuickAccessEnabled: () => invoke<boolean>("get_quick_access_enabled"),
+   quickLogin: (profileId: number) =>
+     invoke<LoginProfile>("quick_login_profile", { profileId }),
+-  setupFirstAdmin: (name: string, password?: string) =>
++  setupFirstAdmin: (name: string, password?: string, kind?: SecretKind) =>
+     invoke<[LoginProfile, string | null]>("setup_first_admin", {
+       name,
+       password: password ?? null,
++      kind: kind ?? null,
++    }),
++  /** Crée le compte AVEC son secret (validé avant toute écriture) et renvoie son
++   * code de récupération. */
++  createProfileWithSecret: (
++    name: string,
++    profileType: string,
++    secret: string | null,
++    kind: SecretKind | null
++  ) =>
++    invoke<[LoginProfile, string | null]>("create_profile_with_secret", {
++      name,
++      profileType,
++      permissions: null,
++      secret,
++      secretKind: kind,
+     }),
+-  createProfile: (name: string, profileType: string) =>
+-    invoke<LoginProfile>("create_profile", { name, profileType, permissions: null }),
+   setProfilePassword: (profileId: number, password: string) =>
+     invoke<string | null>("admin_reset_password", {
+       targetProfileId: profileId,
+       newPassword: password,
+     }),
+-  recover: (profileId: number, recoveryCode: string, newPassword?: string) =>
++  recover: (profileId: number, recoveryCode: string, newPassword?: string, kind?: SecretKind) =>
+     invoke<string | null>("recover_with_code", {
+       profileId,
+       recoveryCode,
+       newPassword: newPassword ?? null,
++      kind: kind ?? null,
+     }),
+ };
+ 
+@@ -143,6 +172,8 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
+   const [recovering, setRecovering] = useState(false);
+   const [recoveryCode, setRecoveryCode] = useState("");
+   const [newPassword, setNewPassword] = useState("");
++  // Nouveau code de récupération remis après une récupération d'accès réussie.
++  const [recoveredCode, setRecoveredCode] = useState<string | null>(null);
+   const [error, setError] = useState<string | null>(null);
+   const [busy, setBusy] = useState(false);
+   const [avatars, setAvatars] = useState<Record<number, string>>({});
+@@ -198,13 +229,29 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
+     setBusy(true);
+     setError(null);
+     try {
++      const kind = kindOfProfile(selected);
+       if (recovering) {
+-        await authApi.recover(selected.id, recoveryCode.trim(), newPassword || undefined);
+-      } else {
+-        await authApi.login(
++        // Le nouveau secret garde le type de l'ancien (PIN reste PIN).
++        if (newPassword && kind) {
++          const problem = validateSecret(kind, newPassword);
++          if (problem) {
++            setError(problem);
++            setBusy(false);
++            return;
++          }
++        }
++        const newCode = await authApi.recover(
+           selected.id,
+-          selected.password_hash ? password : undefined
++          recoveryCode.trim(),
++          newPassword || undefined,
++          newPassword && kind ? kind : undefined
+         );
++        if (newCode) {
++          setRecoveredCode(newCode);
++          return;
++        }
++      } else {
++        await authApi.login(selected.id, kind ? password : undefined);
+       }
+       onDone();
+     } catch (err) {
+@@ -214,6 +261,23 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
+     }
+   };
+ 
++  if (recoveredCode) {
++    return (
++      <div className="avm-auth__card">
++        <RecoveryCodeBox
++          variant="auth"
++          code={recoveredCode}
++          profileName={selected?.name}
++          onDone={onDone}
++        />
++      </div>
++    );
++  }
++
++  const selectedKind: SecretKind | null = selected ? kindOfProfile(selected) : null;
++  const pinMode = selectedKind === "pin";
++  const secretName = selectedKind ? secretLabel(selectedKind) : "mot de passe";
++
+   return (
+     <div className="avm-auth__card">
+       {!selected ? (
+@@ -282,24 +346,37 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
+                 />
+               </label>
+               <label className="avm-auth__label">
+-                Nouveau mot de passe (optionnel)
++                Nouveau {secretName} (optionnel)
+                 <input
+                   className="avm-auth__input"
+                   type="password"
++                  inputMode={pinMode ? "numeric" : undefined}
++                  maxLength={pinMode ? 8 : undefined}
++                  autoComplete="new-password"
+                   value={newPassword}
+-                  onChange={(e) => setNewPassword(e.target.value)}
++                  onChange={(e) =>
++                    setNewPassword(pinMode ? e.target.value.replace(/\D/g, "").slice(0, 8) : e.target.value)
++                  }
+                 />
+               </label>
++              <p className="avm-auth__hint">
++                Laissé vide, ce compte ne sera plus protégé.
++              </p>
+             </>
+           ) : (
+-            selected.password_hash && (
++            selectedKind && (
+               <label className="avm-auth__label">
+-                Mot de passe
++                {pinMode ? "Code PIN" : "Mot de passe"}
+                 <input
+                   className="avm-auth__input"
+                   type="password"
++                  inputMode={pinMode ? "numeric" : undefined}
++                  maxLength={pinMode ? 8 : undefined}
++                  autoComplete="current-password"
+                   value={password}
+-                  onChange={(e) => setPassword(e.target.value)}
++                  onChange={(e) =>
++                    setPassword(pinMode ? e.target.value.replace(/\D/g, "").slice(0, 8) : e.target.value)
++                  }
+                   autoFocus
+                 />
+               </label>
+@@ -310,13 +387,13 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
+             <button className="avm-btn avm-btn--primary" type="submit" disabled={busy}>
+               {recovering ? "Récupérer l'accès" : "Entrer"}
+             </button>
+-            {selected.password_hash && !recovering && (
++            {selectedKind && !recovering && (
+               <button
+                 className="avm-btn avm-btn--ghost"
+                 type="button"
+                 onClick={() => setRecovering(true)}
+               >
+-                Mot de passe oublié ?
++                {pinMode ? "Code PIN oublié ?" : "Mot de passe oublié ?"}
+               </button>
+             )}
+             {recovering && (
+@@ -338,29 +415,36 @@ function Login({ profiles, onDone }: { profiles: LoginProfile[]; onDone: () => v
+ function Onboarding({ onDone }: { onDone: () => void }) {
+   const [step, setStep] = useState<"admin" | "code" | "extra">("admin");
+   const [name, setName] = useState("");
+-  const [password, setPassword] = useState("");
+-  const [confirm, setConfirm] = useState("");
++  const [secretForm, setSecretForm] = useState<SecretFormState>(EMPTY_SECRET_FORM);
+   const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
+   const [copied, setCopied] = useState(false);
+   const [ack, setAck] = useState(false);
+   const [extras, setExtras] = useState<LoginProfile[]>([]);
+   const [extraName, setExtraName] = useState("");
+   const [extraType, setExtraType] = useState("Utilisateur");
+-  const [extraPassword, setExtraPassword] = useState("");
++  const [extraSecret, setExtraSecret] = useState<SecretFormState>(EMPTY_SECRET_FORM);
++  // Codes de récupération des comptes ajoutés (à noter : montrés une seule fois).
++  const [extraCodes, setExtraCodes] = useState<{ name: string; code: string }[]>([]);
+   const [error, setError] = useState<string | null>(null);
+   const [busy, setBusy] = useState(false);
+ 
+   const submitAdmin = async (e: FormEvent) => {
+     e.preventDefault();
+     if (busy || !name.trim()) return;
+-    if (password && password !== confirm) {
+-      setError("Les deux mots de passe ne correspondent pas.");
++    const problem = validateSecretForm(secretForm);
++    if (problem) {
++      setError(problem);
+       return;
+     }
+     setBusy(true);
+     setError(null);
+     try {
+-      const [, code] = await authApi.setupFirstAdmin(name.trim(), password || undefined);
++      const { secret, kind } = secretPayload(secretForm);
++      const [, code] = await authApi.setupFirstAdmin(
++        name.trim(),
++        secret ?? undefined,
++        kind ?? undefined
++      );
+       if (code) {
+         setRecoveryCode(code);
+         setStep("code");
+@@ -377,16 +461,27 @@ function Onboarding({ onDone }: { onDone: () => void }) {
+   const addExtra = async (e: FormEvent) => {
+     e.preventDefault();
+     if (busy || !extraName.trim()) return;
++    const problem = validateSecretForm(extraSecret);
++    if (problem) {
++      setError(problem);
++      return;
++    }
+     setBusy(true);
+     setError(null);
+     try {
+-      const created = await authApi.createProfile(extraName.trim(), extraType);
+-      if (extraPassword) {
+-        await authApi.setProfilePassword(created.id, extraPassword);
+-      }
++      // Secret validé AVANT la création : un secret refusé ne laisse pas un compte
++      // à moitié créé.
++      const { secret, kind } = secretPayload(extraSecret);
++      const [created, code] = await authApi.createProfileWithSecret(
++        extraName.trim(),
++        extraType,
++        secret,
++        kind
++      );
+       setExtras((list) => [...list, created]);
++      if (code) setExtraCodes((list) => [...list, { name: created.name, code }]);
+       setExtraName("");
+-      setExtraPassword("");
++      setExtraSecret(EMPTY_SECRET_FORM);
+     } catch (err) {
+       setError(String(err));
+     } finally {
+@@ -421,24 +516,11 @@ function Onboarding({ onDone }: { onDone: () => void }) {
+               autoFocus
+             />
+           </label>
+-          <label className="avm-auth__label">
+-            Mot de passe (optionnel mais recommandé)
+-            <input
+-              className="avm-auth__input"
+-              type="password"
+-              value={password}
+-              onChange={(e) => setPassword(e.target.value)}
+-            />
+-          </label>
+-          <label className="avm-auth__label">
+-            Confirmer le mot de passe
+-            <input
+-              className="avm-auth__input"
+-              type="password"
+-              value={confirm}
+-              onChange={(e) => setConfirm(e.target.value)}
+-            />
+-          </label>
++          <p className="avm-auth__hint">
++            Protégez ce compte par un mot de passe ou un code PIN (recommandé) — vous pourrez le
++            changer plus tard dans Paramètres.
++          </p>
++          <SecretFields variant="auth" value={secretForm} onChange={setSecretForm} disabled={busy} />
+           {error && <p className="avm-auth__error">{error}</p>}
+           <div className="avm-auth__actions">
+             <button className="avm-btn avm-btn--primary" type="submit" disabled={busy}>
+@@ -484,10 +566,23 @@ function Onboarding({ onDone }: { onDone: () => void }) {
+               {extras.map((p) => (
+                 <li key={p.id}>
+                   {p.name} ({p.profile_type})
++                  {p.auth_kind === "pin" ? " — code PIN" : p.auth_kind === "password" ? " — mot de passe" : ""}
+                 </li>
+               ))}
+             </ul>
+           )}
++          {extraCodes.length > 0 && (
++            <div className="avm-auth__extra-codes">
++              <p className="avm-auth__hint">
++                Notez ces codes de récupération : ils ne seront plus affichés.
++              </p>
++              {extraCodes.map((entry) => (
++                <p key={entry.name + entry.code} className="avm-auth__hint">
++                  <strong>{entry.name}</strong> : <code>{entry.code}</code>
++                </p>
++              ))}
++            </div>
++          )}
+           <form onSubmit={addExtra} className="avm-auth__extra-form">
+             <input
+               className="avm-auth__input"
+@@ -505,12 +600,11 @@ function Onboarding({ onDone }: { onDone: () => void }) {
+               <option>Enfant</option>
+               <option>Administrateur</option>
+             </select>
+-            <input
+-              className="avm-auth__input"
+-              type="password"
+-              value={extraPassword}
+-              onChange={(e) => setExtraPassword(e.target.value)}
+-              placeholder="Mot de passe (optionnel)"
++            <SecretFields
++              variant="auth"
++              value={extraSecret}
++              onChange={setExtraSecret}
++              disabled={busy}
+             />
+             <button className="avm-btn avm-btn--ghost" type="submit" disabled={busy}>
+               <UserPlus size={14} /> Ajouter
+diff --git a/apps/desktop/src/features/profile/AccountSecuritySection.tsx b/apps/desktop/src/features/profile/AccountSecuritySection.tsx
+new file mode 100644
+index 0000000..44dd705
+--- /dev/null
++++ b/apps/desktop/src/features/profile/AccountSecuritySection.tsx
+@@ -0,0 +1,19 @@
++import { useActiveProfile } from "../../profile/ActiveProfileContext";
++import { ProfileSecurityPanel } from "./ProfileSecurityPanel";
++
++/** Paramètres → Mon compte : mot de passe ou code PIN du profil connecté. */
++export function AccountSecuritySection() {
++  const { activeProfile } = useActiveProfile();
++  if (!activeProfile) return null;
++  return (
++    <section className="avm-settings-section">
++      <h2>Mon compte — protection</h2>
++      <p className="avm-settings-muted">
++        Protégez l'accès à votre compte par un mot de passe ou un code PIN (4 à 8 chiffres). Un code
++        de récupération vous est remis pour retrouver l'accès en cas d'oubli. Le Coffre privé a son
++        propre secret, distinct de celui-ci.
++      </p>
++      <ProfileSecurityPanel profile={activeProfile} isSelf />
++    </section>
++  );
++}
+diff --git a/apps/desktop/src/features/profile/ProfileFormModal.tsx b/apps/desktop/src/features/profile/ProfileFormModal.tsx
+index 8a4403b..4137bf8 100644
+--- a/apps/desktop/src/features/profile/ProfileFormModal.tsx
++++ b/apps/desktop/src/features/profile/ProfileFormModal.tsx
+@@ -1,7 +1,17 @@
+ import { useEffect, useState, type FormEvent } from "react";
+ import { Button, Modal } from "@aethervault/ui-kit";
+ import type { Profile, ProfilePermissions, ProfileType } from "@aethervault/shared-types";
++import { useActiveProfile } from "../../profile/ActiveProfileContext";
+ import { profileApi } from "./api";
++import { ProfileSecurityPanel } from "./ProfileSecurityPanel";
++import { RecoveryCodeBox } from "./RecoveryCodeBox";
++import { SecretFields } from "./SecretFields";
++import {
++  EMPTY_SECRET_FORM,
++  secretPayload,
++  validateSecretForm,
++  type SecretFormState,
++} from "./secret";
+ 
+ const TYPE_LABELS: Record<ProfileType, string> = {
+   admin: "Administrateur",
+@@ -34,6 +44,10 @@ interface ProfileFormModalProps {
+ 
+ export function ProfileFormModal({ open, profile, onClose, onSaved }: ProfileFormModalProps) {
+   const isEditing = profile !== null;
++  const { activeProfile } = useActiveProfile();
++  // Protection du nouveau compte (création) et code de récupération à montrer.
++  const [secretForm, setSecretForm] = useState<SecretFormState>(EMPTY_SECRET_FORM);
++  const [createdRecovery, setCreatedRecovery] = useState<{ code: string; name: string } | null>(null);
+   const [name, setName] = useState("");
+   const [profileType, setProfileType] = useState<ProfileType>("user");
+   const [permissions, setPermissions] = useState<ProfilePermissions>(TYPE_DEFAULT_PERMISSIONS.user);
+@@ -56,6 +70,8 @@ export function ProfileFormModal({ open, profile, onClose, onSaved }: ProfileFor
+       setPermissions(TYPE_DEFAULT_PERMISSIONS.user);
+     }
+     setError(null);
++    setSecretForm(EMPTY_SECRET_FORM);
++    setCreatedRecovery(null);
+   }, [open, profile]);
+ 
+   const handleTypeChange = (nextType: ProfileType) => {
+@@ -79,6 +95,14 @@ export function ProfileFormModal({ open, profile, onClose, onSaved }: ProfileFor
+       return;
+     }
+ 
++    if (!isEditing) {
++      const problem = validateSecretForm(secretForm);
++      if (problem) {
++        setError(problem);
++        return;
++      }
++    }
++
+     setSubmitting(true);
+     setError(null);
+ 
+@@ -89,17 +113,48 @@ export function ProfileFormModal({ open, profile, onClose, onSaved }: ProfileFor
+         }
+         await profileApi.updatePermissions(profile.id, permissions);
+       } else {
+-        await profileApi.create(trimmed, profileType, permissions);
++        const { secret, kind } = secretPayload(secretForm);
++        const [, recoveryCode] = await profileApi.createWithSecret(
++          trimmed,
++          profileType,
++          permissions,
++          secret,
++          kind
++        );
++        if (recoveryCode) {
++          // Le code de récupération n'est montré qu'une fois : on garde la fenêtre
++          // ouverte jusqu'à ce que l'utilisateur confirme l'avoir noté.
++          onSaved();
++          setCreatedRecovery({ code: recoveryCode, name: trimmed });
++          return;
++        }
+       }
+       onSaved();
+       onClose();
+     } catch (err) {
+-      setError(err instanceof Error ? err.message : "Enregistrement impossible.");
++      setError(
++        typeof err === "string" ? err : err instanceof Error ? err.message : "Enregistrement impossible."
++      );
+     } finally {
+       setSubmitting(false);
+     }
+   };
+ 
++  if (createdRecovery) {
++    return (
++      <Modal open={open} onClose={onClose} title="Profil créé">
++        <RecoveryCodeBox
++          code={createdRecovery.code}
++          profileName={createdRecovery.name}
++          onDone={() => {
++            setCreatedRecovery(null);
++            onClose();
++          }}
++        />
++      </Modal>
++    );
++  }
++
+   return (
+     <Modal open={open} onClose={onClose} title={isEditing ? "Modifier le profil" : "Créer un profil"}>
+       <form onSubmit={handleSubmit} className="avm-profile-form">
+@@ -130,6 +185,24 @@ export function ProfileFormModal({ open, profile, onClose, onSaved }: ProfileFor
+           </label>
+         )}
+ 
++        {!isEditing && (
++          <fieldset className="avm-profile-form__secret">
++            <legend>Protection du compte</legend>
++            <SecretFields value={secretForm} onChange={setSecretForm} disabled={submitting} />
++          </fieldset>
++        )}
++
++        {isEditing && profile && (
++          <fieldset className="avm-profile-form__secret">
++            <legend>Mot de passe / code PIN</legend>
++            <ProfileSecurityPanel
++              profile={profile}
++              isSelf={profile.id === activeProfile?.id}
++              onChanged={onSaved}
++            />
++          </fieldset>
++        )}
++
+         <fieldset className="avm-profile-form__permissions">
+           <legend>Permissions</legend>
+           <label>
+diff --git a/apps/desktop/src/features/profile/ProfileSecurityPanel.tsx b/apps/desktop/src/features/profile/ProfileSecurityPanel.tsx
+new file mode 100644
+index 0000000..2ba9ad8
+--- /dev/null
++++ b/apps/desktop/src/features/profile/ProfileSecurityPanel.tsx
+@@ -0,0 +1,139 @@
++import { useState } from "react";
++import { Button } from "@aethervault/ui-kit";
++import type { Profile } from "@aethervault/shared-types";
++import { useActiveProfile } from "../../profile/ActiveProfileContext";
++import { profileApi } from "./api";
++import { RecoveryCodeBox } from "./RecoveryCodeBox";
++import { SecretFields } from "./SecretFields";
++import {
++  EMPTY_SECRET_FORM,
++  kindOfProfile,
++  secretLabel,
++  secretPayload,
++  validateSecretForm,
++  type SecretFormState,
++} from "./secret";
++import "./profileSecret.css";
++
++interface ProfileSecurityPanelProps {
++  profile: Profile;
++  /** `true` pour le compte connecté : le secret actuel est alors demandé. Sinon
++   * (administrateur qui gère un autre compte) il est simplement réinitialisé. */
++  isSelf: boolean;
++  onChanged?: () => void;
++}
++
++/**
++ * Définir, changer ou retirer le mot de passe / code PIN d'un compte, après sa
++ * création. Un nouveau secret génère un nouveau code de récupération (l'ancien
++ * n'est plus valable).
++ */
++export function ProfileSecurityPanel({ profile, isSelf, onChanged }: ProfileSecurityPanelProps) {
++  const { refresh } = useActiveProfile();
++  const currentKind = kindOfProfile(profile);
++  const [form, setForm] = useState<SecretFormState>(EMPTY_SECRET_FORM);
++  const [current, setCurrent] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++  const [notice, setNotice] = useState<string | null>(null);
++  const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
++
++  const removing = form.mode === "none";
++  const needsCurrent = isSelf && currentKind !== null;
++
++  const apply = async () => {
++    if (busy) return;
++    setError(null);
++    setNotice(null);
++    if (removing && currentKind === null) {
++      setError("Choisissez un mot de passe ou un code PIN.");
++      return;
++    }
++    const problem = validateSecretForm(form);
++    if (problem) {
++      setError(problem);
++      return;
++    }
++    if (needsCurrent && !current) {
++      setError(`Saisissez votre ${secretLabel(currentKind)} actuel.`);
++      return;
++    }
++    setBusy(true);
++    try {
++      const { secret, kind } = secretPayload(form);
++      const code = isSelf
++        ? await profileApi.changeOwnSecret(needsCurrent ? current : null, secret, kind)
++        : await profileApi.setSecret(profile.id, secret, kind);
++      setForm(EMPTY_SECRET_FORM);
++      setCurrent("");
++      await refresh();
++      onChanged?.();
++      if (code) setRecoveryCode(code);
++      else setNotice("Protection retirée : ce compte s'ouvre sans mot de passe.");
++    } catch (err) {
++      setError(typeof err === "string" ? err : err instanceof Error ? err.message : "Échec de l'enregistrement.");
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  if (recoveryCode) {
++    return (
++      <RecoveryCodeBox
++        code={recoveryCode}
++        profileName={profile.name}
++        onDone={() => {
++          setRecoveryCode(null);
++          setNotice("Protection enregistrée.");
++        }}
++      />
++    );
++  }
++
++  return (
++    <div
++      className="avm-secret__panel"
++      onKeyDown={(e) => {
++        // Entrée applique la protection sans valider le formulaire parent.
++        if (e.key === "Enter") {
++          e.preventDefault();
++          void apply();
++        }
++      }}
++    >
++      <p className="avm-secret__status">
++        {currentKind
++          ? `Ce compte est protégé par un ${secretLabel(currentKind)}.`
++          : "Aucune protection : tout le monde peut ouvrir ce compte."}
++      </p>
++
++      {needsCurrent && currentKind && (
++        <label className="avm-form-field">
++          <span>{currentKind === "pin" ? "Code PIN actuel" : "Mot de passe actuel"}</span>
++          <input
++            type="password"
++            inputMode={currentKind === "pin" ? "numeric" : undefined}
++            autoComplete="current-password"
++            value={current}
++            onChange={(e) => setCurrent(e.target.value)}
++          />
++        </label>
++      )}
++
++      <SecretFields value={form} onChange={setForm} allowNone={currentKind !== null} disabled={busy} />
++
++      {error && <p className="avm-settings-error">{error}</p>}
++      {notice && <p className="avm-secret__ok">{notice}</p>}
++
++      <Button type="button" variant="secondary" disabled={busy} onClick={() => void apply()}>
++        {busy
++          ? "Enregistrement…"
++          : removing
++            ? "Retirer la protection"
++            : currentKind
++              ? "Modifier la protection"
++              : "Activer la protection"}
++      </Button>
++    </div>
++  );
++}
+diff --git a/apps/desktop/src/features/profile/RecoveryCodeBox.tsx b/apps/desktop/src/features/profile/RecoveryCodeBox.tsx
+new file mode 100644
+index 0000000..2fee9a1
+--- /dev/null
++++ b/apps/desktop/src/features/profile/RecoveryCodeBox.tsx
+@@ -0,0 +1,62 @@
++import { useState } from "react";
++import { Check, Copy } from "lucide-react";
++import { Button } from "@aethervault/ui-kit";
++import "./profileSecret.css";
++
++interface RecoveryCodeBoxProps {
++  code: string;
++  onDone: () => void;
++  /** Nom du compte concerné (affiché si plusieurs codes se suivent). */
++  profileName?: string;
++  variant?: "auth" | "form";
++}
++
++/**
++ * Affiche UNE FOIS le code de récupération d'un compte et exige de confirmer qu'on
++ * l'a noté : c'est la seule façon de récupérer l'accès si le secret est oublié.
++ */
++export function RecoveryCodeBox({ code, onDone, profileName, variant = "form" }: RecoveryCodeBoxProps) {
++  const [copied, setCopied] = useState(false);
++  const [ack, setAck] = useState(false);
++
++  const copy = async () => {
++    try {
++      await navigator.clipboard.writeText(code);
++      setCopied(true);
++      window.setTimeout(() => setCopied(false), 2000);
++    } catch {
++      /* copie facultative */
++    }
++  };
++
++  return (
++    <div className="avm-secret__recovery">
++      <h3 className="avm-secret__recovery-title">
++        Code de récupération{profileName ? ` — ${profileName}` : ""}
++      </h3>
++      <p className={variant === "auth" ? "avm-auth__hint" : "avm-secret__hint"}>
++        Conservez ce code précieusement : c'est la seule façon de récupérer l'accès si le mot de passe
++        ou le code PIN est oublié. Il ne sera plus jamais affiché.
++      </p>
++      <div className="avm-secret__code">
++        <code>{code}</code>
++        <button type="button" className="avm-secret__copy" onClick={() => void copy()} aria-label="Copier">
++          {copied ? <Check size={14} /> : <Copy size={14} />}
++        </button>
++      </div>
++      <label className="avm-secret__ack">
++        <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
++        J'ai noté ce code en lieu sûr
++      </label>
++      {variant === "auth" ? (
++        <button className="avm-btn avm-btn--primary" type="button" disabled={!ack} onClick={onDone}>
++          Continuer
++        </button>
++      ) : (
++        <Button type="button" variant="primary" disabled={!ack} onClick={onDone}>
++          Continuer
++        </Button>
++      )}
++    </div>
++  );
++}
+diff --git a/apps/desktop/src/features/profile/SecretFields.tsx b/apps/desktop/src/features/profile/SecretFields.tsx
+new file mode 100644
+index 0000000..3e50d82
+--- /dev/null
++++ b/apps/desktop/src/features/profile/SecretFields.tsx
+@@ -0,0 +1,91 @@
++import { useId } from "react";
++import { secretHint, type SecretFormState, type SecretMode } from "./secret";
++import "./profileSecret.css";
++
++interface SecretFieldsProps {
++  value: SecretFormState;
++  onChange: (next: SecretFormState) => void;
++  /** Style des champs : écrans d'authentification ou formulaires classiques. */
++  variant?: "auth" | "form";
++  /** Propose « Aucune protection » (désactivé quand un secret est obligatoire). */
++  allowNone?: boolean;
++  disabled?: boolean;
++}
++
++const MODES: { mode: SecretMode; label: string }[] = [
++  { mode: "none", label: "Aucune protection" },
++  { mode: "password", label: "Mot de passe" },
++  { mode: "pin", label: "Code PIN" },
++];
++
++/**
++ * Choix de la protection d'un compte : aucune, mot de passe ou code PIN
++ * (4 à 8 chiffres), avec confirmation. Un PIN n'accepte que des chiffres.
++ */
++export function SecretFields({
++  value,
++  onChange,
++  variant = "form",
++  allowNone = true,
++  disabled = false,
++}: SecretFieldsProps) {
++  const group = useId();
++  const isPin = value.mode === "pin";
++  const labelClass = variant === "auth" ? "avm-auth__label" : "avm-form-field";
++  const inputClass = variant === "auth" ? "avm-auth__input" : undefined;
++  const cleaned = (raw: string) => (isPin ? raw.replace(/\D/g, "").slice(0, 8) : raw);
++
++  return (
++    <div className="avm-secret">
++      <div className="avm-secret__modes" role="radiogroup" aria-label="Protection du compte">
++        {MODES.filter((m) => allowNone || m.mode !== "none").map((m) => (
++          <label
++            key={m.mode}
++            className={`avm-secret__mode${value.mode === m.mode ? " avm-secret__mode--active" : ""}`}
++          >
++            <input
++              type="radio"
++              name={group}
++              checked={value.mode === m.mode}
++              disabled={disabled}
++              onChange={() => onChange({ mode: m.mode, secret: "", confirm: "" })}
++            />
++            {m.label}
++          </label>
++        ))}
++      </div>
++
++      {value.mode !== "none" && (
++        <>
++          <label className={labelClass}>
++            <span>{isPin ? "Code PIN" : "Mot de passe"}</span>
++            <input
++              className={inputClass}
++              type="password"
++              inputMode={isPin ? "numeric" : undefined}
++              autoComplete="new-password"
++              maxLength={isPin ? 8 : undefined}
++              value={value.secret}
++              disabled={disabled}
++              onChange={(e) => onChange({ ...value, secret: cleaned(e.target.value) })}
++            />
++          </label>
++          <label className={labelClass}>
++            <span>{isPin ? "Confirmer le code PIN" : "Confirmer le mot de passe"}</span>
++            <input
++              className={inputClass}
++              type="password"
++              inputMode={isPin ? "numeric" : undefined}
++              autoComplete="new-password"
++              maxLength={isPin ? 8 : undefined}
++              value={value.confirm}
++              disabled={disabled}
++              onChange={(e) => onChange({ ...value, confirm: cleaned(e.target.value) })}
++            />
++          </label>
++          <p className="avm-secret__hint">{secretHint(value.mode)}</p>
++        </>
++      )}
++    </div>
++  );
++}
+diff --git a/apps/desktop/src/features/profile/api.ts b/apps/desktop/src/features/profile/api.ts
+index cb85ec6..f56f626 100644
+--- a/apps/desktop/src/features/profile/api.ts
++++ b/apps/desktop/src/features/profile/api.ts
+@@ -1,5 +1,6 @@
+ import { invoke } from "@tauri-apps/api/core";
+ import type { Profile, ProfilePermissions } from "@aethervault/shared-types";
++import type { SecretKind } from "./secret";
+ 
+ /**
+  * Point d'accès unique aux commandes backend du Profile Manager (doc §6.5).
+@@ -22,4 +23,38 @@ export const profileApi = {
+     invoke<void>("update_profile_permissions", { profileId, permissions }),
+ 
+   remove: (profileId: number) => invoke<void>("delete_profile", { profileId }),
++
++  /** Crée un profil AVEC son secret (mot de passe ou PIN), validé avant toute
++   * écriture. Renvoie le profil et son code de récupération (à montrer une fois). */
++  createWithSecret: (
++    name: string,
++    profileType: string,
++    permissions: ProfilePermissions | undefined,
++    secret: string | null,
++    secretKind: SecretKind | null
++  ) =>
++    invoke<[Profile, string | null]>("create_profile_with_secret", {
++      name,
++      profileType,
++      permissions: permissions ?? null,
++      secret,
++      secretKind,
++    }),
++
++  /** Administrateur : définit, remplace ou retire (`secret = null`) le secret d'un
++   * compte. Renvoie le nouveau code de récupération. */
++  setSecret: (profileId: number, secret: string | null, kind: SecretKind | null) =>
++    invoke<string | null>("admin_reset_password", {
++      targetProfileId: profileId,
++      newPassword: secret,
++      kind,
++    }),
++
++  /** Compte connecté : change ou retire son propre secret (secret actuel requis). */
++  changeOwnSecret: (oldSecret: string | null, newSecret: string | null, kind: SecretKind | null) =>
++    invoke<string | null>("change_own_password", {
++      oldPassword: oldSecret,
++      newPassword: newSecret,
++      kind,
++    }),
+ };
+diff --git a/apps/desktop/src/features/profile/profileSecret.css b/apps/desktop/src/features/profile/profileSecret.css
+new file mode 100644
+index 0000000..6faff62
+--- /dev/null
++++ b/apps/desktop/src/features/profile/profileSecret.css
+@@ -0,0 +1,102 @@
++/* Mot de passe / code PIN des comptes (0.7.9). */
++.avm-secret {
++  display: flex;
++  flex-direction: column;
++  gap: 0.6rem;
++  width: 100%;
++}
++.avm-secret__modes {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.4rem;
++}
++.avm-secret__mode {
++  display: inline-flex;
++  align-items: center;
++  gap: 0.4rem;
++  padding: 0.3rem 0.7rem;
++  border: 1px solid var(--color-border);
++  border-radius: 999px;
++  font-size: 0.85rem;
++  color: var(--color-text-muted);
++  cursor: pointer;
++}
++.avm-secret__mode--active {
++  border-color: rgba(246, 161, 60, 0.8);
++  color: var(--color-text);
++  background: rgba(246, 161, 60, 0.12);
++}
++.avm-secret__mode input {
++  accent-color: #f6a13c;
++}
++.avm-secret__hint {
++  margin: 0;
++  font-size: 0.8rem;
++  color: var(--color-text-muted);
++}
++.avm-secret__status {
++  margin: 0 0 0.5rem;
++  font-size: 0.9rem;
++}
++.avm-secret__ok {
++  margin: 0;
++  color: #22c55e;
++  font-size: 0.85rem;
++}
++.avm-secret__panel {
++  display: flex;
++  flex-direction: column;
++  gap: 0.7rem;
++  align-items: flex-start;
++}
++.avm-secret__panel .avm-form-field {
++  width: 100%;
++}
++.avm-secret__recovery {
++  display: flex;
++  flex-direction: column;
++  gap: 0.7rem;
++  align-items: flex-start;
++}
++.avm-secret__recovery-title {
++  margin: 0;
++  font-size: 1rem;
++}
++.avm-secret__code {
++  display: flex;
++  align-items: center;
++  gap: 0.75rem;
++  padding: 0.7rem 1rem;
++  border: 1px dashed var(--color-border);
++  border-radius: var(--radius-md, 8px);
++  background: var(--color-surface);
++}
++.avm-secret__code code {
++  font-family: var(--font-mono);
++  font-size: 1.05rem;
++  letter-spacing: 0.08em;
++  user-select: all;
++}
++.avm-secret__copy {
++  border: none;
++  background: transparent;
++  color: inherit;
++  cursor: pointer;
++}
++.avm-secret__ack {
++  display: flex;
++  align-items: center;
++  gap: 0.5rem;
++  font-size: 0.85rem;
++  color: var(--color-text-muted);
++}
++.avm-profile-form__secret {
++  border: 1px solid var(--color-border);
++  border-radius: var(--radius-md, 8px);
++  padding: 0.6rem 0.8rem;
++}
++.avm-profile-form__secret legend {
++  padding: 0 0.3rem;
++  font-size: 0.85rem;
++  color: var(--color-text-muted);
++}
+diff --git a/apps/desktop/src/features/profile/secret.ts b/apps/desktop/src/features/profile/secret.ts
+new file mode 100644
+index 0000000..33f8d11
+--- /dev/null
++++ b/apps/desktop/src/features/profile/secret.ts
+@@ -0,0 +1,75 @@
++/**
++ * Secret d'un profil : mot de passe OU code PIN (0.7.9).
++ * Les règles de validation reproduisent `security::profile_auth` côté Rust (qui
++ * reste la source de vérité) pour répondre immédiatement, sans aller-retour.
++ */
++export type SecretKind = "password" | "pin";
++/** Choix proposé dans les formulaires : « aucune protection » ou un des deux types. */
++export type SecretMode = "none" | SecretKind;
++
++export const PIN_MIN_LENGTH = 4;
++export const PIN_MAX_LENGTH = 8;
++
++export function secretLabel(kind: SecretKind): string {
++  return kind === "pin" ? "code PIN" : "mot de passe";
++}
++
++/** Type de secret d'un profil (`null` = sans protection). */
++export function kindOfProfile(profile: {
++  auth_kind?: string | null;
++  password_hash?: string | null;
++}): SecretKind | null {
++  if (profile.auth_kind === "pin") return "pin";
++  if (profile.auth_kind === "password" || profile.password_hash) return "password";
++  return null;
++}
++
++/** Message d'erreur si le secret est refusé, sinon `null`. */
++export function validateSecret(kind: SecretKind, value: string): string | null {
++  if (kind === "pin") {
++    if (!/^[0-9]*$/.test(value)) return "Le code PIN ne doit contenir que des chiffres.";
++    if (value.length < PIN_MIN_LENGTH || value.length > PIN_MAX_LENGTH) {
++      return `Le code PIN doit contenir entre ${PIN_MIN_LENGTH} et ${PIN_MAX_LENGTH} chiffres.`;
++    }
++    return null;
++  }
++  if (value.length < 8) return "Le mot de passe doit contenir au moins 8 caractères.";
++  if (!/\p{Lu}/u.test(value)) return "Le mot de passe doit contenir au moins une lettre majuscule.";
++  if (!/\p{Ll}/u.test(value)) return "Le mot de passe doit contenir au moins une lettre minuscule.";
++  if (!/[0-9]/.test(value)) return "Le mot de passe doit contenir au moins un chiffre.";
++  if (!/[^\p{L}\p{N}]/u.test(value)) return "Le mot de passe doit contenir au moins un caractère spécial.";
++  return null;
++}
++
++export function secretHint(kind: SecretKind): string {
++  return kind === "pin"
++    ? `Entre ${PIN_MIN_LENGTH} et ${PIN_MAX_LENGTH} chiffres.`
++    : "8 caractères minimum, avec une majuscule, une minuscule, un chiffre et un caractère spécial.";
++}
++
++export interface SecretFormState {
++  mode: SecretMode;
++  secret: string;
++  confirm: string;
++}
++
++export const EMPTY_SECRET_FORM: SecretFormState = { mode: "none", secret: "", confirm: "" };
++
++/** Message d'erreur du formulaire (secret absent, refusé, ou confirmation différente). */
++export function validateSecretForm(form: SecretFormState): string | null {
++  if (form.mode === "none") return null;
++  if (!form.secret) return `Saisissez un ${secretLabel(form.mode)}.`;
++  const problem = validateSecret(form.mode, form.secret);
++  if (problem) return problem;
++  if (form.secret !== form.confirm) {
++    return `Les deux ${form.mode === "pin" ? "codes PIN" : "mots de passe"} ne correspondent pas.`;
++  }
++  return null;
++}
++
++/** Arguments à transmettre au backend (`null` = pas de secret). */
++export function secretPayload(form: SecretFormState): { secret: string | null; kind: SecretKind | null } {
++  return form.mode === "none"
++    ? { secret: null, kind: null }
++    : { secret: form.secret, kind: form.mode };
++}
+diff --git a/apps/desktop/src/pages/SettingsPage.tsx b/apps/desktop/src/pages/SettingsPage.tsx
+index f26eb49..3ad8a24 100644
+--- a/apps/desktop/src/pages/SettingsPage.tsx
++++ b/apps/desktop/src/pages/SettingsPage.tsx
+@@ -30,6 +30,7 @@ import {
+ } from "../theme/persistedCustomTheme";
+ import { RenderQualitySection } from "./RenderQualitySection";
+ import { DependenciesSection, UpdatesSection } from "../features/appUpdate/SettingsSections";
++import { AccountSecuritySection } from "../features/profile/AccountSecuritySection";
+ import { readCategoryBackdropHidden, CATEGORY_BACKDROP_EVENT } from "../hooks/useCategoryBackdropHidden";
+ 
+ type DiagnosticsState =
+@@ -1539,6 +1540,7 @@ export function SettingsPage() {
+ 	  <CategoryBackdropSection />
+       <AudioSection />
+       <UiSoundsSection />
++      <AccountSecuritySection />
+       <SecuritySection />
+       <ExperimentalPlayerSection />
+       <UpdatesSection />
+diff --git a/packages/shared-types/src/profile.ts b/packages/shared-types/src/profile.ts
+index e474aa5..52cf8a5 100644
+--- a/packages/shared-types/src/profile.ts
++++ b/packages/shared-types/src/profile.ts
+@@ -20,4 +20,8 @@ export interface Profile extends ProfilePermissions {
+   name: string;
+   profile_type: ProfileType;
+   created_at: string;
++  /** Hash du secret (mot de passe ou PIN) — présent si le compte est protégé. */
++  password_hash?: string | null;
++  /** Type du secret : `"password"` ou `"pin"` (`null` = compte sans protection). */
++  auth_kind?: "password" | "pin" | null;
+ }

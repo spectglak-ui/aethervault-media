@@ -11,5 +11,6 @@ pub mod privacy;
 pub mod private_image;
 pub mod private_video;
 pub mod profile;
+pub mod profile_secret;
 pub mod title;
 pub mod watch_state;

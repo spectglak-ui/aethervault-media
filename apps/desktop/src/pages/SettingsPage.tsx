@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { AppStatus, VaultStatus } from "@aethervault/shared-types";
 import { Button, IconButton, useTheme } from "@aethervault/ui-kit";
+import { AccountSecuritySection } from "../features/profile/AccountSecuritySection";
 import {
   AnimatedBackdropLibrarySection,
   HeroTrailerSection,
@@ -1479,6 +1480,7 @@ export function SettingsPage() {
       <CategoryBackdropSection />
       <AudioSection />
       <UiSoundsSection />
+	  <AccountSecuritySection />
       <SecuritySection />
       <ExperimentalPlayerSection />
       <SystemInfoSection />
