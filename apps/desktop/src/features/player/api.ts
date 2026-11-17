@@ -26,6 +26,22 @@ export const playerApi = {
   setRate: (rate: number) => invoke<void>("player_set_rate", { rate }),
   stop: () => invoke<void>("player_stop"),
   redraw: () => invoke<void>("player_redraw"),
+  /** 0.7.9 : mode d'affichage (`contain` | `cover` | `stretch` | `original`), réglé
+   * dans mpv. Géométrie : image rendue (canvas) et zone réelle en pixels physiques. */
+  setDisplayMode: (
+    mode: string,
+    bufferWidth: number,
+    bufferHeight: number,
+    physicalWidth: number,
+    physicalHeight: number
+  ) =>
+    invoke<void>("player_set_display_mode", {
+      mode,
+      bufferWidth,
+      bufferHeight,
+      physicalWidth,
+      physicalHeight,
+    }),
   captureScreenshot: () => invoke<string>("player_capture_screenshot"),
   listTracks: () =>
     invoke<{ audio: PlayerTrack[]; subtitles: PlayerTrack[] }>("player_list_tracks"),

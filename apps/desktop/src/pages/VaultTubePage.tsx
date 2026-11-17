@@ -22,6 +22,8 @@ import {
   type VaultTubeVideo,
 } from "../features/vaulttube/api";
 import { usePlayer } from "../player/PlayerContext";
+import { MusicSearchView } from "../features/music/MusicSearchView";
+import { addSubscriptionInMode } from "../features/vaulttube/followMode";
 import { formatDuration } from "./VaultTubeVideoGrid";
 import { VaultTubePlaylistPicker, type PickableVideo } from "../components/VaultTubePlaylistPicker";
 import "./pages.css";
@@ -31,7 +33,6 @@ import "../features/aetherfy/aetherfy-modern.css";
 import {
   MusicHub,
   type MusicPlaylist,
-  type MusicSource,
   type MusicSubscription,
   type MusicTrack,
 } from "../features/aetherfy/MusicHub";
@@ -444,6 +445,12 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
       setSearchResults(null);
       return;
     }
+    // Mode musique : la recherche est faite par la page de résultats
+    // (MusicSearchView, classée par catégories) — pas de recherche en double ici.
+    if (defaultMode === "audio") {
+      setSearchResults(null);
+      return;
+    }
     searchTimer.current = setTimeout(() => {
       setSearching(true);
       vaultTubeApi
@@ -455,7 +462,7 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
     return () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
-  }, [searchQuery, searchSource]);
+  }, [searchQuery, searchSource, defaultMode]);
 
   const handleAdd = async () => {
     const url = newUrl.trim();
@@ -463,7 +470,7 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
     setAdding(true);
     setError(null);
     try {
-      await vaultTubeApi.addSubscription(url);
+      await addSubscriptionInMode(url, defaultMode);
       setNewUrl("");
       refresh();
     } catch (e) {
@@ -474,14 +481,19 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
   };
 
   // 0.8.0 — suivi par URL fourni directement par le hub musique.
-  const handleFollowUrl = async (url: string) => {
+  // 0.7.9 : l'abonnement est créé DANS le mode de la page (audio pour Musique) —
+  // sinon une playlist YouTube ordinaire restait en mode vidéo et n'apparaissait
+  // jamais dans « Abonnements ». Renvoie `false` en cas d'échec.
+  const handleFollowUrl = async (url: string): Promise<boolean> => {
     setAdding(true);
     setError(null);
     try {
-      await vaultTubeApi.addSubscription(url);
+      await addSubscriptionInMode(url, defaultMode);
       refresh();
+      return true;
     } catch (e) {
       setError(String(e));
+      return false;
     } finally {
       setAdding(false);
     }
@@ -570,7 +582,7 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
     setBusyUrl(r.url);
     setError(null);
     try {
-      await vaultTubeApi.addSubscription(r.url);
+      await addSubscriptionInMode(r.url, defaultMode);
       refresh();
     } catch (e) {
       setError(String(e));
@@ -719,8 +731,10 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
           queue={tracks.filter((t) => t.id !== currentTrack?.id).slice(0, 5)}
           query={searchQuery}
           onQuery={setSearchQuery}
-          source={searchSource as MusicSource}
-          onSource={(s) => setSearchSource(s)}
+          searchView={
+            searchQuery.trim() ? <MusicSearchView query={searchQuery} onFollow={handleFollowUrl} /> : null
+          }
+          following={adding}
           onPlayTrack={(id) => {
             const index = tracks.findIndex((t) => t.id === id);
             if (index >= 0) playFromIndex(index);
@@ -739,7 +753,7 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
           }}
           onOpenPlaylist={(id) => navigate(`/vaulttube/myplaylist/${id}`)}
           onOpenSubscription={(id) => navigate(`/vaulttube/${id}`)}
-          onFollowUrl={(url) => void handleFollowUrl(url)}
+          onFollowUrl={handleFollowUrl}
           onTogglePlay={togglePlay}
           onNext={playNext}
           onPrev={playPrevious}

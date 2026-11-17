@@ -17,6 +17,7 @@
 pub mod category;
 pub mod library;
 pub mod playback;
+pub mod player_display;
 pub mod player_settings;
 pub mod private_image;
 pub mod private_video;
@@ -37,3 +38,4 @@ pub mod reading;
 pub mod tv;
 pub mod user_lists;
 pub mod watch_state;
+pub mod music;

@@ -2,6 +2,7 @@
 //! (abandon du rendu Win32/OpenGL natif au profit du rendu logiciel +
 //! `<canvas>`, voir le rapport de transmission "écran noir" et la
 //! discussion qui a suivi).
+pub mod display_mode;
 pub(crate) mod mpv_ffi;
 mod sw_render;
 pub use sw_render::set_render_scale;

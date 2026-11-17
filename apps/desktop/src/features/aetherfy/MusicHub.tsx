@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ListMusic, Music2, Pause, Play, Plus, Shuffle, SkipBack, SkipForward,
 } from "lucide-react";
@@ -27,8 +27,6 @@ export interface MusicSubscription {
   cover?: string | null;
   kind: "channel" | "playlist";
 }
-export type MusicSource = "all" | "youtube" | "dailymotion";
-
 export interface MusicHubProps {
   tracks: MusicTrack[];
   playlists: MusicPlaylist[];
@@ -39,8 +37,10 @@ export interface MusicHubProps {
   queue?: MusicTrack[];
   query: string;
   onQuery: (q: string) => void;
-  source: MusicSource;
-  onSource: (s: MusicSource) => void;
+  /** Page de résultats (titres, playlists, albums, artistes…) : remplace les panneaux quand on cherche. */
+  searchView?: ReactNode;
+  /** Un ajout par URL est en cours. */
+  following?: boolean;
   onPlayTrack: (id: string) => void;
   onPlayAll: () => void;
   onShuffle: () => void;
@@ -48,7 +48,8 @@ export interface MusicHubProps {
   onCreatePlaylist: (name: string) => void;
   onOpenPlaylist: (id: string) => void;
   onOpenSubscription: (id: string) => void;
-  onFollowUrl: (url: string) => void;
+  /** `false` si l'ajout a échoué (l'adresse saisie est alors conservée). */
+  onFollowUrl: (url: string) => void | Promise<boolean | void>;
   onTogglePlay: () => void;
   onNext: () => void;
   onPrev: () => void;
@@ -193,26 +194,16 @@ export function MusicHub(p: MusicHubProps) {
         <input
           className="avm-mh-search"
           type="search"
-          placeholder="Rechercher vidéos, chaînes, playlists…"
+          placeholder="Rechercher un artiste, un album, un titre, une playlist…"
           value={p.query}
           onChange={(e) => p.onQuery(e.target.value)}
         />
-        <div className="avm-mh-chips">
-          {(["all", "youtube", "dailymotion"] as MusicSource[]).map((s) => (
-            <button
-              key={s}
-              className={`avm-mh-chip${p.source === s ? " avm-mh-chip--active" : ""}`}
-              onClick={() => p.onSource(s)}
-            >
-              {s === "all" ? "Toutes" : s === "youtube" ? "YouTube" : "Dailymotion"}
-            </button>
-          ))}
-        </div>
       </div>
 
       <div className="avm-mh-grid">
         {/* ── Colonne principale ─────────────────────────────── */}
         <div className="avm-mh-main">
+          {p.searchView ? p.searchView : (<>
           {topArtists.length > 0 && (
             <section className="avm-mh-panel">
               <header className="avm-mh-head">
@@ -223,7 +214,21 @@ export function MusicHub(p: MusicHubProps) {
                 {topArtists.map((a) => {
                   const art = artistArt[a.name] ?? artistArtCache.get(a.name) ?? null;
                   return (
-                    <div key={a.name} className="avm-mh-artist">
+                    <div
+                      key={a.name}
+                      className="avm-mh-artist"
+                      role="button"
+                      tabIndex={0}
+                      style={{ cursor: "pointer" }}
+                      title={`Rechercher ${a.name}`}
+                      onClick={() => p.onQuery(a.name)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          p.onQuery(a.name);
+                        }
+                      }}
+                    >
                       {art ? (
                         <img src={art} alt="" loading="lazy" />
                       ) : a.cover ? (
@@ -304,18 +309,25 @@ export function MusicHub(p: MusicHubProps) {
             )}
             <form
               className="avm-mh-follow"
-              onSubmit={(e) => { e.preventDefault(); if (followUrl.trim()) { p.onFollowUrl(followUrl.trim()); setFollowUrl(""); } }}
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const url = followUrl.trim();
+                if (!url || p.following) return;
+                const ok = await p.onFollowUrl(url);
+                if (ok !== false) setFollowUrl("");
+              }}
             >
               <input
-                placeholder="Ou collez l'URL d'une chaîne / playlist (YouTube, Dailymotion, Vimeo…)"
+                placeholder="Ou collez l'URL d'une chaîne / playlist (YouTube…)"
                 value={followUrl}
                 onChange={(e) => setFollowUrl(e.target.value)}
               />
-              <button className="avm-mh-btn avm-mh-btn--small" type="submit" disabled={!followUrl.trim()}>
-                <Plus size={13} /> Suivre
+              <button className="avm-mh-btn avm-mh-btn--small" type="submit" disabled={!followUrl.trim() || p.following}>
+                <Plus size={13} /> {p.following ? "Ajout…" : "Suivre"}
               </button>
             </form>
           </section>
+          </>)}
         </div>
 
         {/* ── Rail latéral : lecteur + file ──────────────────── */}

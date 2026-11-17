@@ -351,6 +351,24 @@ impl VaultTubeSync {
         Ok(results)
     }
 
+    /// 0.7.9 — recherche de PLAYLISTS YouTube (filtre « Playlist » des résultats) :
+    /// la recherche de base ne renvoie que des vidéos.
+    pub fn search_playlists(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+        let q = query.trim();
+        if q.is_empty() { return Ok(Vec::new()); }
+        let ytdlp = self.ytdlp()?;
+        let url = crate::services::music::web::playlist_search_url(q);
+        log::info!("[aetherfy] recherche de playlists : {q}");
+        let mut cmd = Command::new(ytdlp);
+        cmd.args(["--flat-playlist", "--dump-json", "--no-warnings", "--playlist-end", "24", &url]);
+        #[cfg(windows)] cmd.creation_flags(0x08000000);
+        let output = cmd.output().map_err(|e| format!("yt-dlp : {e}"))?;
+        if !output.status.success() {
+            return Err(format!("La recherche de playlists a échoué : {}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        Ok(crate::services::music::web::parse_playlist_lines(&String::from_utf8_lossy(&output.stdout)))
+    }
+
     pub fn get_comments(&self, video_id: &str, source: Option<&str>) -> Result<Vec<Comment>, String> {
         let src = source.unwrap_or("youtube");
         let url = match src {

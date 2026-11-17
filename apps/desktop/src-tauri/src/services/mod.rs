@@ -3,6 +3,7 @@
 //! lecture/écriture en base.
 
 pub mod image_store;
+pub mod music;
 pub mod metadata;
 pub mod playback_engine;
 pub mod private_image_scanner;

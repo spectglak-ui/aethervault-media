@@ -52,6 +52,10 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
   const mediaKey = currentMedia ? `${currentMedia.id}|${currentMedia.path}` : null;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const shaderModeRef = useRef(0);
+  // 0.7.9 : mode d'affichage courant, lu par l'effet de rendu qui le transmet à mpv.
+  const displayModeRef = useRef(displayMode);
+  displayModeRef.current = displayMode;
+  const applyDisplayModeRef = useRef<(() => void) | null>(null);
   const playingRef = useRef(isPlaying);
   playingRef.current = isPlaying;
   // 0.5.5 (B) : ancre d'horloge média — mise à jour UNIQUEMENT quand la
@@ -87,11 +91,13 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
     };
   }, []);
 
+  // 0.7.9 : « Ajuster / Remplir / Étirer / Taille originale » sont réglés DANS mpv
+  // (voir `display_mode.rs`). mpv dessine déjà la vidéo avec ses bandes noires
+  // dans une image de la taille de la zone : un `object-fit` CSS sur cette image
+  // ne changeait rien (et forçait « Taille originale » à se comporter comme
+  // « Ajuster »). Un changement de mode est donc transmis au moteur.
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    canvas.style.objectFit =
-      displayMode === "stretch" ? "fill" : displayMode === "cover" ? "cover" : "contain";
+    applyDisplayModeRef.current?.();
   }, [displayMode]);
 
   useEffect(() => {
@@ -102,8 +108,8 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
     canvas.style.height = "100%";
     canvas.style.display = "block";
     canvas.style.background = "#000";
-    canvas.style.objectFit =
-      displayMode === "stretch" ? "fill" : displayMode === "cover" ? "cover" : "contain";
+    // L'image reçue a déjà le format de la zone d'affichage : aucun recadrage CSS.
+    canvas.style.objectFit = "contain";
     const gl = (canvas.getContext("webgl", { alpha: false, premultipliedAlpha: false }) ??
       canvas.getContext("experimental-webgl", {
         alpha: false,
@@ -228,6 +234,32 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
         height: Math.round(Math.max(rect.height, 1) * ratio),
       };
     };
+    // 0.7.9 : transmet le mode d'affichage à mpv avec la géométrie courante. À
+    // rappeler quand elle change (image de taille différente : redimensionnement,
+    // échelle de rendu) et à la première image de CHAQUE média (le zoom de
+    // « Remplir » dépend du format de la vidéo, inconnu avant ce moment).
+    let displayModePending = true;
+    const applyDisplayMode = () => {
+      if (!attached) {
+        displayModePending = true;
+        return;
+      }
+      const physical = physicalSize();
+      void playerApi
+        .setDisplayMode(
+          displayModeRef.current,
+          canvas.width,
+          canvas.height,
+          physical.width,
+          physical.height
+        )
+        .then(() => {
+          // En pause, aucune image n'arrive : on force le redessin pour voir le résultat.
+          if (!playingRef.current) void playerApi.redraw().catch(() => {});
+        })
+        .catch(() => {});
+    };
+    applyDisplayModeRef.current = applyDisplayMode;
     /** 0.5.5 (B) : horloge média estimée (ms) à l'instant `wall`. */
     const mediaEstMs = (wall: number): number => {
       const a = mediaAnchorRef.current;
@@ -292,6 +324,11 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
         canvas.width = frame.width;
         canvas.height = frame.height;
         gl.viewport(0, 0, frame.width, frame.height);
+        displayModePending = true;
+      }
+      if (displayModePending && attached) {
+        displayModePending = false;
+        applyDisplayMode();
       }
       gl.uniform2f(uTexSize, frame.width, frame.height);
       gl.uniform1f(uMode, shaderModeRef.current);
@@ -560,6 +597,7 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
       if (fpsProbe !== undefined) window.clearInterval(fpsProbe);
       observer.disconnect();
       window.removeEventListener("resize", sync);
+      applyDisplayModeRef.current = null;
       gl.deleteTexture(texture);
       gl.deleteBuffer(quadBuffer);
       gl.deleteProgram(program);
@@ -583,7 +621,7 @@ export function PlayerSurface({ className }: PlayerSurfaceProps) {
       <style>{`@keyframes avm-spin { to { transform: rotate(360deg); } }`}</style>
       <canvas
         ref={canvasRef}
-        className={[className, `avm-player__surface--${displayMode}`].filter(Boolean).join(" ")}
+        className={className}
       />
       {needsBuffering && (
         <div

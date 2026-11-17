@@ -35,7 +35,9 @@ import { AetherFyHomePage } from "./features/aetherfy/AetherFyHomePage";
 import { AetherFyWatchPage } from "./features/aetherfy/AetherFyWatchPage";
 import { AetherFySubscriptionPage } from "./features/aetherfy/AetherFySubscriptionPage";
 import { AetherFyChannelPlaylistPage } from "./features/aetherfy/AetherFyChannelPlaylistPage";
-import { AetherFySearchPage } from "./features/aetherfy/AetherFySearchPage";
+import { MusicSearchTabs } from "./features/music/MusicSearchTabs";
+import { MusicArtistPage } from "./features/music/MusicArtistPage";
+import { MusicAlbumPage } from "./features/music/MusicAlbumPage";
 import {
   AetherFyTrendingPage,
   AetherFyLivePage,
@@ -94,6 +96,8 @@ export const router = createHashRouter([
       { path: "/vaulttube", element: <AetherFyGatewayPage /> },
       { path: "/vaulttube/video", element: <VaultTubePage defaultMode="video" /> },
       { path: "/vaulttube/music", element: <VaultTubePage defaultMode="audio" /> },
+      { path: "/vaulttube/music/artist/:artistId", element: <MusicArtistPage /> },
+      { path: "/vaulttube/music/album/:albumId", element: <MusicAlbumPage /> },
       { path: "/vaulttube/:id", element: <VaultTubeVideosPage /> },
       { path: "/vaulttube/playlist/:playlistId", element: <VaultTubePlaylistPreviewPage /> },
       { path: "/vaulttube/:id/playlists", element: <VaultTubePlaylistsPage /> },
@@ -134,8 +138,10 @@ export const router = createHashRouter([
           { path: "watch-later", element: <AetherFyWatchLaterPage /> },
           { path: "liked", element: <AetherFyLikedPage /> },
           { path: "music", element: <AetherFyMusicPage /> },
+          { path: "music/artist/:artistId", element: <MusicArtistPage /> },
+          { path: "music/album/:albumId", element: <MusicAlbumPage /> },
           { path: "live", element: <AetherFyLivePage /> },
-          { path: "search", element: <AetherFySearchPage /> },
+          { path: "search", element: <MusicSearchTabs /> },
         ],
       },
     ],
