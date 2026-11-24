@@ -1,0 +1,50 @@
+diff --git a/apps/desktop/src-tauri/src/db/repositories/profile_repository.rs b/apps/desktop/src-tauri/src/db/repositories/profile_repository.rs
+index 89a7c31..eb605b3 100644
+--- a/apps/desktop/src-tauri/src/db/repositories/profile_repository.rs
++++ b/apps/desktop/src-tauri/src/db/repositories/profile_repository.rs
+@@ -129,21 +129,9 @@ pub fn delete(conn: &Connection, id: i64) -> rusqlite::Result<()> {
+     Ok(())
+ }
+ 
+-/// Met à jour les champs d'authentification d'un profil (mot de passe
+-/// et/ou code de récupération). `None` supprime le champ (profil sans
+-/// mot de passe / sans code de récupération).
+-pub fn update_auth(
+-    conn: &Connection,
+-    id: i64,
+-    password_hash: Option<&str>,
+-    recovery_code_hash: Option<&str>,
+-) -> rusqlite::Result<()> {
+-    // Sans précision, un secret est un mot de passe (comportement d'origine).
+-    update_auth_with_kind(conn, id, password_hash, recovery_code_hash, password_hash.map(|_| "password"))
+-}
+-
+-/// Comme `update_auth`, en précisant le type du secret (`"password"` | `"pin"`).
+-/// Sans hash, le type est toujours effacé.
++/// Met à jour les champs d'authentification d'un profil : mot de passe ou code PIN
++/// (`auth_kind` = `"password"` | `"pin"`) et/ou code de récupération. `None` supprime
++/// le champ ; sans hash, le type est toujours effacé.
+ pub fn update_auth_with_kind(
+     conn: &Connection,
+     id: i64,
+diff --git a/apps/desktop/src-tauri/src/domain/profile_secret.rs b/apps/desktop/src-tauri/src/domain/profile_secret.rs
+index 01de0f5..c0cde50 100644
+--- a/apps/desktop/src-tauri/src/domain/profile_secret.rs
++++ b/apps/desktop/src-tauri/src/domain/profile_secret.rs
+@@ -141,16 +141,6 @@ mod tests {
+         assert_eq!(after.auth_kind.as_deref(), Some("pin"));
+     }
+ 
+-    #[test]
+-    fn l_ancienne_fonction_update_auth_pose_un_mot_de_passe() {
+-        let conn = open(i32::MAX);
+-        let id = new_profile(&conn, "Ancien");
+-        profile_repository::update_auth(&conn, id, Some("hash"), Some("code")).unwrap();
+-        assert_eq!(record(&conn, id).auth_kind.as_deref(), Some("password"));
+-        profile_repository::update_auth(&conn, id, None, None).unwrap();
+-        assert_eq!(record(&conn, id).auth_kind, None);
+-    }
+-
+     /// Mise à jour d'une base existante : les secrets déjà posés sont des mots de passe.
+     #[test]
+     fn la_migration_29_marque_les_secrets_existants_comme_mots_de_passe() {

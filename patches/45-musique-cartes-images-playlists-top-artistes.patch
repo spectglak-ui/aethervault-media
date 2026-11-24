@@ -1,0 +1,761 @@
+diff --git a/apps/desktop/src-tauri/src/commands/vaulttube.rs b/apps/desktop/src-tauri/src/commands/vaulttube.rs
+index 71cee0c..0c9d86e 100644
+--- a/apps/desktop/src-tauri/src/commands/vaulttube.rs
++++ b/apps/desktop/src-tauri/src/commands/vaulttube.rs
+@@ -259,6 +259,16 @@ pub fn vaulttube_set_user_playlist_mode(
+     VaultTubeRepository::new(state.db_pool.clone()).set_user_playlist_mode(playlist_id, &mode)
+ }
+ 
++/// Image d'une playlist locale (data URL carrée, voir `validate_cover_image`) ; `None` la retire.
++#[tauri::command]
++pub fn vaulttube_set_user_playlist_cover(
++    state: State<'_, AppState>,
++    playlist_id: i64,
++    image: Option<String>,
++) -> Result<(), String> {
++    VaultTubeRepository::new(state.db_pool.clone()).set_user_playlist_cover(playlist_id, image.as_deref())
++}
++
+ #[tauri::command]
+ pub fn vaulttube_set_subscription_mode(
+     state: State<'_, AppState>,
+diff --git a/apps/desktop/src-tauri/src/lib.rs b/apps/desktop/src-tauri/src/lib.rs
+index 273f63b..64f30f5 100644
+--- a/apps/desktop/src-tauri/src/lib.rs
++++ b/apps/desktop/src-tauri/src/lib.rs
+@@ -259,6 +259,7 @@ pub fn run() {
+             commands::vaulttube::vaulttube_remove_from_user_playlist,
+             commands::vaulttube::vaulttube_reorder_user_playlist,
+             commands::vaulttube::vaulttube_set_user_playlist_mode,
++            commands::vaulttube::vaulttube_set_user_playlist_cover,
+             commands::vaulttube::vaulttube_set_subscription_mode,
+             // 0.6.1 : synchronisation automatique VaultTube
+             commands::vaulttube::vaulttube_sync_all_now,
+diff --git a/apps/desktop/src-tauri/src/services/vaulttube/models.rs b/apps/desktop/src-tauri/src/services/vaulttube/models.rs
+index 26f2091..a5e1c63 100644
+--- a/apps/desktop/src-tauri/src/services/vaulttube/models.rs
++++ b/apps/desktop/src-tauri/src/services/vaulttube/models.rs
+@@ -78,6 +78,13 @@ pub struct UserPlaylist {
+     pub item_count: i64,
+     /// Mode de lecture : "video" ou "audio"
+     pub mode: String,
++    /// Image choisie par l'utilisateur (data URL JPEG/PNG/WebP carrée), sinon `None`.
++    #[serde(default)]
++    pub cover_image: Option<String>,
++    /// Jusqu'à 4 vignettes DISTINCTES des premiers titres : image par défaut (mosaïque 2×2)
++    /// quand aucune image n'a été choisie.
++    #[serde(default)]
++    pub preview_thumbnails: Vec<String>,
+ }
+ 
+ /// Élément d'une playlist locale (l'ordre = `position`).
+diff --git a/apps/desktop/src-tauri/src/services/vaulttube/repository.rs b/apps/desktop/src-tauri/src/services/vaulttube/repository.rs
+index 75641ce..c7e86d0 100644
+--- a/apps/desktop/src-tauri/src/services/vaulttube/repository.rs
++++ b/apps/desktop/src-tauri/src/services/vaulttube/repository.rs
+@@ -126,6 +126,25 @@ fn text_column(
+     Ok(rows)
+ }
+ 
++/// Taille maximale d'une image de playlist (data URL) : ~300 Ko. L'interface la réduit à
++/// 320 × 320 px (≈ 30 Ko) ; cette limite protège la base contre un appel détourné.
++const MAX_COVER_IMAGE_LEN: usize = 400_000;
++
++/// Une image de playlist est une data URL JPEG, PNG ou WebP en base64, de taille raisonnable.
++pub fn validate_cover_image(image: &str) -> Result<(), String> {
++    let data = ["data:image/jpeg;base64,", "data:image/png;base64,", "data:image/webp;base64,"]
++        .iter()
++        .find_map(|prefix| image.strip_prefix(prefix))
++        .ok_or_else(|| "Image invalide : formats acceptés JPEG, PNG ou WebP.".to_string())?;
++    if image.len() > MAX_COVER_IMAGE_LEN {
++        return Err("Image trop lourde (300 Ko maximum après réduction).".to_string());
++    }
++    if data.is_empty() || !data.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=')) {
++        return Err("Image invalide : contenu illisible.".to_string());
++    }
++    Ok(())
++}
++
+ /// Ajoute une colonne à une table existante si elle n'y est pas (idempotent). `table`,
+ /// `column` et `ddl_type` sont des constantes du code, jamais une saisie utilisateur.
+ fn add_column_if_missing(
+@@ -319,7 +338,8 @@ impl VaultTubeRepository {
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+-                mode TEXT NOT NULL DEFAULT 'video'
++                mode TEXT NOT NULL DEFAULT 'video',
++                cover_image TEXT
+             );
+             CREATE TABLE IF NOT EXISTS vaulttube_user_playlist_items (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+@@ -343,6 +363,7 @@ impl VaultTubeRepository {
+         // n'empêche PAS l'application de démarrer (elle fonctionne comme avant).
+         // Colonnes ajoutées après coup : bases créées avant ces versions.
+         add_column_if_missing(&conn, "vaulttube_videos", "channel", "TEXT")?;
++        add_column_if_missing(&conn, "vaulttube_user_playlists", "cover_image", "TEXT")?;
+ 
+         match upgrade_subscription_uniqueness(&mut conn) {
+             Ok(true) => log::info!("[vaulttube] unicité des abonnements : UNIQUE(url) → UNIQUE(url, mode)"),
+@@ -634,12 +655,13 @@ impl VaultTubeRepository {
+             .prepare(
+                 "SELECT p.id, p.name, p.created_at, p.mode,
+                         (SELECT COUNT(*) FROM vaulttube_user_playlist_items i
+-                         WHERE i.playlist_id = p.id) AS item_count
++                         WHERE i.playlist_id = p.id) AS item_count,
++                        p.cover_image
+                  FROM vaulttube_user_playlists p
+                  ORDER BY p.name ASC",
+             )
+             .map_err(|e| e.to_string())?;
+-        let rows = stmt
++        let mut rows: Vec<UserPlaylist> = stmt
+             .query_map([], |row| {
+                 Ok(UserPlaylist {
+                     id: row.get(0)?,
+@@ -647,14 +669,61 @@ impl VaultTubeRepository {
+                     created_at: row.get(2)?,
+                     mode: row.get(3)?,
+                     item_count: row.get(4)?,
++                    cover_image: row.get(5)?,
++                    preview_thumbnails: Vec::new(),
+                 })
+             })
+             .map_err(|e| e.to_string())?
+             .filter_map(|r| r.ok())
+             .collect();
++
++        // Image par défaut : les 4 premières vignettes DISTINCTES de chaque playlist (dans
++        // l'ordre de lecture) — une seule requête pour toutes les playlists.
++        let mut thumbs = conn
++            .prepare(
++                "SELECT playlist_id, thumbnail_url FROM (
++                     SELECT playlist_id, thumbnail_url,
++                            ROW_NUMBER() OVER (PARTITION BY playlist_id ORDER BY MIN(position), MIN(id)) AS rn
++                     FROM vaulttube_user_playlist_items
++                     WHERE thumbnail_url IS NOT NULL AND thumbnail_url <> ''
++                     GROUP BY playlist_id, thumbnail_url
++                 ) WHERE rn <= 4
++                 ORDER BY playlist_id, rn",
++            )
++            .map_err(|e| e.to_string())?;
++        let mut by_playlist: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
++        for row in thumbs
++            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
++            .map_err(|e| e.to_string())?
++            .filter_map(|r| r.ok())
++        {
++            by_playlist.entry(row.0).or_default().push(row.1);
++        }
++        for playlist in &mut rows {
++            playlist.preview_thumbnails = by_playlist.remove(&playlist.id).unwrap_or_default();
++        }
+         Ok(rows)
+     }
+ 
++    /// Définit (ou, avec `None`, retire) l'image d'une playlist locale.
++    pub fn set_user_playlist_cover(&self, id: i64, image: Option<&str>) -> Result<(), String> {
++        let image = image.filter(|i| !i.is_empty());
++        if let Some(i) = image {
++            validate_cover_image(i)?;
++        }
++        let conn = self.pool.get().map_err(|e| e.to_string())?;
++        let changed = conn
++            .execute(
++                "UPDATE vaulttube_user_playlists SET cover_image = ?1 WHERE id = ?2",
++                rusqlite::params![image, id],
++            )
++            .map_err(|e| e.to_string())?;
++        if changed == 0 {
++            return Err("Playlist introuvable.".to_string());
++        }
++        Ok(())
++    }
++
+     pub fn delete_user_playlist(&self, id: i64) -> Result<(), String> {
+         let conn = self.pool.get().map_err(|e| e.to_string())?;
+         conn.execute(
+@@ -1179,4 +1248,123 @@ mod tests {
+         add_track(&repo, 1, "v1", Some("DOWNFVLL"));
+         assert_eq!(channel_of(&repo, 1, "v1").as_deref(), Some("DOWNFVLL"));
+     }
++
++    // ---- Image des playlists locales ----
++
++    const PIXEL: &str = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/";
++
++    fn playlist_with_items(repo: &VaultTubeRepository, name: &str, thumbs: &[Option<&str>]) -> i64 {
++        let id = repo.create_user_playlist(name, "audio").unwrap();
++        for (i, t) in thumbs.iter().enumerate() {
++            repo.add_user_playlist_item(
++                id, &format!("vid{i}"), &format!("Titre {i}"), *t, Some(100), Some("Chaîne"), "youtube",
++            )
++            .unwrap();
++        }
++        id
++    }
++
++    fn find(repo: &VaultTubeRepository, id: i64) -> UserPlaylist {
++        repo.list_user_playlists().unwrap().into_iter().find(|p| p.id == id).unwrap()
++    }
++
++    #[test]
++    fn l_image_par_defaut_est_faite_de_4_vignettes_distinctes_dans_l_ordre() {
++        let db = TempDb::new("mosaique");
++        let repo = db.repo();
++        repo.create_tables().unwrap();
++        let id = playlist_with_items(
++            &repo,
++            "Mix",
++            &[Some("a.jpg"), Some("a.jpg"), None, Some("b.jpg"), Some("c.jpg"), Some("d.jpg"), Some("e.jpg")],
++        );
++        let p = find(&repo, id);
++        assert_eq!(p.preview_thumbnails, ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]);
++        assert_eq!(p.item_count, 7);
++        assert_eq!(p.cover_image, None);
++    }
++
++    #[test]
++    fn une_playlist_vide_ou_sans_vignette_n_a_pas_d_apercu() {
++        let db = TempDb::new("sans-apercu");
++        let repo = db.repo();
++        repo.create_tables().unwrap();
++        let vide = playlist_with_items(&repo, "Vide", &[]);
++        let sans = playlist_with_items(&repo, "Sans", &[None, Some("")]);
++        assert!(find(&repo, vide).preview_thumbnails.is_empty());
++        assert!(find(&repo, sans).preview_thumbnails.is_empty());
++    }
++
++    #[test]
++    fn les_apercus_ne_se_melangent_pas_d_une_playlist_a_l_autre() {
++        let db = TempDb::new("apercus-separes");
++        let repo = db.repo();
++        repo.create_tables().unwrap();
++        let a = playlist_with_items(&repo, "A", &[Some("a1.jpg"), Some("a2.jpg")]);
++        let b = playlist_with_items(&repo, "B", &[Some("b1.jpg")]);
++        assert_eq!(find(&repo, a).preview_thumbnails, ["a1.jpg", "a2.jpg"]);
++        assert_eq!(find(&repo, b).preview_thumbnails, ["b1.jpg"]);
++    }
++
++    #[test]
++    fn l_image_choisie_est_enregistree_puis_retiree() {
++        let db = TempDb::new("image-choisie");
++        let repo = db.repo();
++        repo.create_tables().unwrap();
++        let id = playlist_with_items(&repo, "Ma playlist", &[Some("a.jpg")]);
++        repo.set_user_playlist_cover(id, Some(PIXEL)).unwrap();
++        assert_eq!(find(&repo, id).cover_image.as_deref(), Some(PIXEL));
++        // L'aperçu reste disponible (l'interface choisit l'image de l'utilisateur en priorité).
++        assert_eq!(find(&repo, id).preview_thumbnails, ["a.jpg"]);
++        repo.set_user_playlist_cover(id, None).unwrap();
++        assert_eq!(find(&repo, id).cover_image, None);
++        repo.set_user_playlist_cover(id, Some(PIXEL)).unwrap();
++        repo.set_user_playlist_cover(id, Some("")).unwrap(); // chaîne vide = retirer
++        assert_eq!(find(&repo, id).cover_image, None);
++    }
++
++    #[test]
++    fn les_images_invalides_sont_refusees_sans_rien_modifier() {
++        let db = TempDb::new("image-invalide");
++        let repo = db.repo();
++        repo.create_tables().unwrap();
++        let id = playlist_with_items(&repo, "P", &[]);
++        repo.set_user_playlist_cover(id, Some(PIXEL)).unwrap();
++        let trop_lourde = format!("data:image/png;base64,{}", "A".repeat(MAX_COVER_IMAGE_LEN));
++        for mauvaise in [
++            "https://exemple.com/image.jpg",
++            "data:text/html;base64,PHNjcmlwdD4=",
++            "data:image/svg+xml;base64,PHN2Zz4=",
++            "data:image/png;base64,",
++            "data:image/png;base64,<script>alert(1)</script>",
++            trop_lourde.as_str(),
++        ] {
++            assert!(repo.set_user_playlist_cover(id, Some(mauvaise)).is_err(), "{mauvaise:.40}");
++        }
++        assert_eq!(find(&repo, id).cover_image.as_deref(), Some(PIXEL), "l'ancienne image est conservée");
++        assert_eq!(repo.set_user_playlist_cover(9999, Some(PIXEL)).unwrap_err(), "Playlist introuvable.");
++    }
++
++    #[test]
++    fn une_ancienne_base_recoit_la_colonne_image_sans_perdre_ses_playlists() {
++        let db = TempDb::new("image-ancienne");
++        {
++            let conn = db.pool.get().unwrap();
++            conn.execute_batch(
++                "CREATE TABLE vaulttube_user_playlists (
++                     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
++                     created_at INTEGER NOT NULL, mode TEXT NOT NULL DEFAULT 'video');
++                 INSERT INTO vaulttube_user_playlists (name, created_at, mode) VALUES ('Ancienne', 1, 'audio');",
++            )
++            .unwrap();
++        }
++        let repo = db.repo();
++        repo.create_tables().unwrap();
++        repo.create_tables().unwrap();
++        let p = repo.list_user_playlists().unwrap();
++        assert_eq!(p.len(), 1);
++        assert_eq!(p[0].name, "Ancienne");
++        repo.set_user_playlist_cover(p[0].id, Some(PIXEL)).unwrap();
++        assert_eq!(find(&repo, p[0].id).cover_image.as_deref(), Some(PIXEL));
++    }
+ }
+diff --git a/apps/desktop/src/features/aetherfy/MusicHub.tsx b/apps/desktop/src/features/aetherfy/MusicHub.tsx
+index daa8e87..86c710f 100644
+--- a/apps/desktop/src/features/aetherfy/MusicHub.tsx
++++ b/apps/desktop/src/features/aetherfy/MusicHub.tsx
+@@ -1,6 +1,7 @@
+-import { useEffect, useMemo, useState, type ReactNode } from "react";
++import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
++import { PlaylistCover } from "./PlaylistCover";
+ import {
+-  ArrowLeft, ListMusic, Music2, Pause, Play, Plus, Shuffle, SkipBack, SkipForward,
++  ArrowLeft, ImagePlus, ListMusic, Music2, Pause, Play, Plus, Shuffle, SkipBack, SkipForward, X,
+ } from "lucide-react";
+ 
+ export interface MusicTrack {
+@@ -17,7 +18,10 @@ export interface MusicTrack {
+ export interface MusicPlaylist {
+   id: string;
+   name: string;
++  /** Image choisie par l'utilisateur (data URL). */
+   cover?: string | null;
++  /** Vignettes des 4 premiers titres : image par défaut (mosaïque). */
++  previews?: string[];
+   count: number;
+   local?: boolean;
+ }
+@@ -52,6 +56,8 @@ export interface MusicHubProps {
+   onFollowUrl: (url: string) => void | Promise<boolean | void>;
+   /** Retour : ferme la recherche en cours, sinon revient au choix Vidéo / Musique. */
+   onBack?: () => void;
++  /** Choisir (`File`) ou retirer (`null`) l'image d'une playlist locale. */
++  onSetPlaylistCover?: (id: string, file: File | null) => void | Promise<void>;
+   onTogglePlay: () => void;
+   onNext: () => void;
+   onPrev: () => void;
+@@ -120,6 +126,8 @@ export function MusicHub(p: MusicHubProps) {
+   const [newName, setNewName] = useState("");
+   const [followUrl, setFollowUrl] = useState("");
+   const [artistArt, setArtistArt] = useState<Record<string, string | null>>({});
++  const coverInput = useRef<HTMLInputElement>(null);
++  const [coverTarget, setCoverTarget] = useState<string | null>(null);
+ 
+   const pct =
+     p.progress && p.progress.duration > 0
+@@ -217,47 +225,6 @@ export function MusicHub(p: MusicHubProps) {
+         {/* ── Colonne principale ─────────────────────────────── */}
+         <div className="avm-mh-main">
+           {p.searchView ? p.searchView : (<>
+-          {topArtists.length > 0 && (
+-            <section className="avm-mh-panel">
+-              <header className="avm-mh-head">
+-                <h2>Top artistes</h2>
+-                <span className="avm-mh-head__hint">depuis vos pistes</span>
+-              </header>
+-              <div className="avm-mh-artists">
+-                {topArtists.map((a) => {
+-                  const art = artistArt[a.name] ?? artistArtCache.get(a.name) ?? null;
+-                  return (
+-                    <div
+-                      key={a.name}
+-                      className="avm-mh-artist"
+-                      role="button"
+-                      tabIndex={0}
+-                      style={{ cursor: "pointer" }}
+-                      title={`Rechercher ${a.name}`}
+-                      onClick={() => p.onQuery(a.name)}
+-                      onKeyDown={(e) => {
+-                        if (e.key === "Enter" || e.key === " ") {
+-                          e.preventDefault();
+-                          p.onQuery(a.name);
+-                        }
+-                      }}
+-                    >
+-                      {art ? (
+-                        <img src={art} alt="" loading="lazy" />
+-                      ) : a.cover ? (
+-                        <Cover src={a.cover} fallback={null} />
+-                      ) : (
+-                        <span className="avm-mh-artist__void"><Music2 size={20} /></span>
+-                      )}
+-                      <strong>{a.name}</strong>
+-                      <small>{a.count} piste{a.count > 1 ? "s" : ""}</small>
+-                    </div>
+-                  );
+-                })}
+-              </div>
+-            </section>
+-          )}
+-
+           <section className="avm-mh-panel">
+             <header className="avm-mh-head">
+               <h2>Mes playlists</h2>
+@@ -282,20 +249,56 @@ export function MusicHub(p: MusicHubProps) {
+                 </button>
+               </span>
+             </header>
++            <input
++              ref={coverInput}
++              type="file"
++              accept="image/*"
++              hidden
++              onChange={(e) => {
++                const file = e.target.files?.[0];
++                e.target.value = "";
++                if (file && coverTarget) void p.onSetPlaylistCover?.(coverTarget, file);
++              }}
++            />
+             {p.playlists.length === 0 ? (
+               <p className="avm-mh-empty">Aucune playlist locale — créez-en une ci-dessus.</p>
+             ) : (
+               <div className="avm-mh-playlists">
+                 {p.playlists.map((pl) => (
+-                  <button key={pl.id} className="avm-mh-pl" onClick={() => p.onOpenPlaylist(pl.id)}>
+-                    {pl.cover ? (
+-                      <img src={pl.cover} alt="" loading="lazy" />
+-                    ) : (
+-                      <span className="avm-mh-pl__void"><ListMusic size={22} /></span>
++                  <div key={pl.id} className="avm-mh-pl-item">
++                    <button className="avm-mh-pl" onClick={() => p.onOpenPlaylist(pl.id)}>
++                      <PlaylistCover custom={pl.cover} previews={pl.previews} />
++                      <strong>{pl.name}</strong>
++                      <small>{pl.count} piste{pl.count > 1 ? "s" : ""}{pl.local ? " · locale" : ""}</small>
++                    </button>
++                    {p.onSetPlaylistCover && (
++                      <span className="avm-mh-pl__tools">
++                        <button
++                          type="button"
++                          className="avm-mh-pl__tool"
++                          title="Choisir une image"
++                          aria-label={`Choisir une image pour ${pl.name}`}
++                          onClick={() => {
++                            setCoverTarget(pl.id);
++                            coverInput.current?.click();
++                          }}
++                        >
++                          <ImagePlus size={14} />
++                        </button>
++                        {pl.cover && (
++                          <button
++                            type="button"
++                            className="avm-mh-pl__tool"
++                            title="Retirer l'image"
++                            aria-label={`Retirer l'image de ${pl.name}`}
++                            onClick={() => void p.onSetPlaylistCover?.(pl.id, null)}
++                          >
++                            <X size={14} />
++                          </button>
++                        )}
++                      </span>
+                     )}
+-                    <strong>{pl.name}</strong>
+-                    <small>{pl.count} piste{pl.count > 1 ? "s" : ""}{pl.local ? " · locale" : ""}</small>
+-                  </button>
++                  </div>
+                 ))}
+               </div>
+             )}
+@@ -309,11 +312,9 @@ export function MusicHub(p: MusicHubProps) {
+               <div className="avm-mh-subs">
+                 {p.subscriptions.map((s) => (
+                   <button key={s.id} className="avm-mh-sub" onClick={() => p.onOpenSubscription(s.id)}>
+-                    {s.cover ? (
+-                      <img src={s.cover} alt="" loading="lazy" />
+-                    ) : (
+-                      <span className="avm-mh-sub__void"><Music2 size={18} /></span>
+-                    )}
++                    <span className={`avm-mh-cover${s.cover ? "" : " avm-mh-cover--void"}`}>
++                      {s.cover ? <img src={s.cover} alt="" loading="lazy" draggable={false} /> : <Music2 size={26} />}
++                    </span>
+                     <strong>{s.name}</strong>
+                     <small>{s.kind === "channel" ? "Chaîne suivie" : "Playlist suivie"}</small>
+                   </button>
+@@ -394,6 +395,42 @@ export function MusicHub(p: MusicHubProps) {
+               </ul>
+             </section>
+           )}
++
++          {topArtists.length > 0 && (
++            <section className="avm-mh-panel">
++              <header className="avm-mh-head">
++                <h2>Top artistes</h2>
++                <span className="avm-mh-head__hint">depuis vos pistes</span>
++              </header>
++              <ul className="avm-mh-toplist">
++                {topArtists.map((a) => {
++                  const art = artistArt[a.name] ?? artistArtCache.get(a.name) ?? null;
++                  return (
++                    <li key={a.name}>
++                      <button
++                        type="button"
++                        className="avm-mh-toprow"
++                        title={`Rechercher ${a.name}`}
++                        onClick={() => p.onQuery(a.name)}
++                      >
++                        {art ? (
++                          <img src={art} alt="" loading="lazy" />
++                        ) : a.cover ? (
++                          <Cover src={a.cover} fallback={null} />
++                        ) : (
++                          <span className="avm-mh-toprow__void"><Music2 size={16} /></span>
++                        )}
++                        <span>
++                          <strong>{a.name}</strong>
++                          <small>{a.count} piste{a.count > 1 ? "s" : ""}</small>
++                        </span>
++                      </button>
++                    </li>
++                  );
++                })}
++              </ul>
++            </section>
++          )}
+         </aside>
+       </div>
+     </div>
+diff --git a/apps/desktop/src/features/aetherfy/PlaylistCover.tsx b/apps/desktop/src/features/aetherfy/PlaylistCover.tsx
+new file mode 100644
+index 0000000..50e9202
+--- /dev/null
++++ b/apps/desktop/src/features/aetherfy/PlaylistCover.tsx
+@@ -0,0 +1,45 @@
++import { ListMusic } from "lucide-react";
++
++/**
++ * Image d'une playlist locale :
++ *  1. l'image choisie par l'utilisateur ;
++ *  2. sinon une mosaïque 2×2 des 4 premiers titres (une seule vignette s'il y en a moins de 4) ;
++ *  3. sinon une icône.
++ */
++export function PlaylistCover({
++  custom,
++  previews,
++}: {
++  custom?: string | null;
++  previews?: string[];
++}) {
++  const thumbs = (previews ?? []).filter(Boolean);
++  if (custom) {
++    return (
++      <span className="avm-mh-cover">
++        <img src={custom} alt="" draggable={false} />
++      </span>
++    );
++  }
++  if (thumbs.length >= 4) {
++    return (
++      <span className="avm-mh-cover avm-mh-cover--mosaic">
++        {thumbs.slice(0, 4).map((src) => (
++          <img key={src} src={src} alt="" loading="lazy" draggable={false} />
++        ))}
++      </span>
++    );
++  }
++  if (thumbs.length >= 1) {
++    return (
++      <span className="avm-mh-cover">
++        <img src={thumbs[0]} alt="" loading="lazy" draggable={false} />
++      </span>
++    );
++  }
++  return (
++    <span className="avm-mh-cover avm-mh-cover--void">
++      <ListMusic size={26} />
++    </span>
++  );
++}
+diff --git a/apps/desktop/src/features/aetherfy/musicHub.css b/apps/desktop/src/features/aetherfy/musicHub.css
+index 87bbb41..74e94e4 100644
+--- a/apps/desktop/src/features/aetherfy/musicHub.css
++++ b/apps/desktop/src/features/aetherfy/musicHub.css
+@@ -254,7 +254,7 @@
+ }
+ .avm-mh-playlists { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 6px; }
+ .avm-mh-pl {
+-  flex: 0 0 148px;
++  width: 100%;
+   display: flex;
+   flex-direction: column;
+   gap: 6px;
+@@ -394,4 +394,79 @@
+   .avm-mh-hero__art { width: 70%; opacity: 0.5; }
+   .avm-mh-track { grid-template-columns: 26px 36px minmax(0, 1fr) auto 30px; }
+   .avm-mh-src, .avm-mh-track__more { display: none; }
+-}
+\ No newline at end of file
++}
++
++/* ── Cartes carrées partagées : playlists locales ET abonnements ── */
++.avm-mh-playlists,
++.avm-mh-subs { --mh-card: 176px; }
++.avm-mh-pl-item { position: relative; flex: 0 0 var(--mh-card); }
++.avm-mh-subs { grid-template-columns: repeat(auto-fill, var(--mh-card)); justify-content: start; }
++.avm-mh-sub { width: 100%; }
++.avm-mh-cover {
++  position: relative;
++  display: block;
++  width: 100%;
++  aspect-ratio: 1;
++  border-radius: 10px;
++  overflow: hidden;
++  background: rgba(255, 255, 255, 0.06);
++}
++.avm-mh-cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
++.avm-mh-cover--mosaic { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
++.avm-mh-cover--void {
++  display: grid;
++  place-items: center;
++  color: #fff;
++  background: linear-gradient(135deg, rgba(124, 92, 255, 0.5), rgba(154, 107, 255, 0.35));
++}
++.avm-mh-pl__tools {
++  position: absolute;
++  top: 16px;
++  right: 16px;
++  display: flex;
++  gap: 6px;
++  opacity: 0;
++  transition: opacity 0.15s;
++}
++.avm-mh-pl-item:hover .avm-mh-pl__tools,
++.avm-mh-pl__tools:focus-within { opacity: 1; }
++.avm-mh-pl__tool {
++  display: grid;
++  place-items: center;
++  width: 28px;
++  height: 28px;
++  border-radius: 50%;
++  border: 1px solid var(--mh-line);
++  background: rgba(12, 10, 22, 0.78);
++  color: var(--mh-text);
++  cursor: pointer;
++  backdrop-filter: blur(6px);
++}
++.avm-mh-pl__tool:hover { border-color: var(--mh-accent); }
++
++/* ── Rail latéral : défilement propre + « Top artistes » en liste ── */
++.avm-mh-rail { max-height: calc(100vh - 92px); overflow-y: auto; scrollbar-width: thin; }
++.avm-mh-rail > * { flex-shrink: 0; }
++.avm-mh-toplist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
++.avm-mh-toprow {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  width: 100%;
++  padding: 6px;
++  border: 0;
++  border-radius: 12px;
++  background: transparent;
++  color: var(--mh-text);
++  font: inherit;
++  text-align: left;
++  cursor: pointer;
++  transition: background 0.2s;
++}
++.avm-mh-toprow:hover { background: rgba(255, 255, 255, 0.05); }
++.avm-mh-toprow img,
++.avm-mh-toprow__void { flex: none; width: 40px; height: 40px; border-radius: 50%; object-fit: cover; }
++.avm-mh-toprow__void { display: grid; place-items: center; background: rgba(255, 255, 255, 0.07); color: var(--mh-muted); }
++.avm-mh-toprow > span:last-child { min-width: 0; display: flex; flex-direction: column; }
++.avm-mh-toprow strong { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++.avm-mh-toprow small { color: var(--mh-muted); font-size: 11px; }
+diff --git a/apps/desktop/src/features/music/coverImage.ts b/apps/desktop/src/features/music/coverImage.ts
+new file mode 100644
+index 0000000..d54c06d
+--- /dev/null
++++ b/apps/desktop/src/features/music/coverImage.ts
+@@ -0,0 +1,21 @@
++/**
++ * Image choisie par l'utilisateur pour une playlist : recadrée au centre en CARRÉ puis réduite
++ * (320 × 320, JPEG) pour rester légère dans la base (≈ 30 Ko). Renvoie une data URL.
++ */
++export async function squareJpegDataUrl(file: File, size = 320, quality = 0.85): Promise<string> {
++  if (!file.type.startsWith("image/")) throw new Error("Ce fichier n'est pas une image.");
++  if (file.size > 25 * 1024 * 1024) throw new Error("Image trop lourde (25 Mo maximum).");
++  const bitmap = await createImageBitmap(file);
++  try {
++    const side = Math.min(bitmap.width, bitmap.height);
++    const canvas = document.createElement("canvas");
++    canvas.width = size;
++    canvas.height = size;
++    const ctx = canvas.getContext("2d");
++    if (!ctx) throw new Error("Impossible de traiter l'image.");
++    ctx.drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, size, size);
++    return canvas.toDataURL("image/jpeg", quality);
++  } finally {
++    bitmap.close();
++  }
++}
+diff --git a/apps/desktop/src/features/vaulttube/api.ts b/apps/desktop/src/features/vaulttube/api.ts
+index f3ae2d0..5088ea2 100644
+--- a/apps/desktop/src/features/vaulttube/api.ts
++++ b/apps/desktop/src/features/vaulttube/api.ts
+@@ -49,6 +49,10 @@ export interface UserPlaylist {
+   created_at: number;
+   item_count: number;
+   mode: PlaybackMode;
++  /** Image choisie par l'utilisateur (data URL carrée), sinon absente. */
++  cover_image?: string | null;
++  /** Jusqu'à 4 vignettes distinctes des premiers titres (image par défaut : mosaïque). */
++  preview_thumbnails?: string[];
+ }
+ 
+ export interface UserPlaylistItem {
+@@ -139,6 +143,9 @@ export const vaultTubeApi = {
+     ),
+   deleteUserPlaylist: (playlistId: number) =>
+     invoke<void>("vaulttube_delete_user_playlist", { playlistId }),
++  /** Définit l'image d'une playlist locale (data URL), ou la retire avec `null`. */
++  setUserPlaylistCover: (playlistId: number, image: string | null) =>
++    invoke<void>("vaulttube_set_user_playlist_cover", { playlistId, image }),
+   setUserPlaylistMode: (playlistId: number, mode: PlaybackMode) =>
+     invoke<void>("vaulttube_set_user_playlist_mode", { playlistId, mode }),
+   listUserPlaylistItems: (playlistId: number) =>
+diff --git a/apps/desktop/src/pages/VaultTubePage.tsx b/apps/desktop/src/pages/VaultTubePage.tsx
+index 882d80a..f5fc12e 100644
+--- a/apps/desktop/src/pages/VaultTubePage.tsx
++++ b/apps/desktop/src/pages/VaultTubePage.tsx
+@@ -25,6 +25,7 @@ import { usePlayer } from "../player/PlayerContext";
+ import { MusicSearchView } from "../features/music/MusicSearchView";
+ import { addSubscriptionInMode, followedPlaylistIds } from "../features/vaulttube/followMode";
+ import { artistFromChannel } from "../features/vaulttube/artist";
++import { squareJpegDataUrl } from "../features/music/coverImage";
+ import { formatDuration } from "./VaultTubeVideoGrid";
+ import { VaultTubePlaylistPicker, type PickableVideo } from "../components/VaultTubePlaylistPicker";
+ import "./pages.css";
+@@ -501,6 +502,17 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+     }
+   };
+ 
++  // Image d'une playlist locale : `file` = nouvelle image (recadrée en carré), `null` = la retirer.
++  const handleSetPlaylistCover = async (id: string, file: File | null) => {
++    try {
++      const image = file ? await squareJpegDataUrl(file) : null;
++      await vaultTubeApi.setUserPlaylistCover(Number(id), image);
++      vaultTubeApi.listUserPlaylists().then(setUserPlaylists).catch(() => {});
++    } catch (e) {
++      setError(e instanceof Error ? e.message : String(e));
++    }
++  };
++
+   const handleCreatePlaylist = async () => {
+     const name = newPlaylist.trim();
+     if (!name) return;
+@@ -656,7 +668,8 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+     const playlists: MusicPlaylist[] = visibleUserPlaylists.map((p) => ({
+       id: String(p.id),
+       name: p.name,
+-      cover: null,
++      cover: p.cover_image ?? null,
++      previews: p.preview_thumbnails ?? [],
+       count: p.item_count,
+       local: true,
+     }));
+@@ -753,6 +766,7 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+           onOpenSubscription={(id) => navigate(`/vaulttube/${id}`)}
+           onFollowUrl={handleFollowUrl}
+           onBack={() => (searchQuery.trim() ? setSearchQuery("") : navigate("/vaulttube"))}
++          onSetPlaylistCover={handleSetPlaylistCover}
+           onTogglePlay={togglePlay}
+           onNext={playNext}
+           onPrev={playPrevious}

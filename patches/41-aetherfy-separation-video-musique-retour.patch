@@ -1,0 +1,567 @@
+diff --git a/apps/desktop/src/components/VaultTubePlaylistPicker.tsx b/apps/desktop/src/components/VaultTubePlaylistPicker.tsx
+index 156d4dd..c93b7ef 100644
+--- a/apps/desktop/src/components/VaultTubePlaylistPicker.tsx
++++ b/apps/desktop/src/components/VaultTubePlaylistPicker.tsx
+@@ -1,5 +1,5 @@
+ import { useEffect, useState } from "react";
+-import { vaultTubeApi, type UserPlaylist } from "../features/vaulttube/api";
++import { vaultTubeApi, type PlaybackMode, type UserPlaylist } from "../features/vaulttube/api";
+ 
+ export interface PickableVideo {
+   youtube_id: string;
+@@ -14,9 +14,12 @@ export interface PickableVideo {
+ export function VaultTubePlaylistPicker({
+   video,
+   onClose,
++  mode,
+ }: {
+   video: PickableVideo;
+   onClose: () => void;
++  /** Espace d'origine : seules ses playlists sont proposées, et les nouvelles y sont créées. */
++  mode?: PlaybackMode;
+ }) {
+   const [playlists, setPlaylists] = useState<UserPlaylist[]>([]);
+   const [newName, setNewName] = useState("");
+@@ -24,7 +27,7 @@ export function VaultTubePlaylistPicker({
+   const [feedback, setFeedback] = useState<string | null>(null);
+ 
+   useEffect(() => {
+-    vaultTubeApi.listUserPlaylists().then(setPlaylists).catch(() => setPlaylists([]));
++    vaultTubeApi.listUserPlaylists(mode).then(setPlaylists).catch(() => setPlaylists([]));
+   }, []);
+ 
+   const add = async (playlistId: number) => {
+@@ -53,7 +56,7 @@ export function VaultTubePlaylistPicker({
+     if (!name || busy) return;
+     setBusy(true);
+     try {
+-      const pid = await vaultTubeApi.createUserPlaylist(name);
++      const pid = await vaultTubeApi.createUserPlaylist(name, mode ?? "video");
+       await add(pid);
+     } finally {
+       setBusy(false);
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyAccountMenu.tsx b/apps/desktop/src/features/aetherfy/AetherFyAccountMenu.tsx
+index f0a809d..696b50e 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFyAccountMenu.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFyAccountMenu.tsx
+@@ -80,7 +80,7 @@ export function AetherFyAccountMenu({
+     setBusy(true);
+     setError(null);
+     try {
+-      const sub = await vaultTubeApi.addSubscription(channelUrl.trim());
++      const sub = await vaultTubeApi.addSubscription(channelUrl.trim(), "video");
+       await vaultTubeApi.syncPlaylists(sub.id).catch(() => {});
+       saveAccount({
+         pseudo: existing?.pseudo ?? sub.name,
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyHomePage.tsx b/apps/desktop/src/features/aetherfy/AetherFyHomePage.tsx
+index 3ac3958..5aa68bc 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFyHomePage.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFyHomePage.tsx
+@@ -43,7 +43,7 @@ export function AetherFyHomePage() {
+   const load = useCallback(async () => {
+     setLoading(true);
+     try {
+-      const subs = await vaultTubeApi.listSubscriptions();
++      const subs = await vaultTubeApi.listSubscriptions("video");
+       const chunks = await Promise.all(
+         subs.slice(0, 10).map(async (sub) => {
+           try {
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyNotifications.tsx b/apps/desktop/src/features/aetherfy/AetherFyNotifications.tsx
+index 489d118..a24d90e 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFyNotifications.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFyNotifications.tsx
+@@ -21,7 +21,7 @@ export function AetherFyNotifications({ onClose }: { onClose: () => void }) {
+ 
+   const load = async () => {
+     try {
+-      const subs = await vaultTubeApi.listSubscriptions();
++      const subs = await vaultTubeApi.listSubscriptions("video");
+       const chunks = await Promise.all(
+         subs.slice(0, 15).map(async (s) => {
+           try {
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyPages.tsx b/apps/desktop/src/features/aetherfy/AetherFyPages.tsx
+index bff02d5..299208a 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFyPages.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFyPages.tsx
+@@ -134,7 +134,7 @@ export function AetherFyTrendingPage() {
+ 
+ export function AetherFyLivePage() {
+   const feed = useFeed(async () => {
+-    const subs = await vaultTubeApi.listSubscriptions();
++    const subs = await vaultTubeApi.listSubscriptions("video");
+     const channels = subs.filter((s) => s.kind === "channel").slice(0, 10);
+     const chunks = await Promise.all(
+       channels.map(async (sub) => {
+@@ -215,7 +215,7 @@ export function AetherFySubscriptionsPage() {
+   const load = useCallback(async () => {
+     setLoading(true);
+     try {
+-      const list = await vaultTubeApi.listSubscriptions();
++      const list = await vaultTubeApi.listSubscriptions("video");
+       setSubs(list);
+       const cs: Record<number, number> = {};
+       await Promise.all(
+@@ -267,7 +267,7 @@ export function AetherFySubscriptionsPage() {
+               <div>
+                 <div className="afy-sub-card__name">{s.name}</div>
+                 <div className="afy-sub-card__meta">
+-                  {counts[s.id] ?? 0} vidéo(s) • {s.mode === "audio" ? "Musique" : "Vidéo"} • {s.source}
++                  {counts[s.id] ?? 0} vidéo(s) • {s.source}
+                 </div>
+               </div>
+             </div>
+@@ -302,7 +302,7 @@ export function AetherFyLibraryPage() {
+   const history = listHistory().length;
+ 
+   useEffect(() => {
+-    vaultTubeApi.listUserPlaylists().then((p) => setPlaylists(p)).catch(() => {});
++    vaultTubeApi.listUserPlaylists("video").then((p) => setPlaylists(p)).catch(() => {});
+   }, [tick]);
+ 
+   const createEmpty = async () => {
+@@ -406,7 +406,7 @@ export function AetherFyLibraryPage() {
+               <div>
+                 <div className="afy-sub-card__name">{p.name}</div>
+                 <div className="afy-sub-card__meta">
+-                  {p.item_count} vidéo(s) • {p.mode === "audio" ? "Musique" : "Vidéo"}
++                  {p.item_count} vidéo(s)
+                 </div>
+               </div>
+             </div>
+diff --git a/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx b/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx
+index 6b10821..5a969ff 100644
+--- a/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx
++++ b/apps/desktop/src/features/aetherfy/AetherFyWatchPage.tsx
+@@ -217,7 +217,7 @@ export function AetherFyWatchPage() {
+         }
+       }
+ 
+-      const subs = await vaultTubeApi.listSubscriptions();
++      const subs = await vaultTubeApi.listSubscriptions("video");
+       for (const sub of subs) {
+         try {
+           const vids = await vaultTubeApi.listVideos(sub.id);
+diff --git a/apps/desktop/src/features/aetherfy/MusicHub.tsx b/apps/desktop/src/features/aetherfy/MusicHub.tsx
+index f7f429b..689a40b 100644
+--- a/apps/desktop/src/features/aetherfy/MusicHub.tsx
++++ b/apps/desktop/src/features/aetherfy/MusicHub.tsx
+@@ -1,6 +1,6 @@
+ import { useEffect, useMemo, useState, type ReactNode } from "react";
+ import {
+-  ListMusic, Music2, Pause, Play, Plus, Shuffle, SkipBack, SkipForward,
++  ArrowLeft, ListMusic, Music2, Pause, Play, Plus, Shuffle, SkipBack, SkipForward,
+ } from "lucide-react";
+ 
+ export interface MusicTrack {
+@@ -50,6 +50,8 @@ export interface MusicHubProps {
+   onOpenSubscription: (id: string) => void;
+   /** `false` si l'ajout a échoué (l'adresse saisie est alors conservée). */
+   onFollowUrl: (url: string) => void | Promise<boolean | void>;
++  /** Retour : ferme la recherche en cours, sinon revient au choix Vidéo / Musique. */
++  onBack?: () => void;
+   onTogglePlay: () => void;
+   onNext: () => void;
+   onPrev: () => void;
+@@ -191,6 +193,16 @@ export function MusicHub(p: MusicHubProps) {
+ 
+       {/* ── Barre d'outils ───────────────────────────────────── */}
+       <div className="avm-mh-toolbar">
++        {p.onBack && (
++          <button
++            type="button"
++            className="avm-mh-btn avm-mh-btn--small"
++            onClick={p.onBack}
++            title={p.query.trim() ? "Fermer la recherche" : "Retour au choix Vidéo / Musique"}
++          >
++            <ArrowLeft size={14} /> Retour
++          </button>
++        )}
+         <input
+           className="avm-mh-search"
+           type="search"
+diff --git a/apps/desktop/src/features/music/MusicAlbumPage.tsx b/apps/desktop/src/features/music/MusicAlbumPage.tsx
+index 3407927..309438e 100644
+--- a/apps/desktop/src/features/music/MusicAlbumPage.tsx
++++ b/apps/desktop/src/features/music/MusicAlbumPage.tsx
+@@ -1,15 +1,16 @@
+ import { useEffect, useState } from "react";
+-import { Link, useNavigate, useParams } from "react-router-dom";
++import { Link, useParams } from "react-router-dom";
+ import { ArrowLeft, Disc3, Play } from "lucide-react";
+ import { TrackRow } from "./TrackRow";
+ import { ALBUM_KIND_LABELS, errorMessage, musicApi, type MusicAlbumDetail } from "./api";
+ import { usePlayTrack } from "./usePlayTrack";
++import { useGoBack } from "../../hooks/useGoBack";
+ import "./music.css";
+ 
+ /** Page d'un album : pochette, informations et liste des pistes. */
+ export function MusicAlbumPage() {
+   const { albumId = "" } = useParams();
+-  const navigate = useNavigate();
++  const goBack = useGoBack("/vaulttube/music");
+   const [detail, setDetail] = useState<MusicAlbumDetail | null | undefined>(undefined);
+   const [error, setError] = useState<string | null>(null);
+   const { play, busyId, error: playError } = usePlayTrack();
+@@ -35,7 +36,7 @@ export function MusicAlbumPage() {
+ 
+   return (
+     <div className="avm-music-page">
+-      <button type="button" className="avm-music-back" onClick={() => navigate(-1)}>
++      <button type="button" className="avm-music-back" onClick={goBack}>
+         <ArrowLeft size={16} aria-hidden="true" /> Retour
+       </button>
+ 
+diff --git a/apps/desktop/src/features/music/MusicArtistPage.tsx b/apps/desktop/src/features/music/MusicArtistPage.tsx
+index 090b2cc..eab01c3 100644
+--- a/apps/desktop/src/features/music/MusicArtistPage.tsx
++++ b/apps/desktop/src/features/music/MusicArtistPage.tsx
+@@ -1,8 +1,9 @@
+ import { useEffect, useState } from "react";
+-import { useNavigate, useParams } from "react-router-dom";
++import { useParams } from "react-router-dom";
+ import { ArrowLeft } from "lucide-react";
+ import { AlbumCard } from "./AlbumCard";
+ import { errorMessage, musicApi, type MusicAlbum } from "./api";
++import { useGoBack } from "../../hooks/useGoBack";
+ import "./music.css";
+ 
+ const SECTIONS: { kind: string; label: string }[] = [
+@@ -14,7 +15,7 @@ const SECTIONS: { kind: string; label: string }[] = [
+ /** Fiche artiste : discographie (albums, EP, singles) classée du plus récent au plus ancien. */
+ export function MusicArtistPage() {
+   const { artistId = "" } = useParams();
+-  const navigate = useNavigate();
++  const goBack = useGoBack("/vaulttube/music");
+   const [albums, setAlbums] = useState<MusicAlbum[] | null>(null);
+   const [error, setError] = useState<string | null>(null);
+ 
+@@ -39,7 +40,7 @@ export function MusicArtistPage() {
+ 
+   return (
+     <div className="avm-music-page">
+-      <button type="button" className="avm-music-back" onClick={() => navigate(-1)}>
++      <button type="button" className="avm-music-back" onClick={goBack}>
+         <ArrowLeft size={16} aria-hidden="true" /> Retour
+       </button>
+       <h1 className="avm-music-page__title">{artistName}</h1>
+diff --git a/apps/desktop/src/features/vaulttube/api.ts b/apps/desktop/src/features/vaulttube/api.ts
+index 5b29438..f3ae2d0 100644
+--- a/apps/desktop/src/features/vaulttube/api.ts
++++ b/apps/desktop/src/features/vaulttube/api.ts
+@@ -107,7 +107,11 @@ export const vaultTubeApi = {
+     invoke<string>("vaulttube_download_video", { videoId, source: source ?? null }),
+   getComments: (videoId: string, source?: string) =>
+     invoke<Comment[]>("vaulttube_get_comments", { videoId, source: source ?? null }),
+-  listSubscriptions: () => invoke<VaultTubeSubscription[]>("vaulttube_list_subscriptions"),
++  /** `mode` : ne renvoie que les abonnements de cet espace (Vidéo = "video", Musique = "audio"). */
++  listSubscriptions: (mode?: PlaybackMode) =>
++    invoke<VaultTubeSubscription[]>("vaulttube_list_subscriptions").then((list) =>
++      mode ? list.filter((s) => s.mode === mode) : list
++    ),
+   listVideos: (subscriptionId: number) =>
+     invoke<VaultTubeVideo[]>("vaulttube_list_videos", { subscriptionId }),
+   /** `mode` : l'espace où suivre (Musique = "audio", Vidéo = "video") ; absent, il est deviné. */
+@@ -128,7 +132,11 @@ export const vaultTubeApi = {
+     invoke<SearchResult[]>("vaulttube_search", { query, source: source ?? null }),
+   createUserPlaylist: (name: string, mode: PlaybackMode = "video") =>
+     invoke<number>("vaulttube_create_user_playlist", { name, mode }),
+-  listUserPlaylists: () => invoke<UserPlaylist[]>("vaulttube_list_user_playlists"),
++  /** `mode` : ne renvoie que les playlists locales de cet espace. */
++  listUserPlaylists: (mode?: PlaybackMode) =>
++    invoke<UserPlaylist[]>("vaulttube_list_user_playlists").then((list) =>
++      mode ? list.filter((p) => p.mode === mode) : list
++    ),
+   deleteUserPlaylist: (playlistId: number) =>
+     invoke<void>("vaulttube_delete_user_playlist", { playlistId }),
+   setUserPlaylistMode: (playlistId: number, mode: PlaybackMode) =>
+diff --git a/apps/desktop/src/hooks/useGoBack.ts b/apps/desktop/src/hooks/useGoBack.ts
+new file mode 100644
+index 0000000..92de8b8
+--- /dev/null
++++ b/apps/desktop/src/hooks/useGoBack.ts
+@@ -0,0 +1,15 @@
++import { useCallback } from "react";
++import { useLocation, useNavigate } from "react-router-dom";
++
++/**
++ * Bouton « Retour » fiable : revient à la page précédente de l'historique, et — si l'écran a
++ * été ouvert directement (rien avant lui dans l'historique) — va à `fallback`.
++ */
++export function useGoBack(fallback: string): () => void {
++  const navigate = useNavigate();
++  const location = useLocation();
++  return useCallback(() => {
++    if (location.key !== "default") navigate(-1);
++    else navigate(fallback);
++  }, [location.key, navigate, fallback]);
++}
+diff --git a/apps/desktop/src/pages/VaultTubePage.tsx b/apps/desktop/src/pages/VaultTubePage.tsx
+index 980da48..58fc638 100644
+--- a/apps/desktop/src/pages/VaultTubePage.tsx
++++ b/apps/desktop/src/pages/VaultTubePage.tsx
+@@ -386,7 +386,8 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+   const [userPlaylists, setUserPlaylists] = useState<UserPlaylist[]>([]);
+   const [newUrl, setNewUrl] = useState("");
+   const [newPlaylist, setNewPlaylist] = useState("");
+-  const [newPlaylistMode, setNewPlaylistMode] = useState<PlaybackMode>(defaultMode ?? "video");
++  // Une playlist est créée dans l'espace de la page (Musique ou Vidéo) : plus de choix.
++  const newPlaylistMode: PlaybackMode = defaultMode ?? "video";
+   const [adding, setAdding] = useState(false);
+   const [error, setError] = useState<string | null>(null);
+   const [busyId, setBusyId] = useState<number | null>(null);
+@@ -531,18 +532,6 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+     refresh();
+   };
+ 
+-  const handleToggleSubMode = async (sub: VaultTubeSubscription) => {
+-    const next: PlaybackMode = sub.mode === "audio" ? "video" : "audio";
+-    await vaultTubeApi.setSubscriptionMode(sub.id, next);
+-    refresh();
+-  };
+-
+-  const handleTogglePlaylistMode = async (p: UserPlaylist) => {
+-    const next: PlaybackMode = p.mode === "audio" ? "video" : "audio";
+-    await vaultTubeApi.setUserPlaylistMode(p.id, next);
+-    refresh();
+-  };
+-
+   // Lecture « Tout lire » façon Spotify
+   const handlePlayAllSub = async (sub: VaultTubeSubscription) => {
+     const vids = await vaultTubeApi.listVideos(sub.id);
+@@ -760,6 +749,7 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+           onOpenPlaylist={(id) => navigate(`/vaulttube/myplaylist/${id}`)}
+           onOpenSubscription={(id) => navigate(`/vaulttube/${id}`)}
+           onFollowUrl={handleFollowUrl}
++          onBack={() => (searchQuery.trim() ? setSearchQuery("") : navigate("/vaulttube"))}
+           onTogglePlay={togglePlay}
+           onNext={playNext}
+           onPrev={playPrevious}
+@@ -1011,21 +1001,6 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+           placeholder="Nouvelle playlist…"
+           style={{ ...inputStyle, maxWidth: 220 }}
+         />
+-        <button
+-          onClick={() => setNewPlaylistMode(newPlaylistMode === "audio" ? "video" : "audio")}
+-          title="Mode de la nouvelle playlist"
+-          style={{
+-            padding: "7px 12px",
+-            borderRadius: 999,
+-            border: "1px solid #2a2a32",
+-            background: newPlaylistMode === "audio" ? "rgba(29,185,84,.15)" : "transparent",
+-            color: newPlaylistMode === "audio" ? "#1db954" : "var(--color-text-muted, #9a9aa3)",
+-            fontSize: 12,
+-            cursor: "pointer",
+-          }}
+-        >
+-          {newPlaylistMode === "audio" ? "🎵 Musique" : "🎬 Vidéo"}
+-        </button>
+         <Button
+           variant="secondary"
+           onClick={() => void handleCreatePlaylist()}
+@@ -1041,10 +1016,8 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+             title={p.name}
+             subtitle={`${p.item_count} vidéo(s) · locale`}
+             image={null}
+-            mode={p.mode}
+             onOpen={() => navigate(`/vaulttube/myplaylist/${p.id}`)}
+             onPlayAll={() => void handlePlayAllPlaylist(p)}
+-            onToggleMode={() => void handleTogglePlaylistMode(p)}
+             onRemove={() => void handleDeletePlaylistFromGrid(p.id, p.name)}
+           />
+         ))}
+@@ -1066,10 +1039,8 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+             subtitle={sub.kind === "playlist" ? "Playlist suivie" : "Chaîne suivie"}
+             image={sub.thumbnail_url}
+             source={sub.source}
+-            mode={sub.mode}
+             onOpen={() => navigate(`/vaulttube/${sub.id}`)}
+             onPlayAll={() => void handlePlayAllSub(sub)}
+-            onToggleMode={() => void handleToggleSubMode(sub)}
+             onRemove={() => void handleRemove(sub.id)}
+           />
+         ))}
+@@ -1112,7 +1083,7 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+         </div>
+       )}
+       {pickerVideo && (
+-        <VaultTubePlaylistPicker video={pickerVideo} onClose={() => setPickerVideo(null)} />
++        <VaultTubePlaylistPicker video={pickerVideo} onClose={() => setPickerVideo(null)} mode={defaultMode} />
+       )}
+     </div>
+   );
+diff --git a/apps/desktop/src/pages/VaultTubePlaylistPreviewPage.tsx b/apps/desktop/src/pages/VaultTubePlaylistPreviewPage.tsx
+index 7925c01..37daf07 100644
+--- a/apps/desktop/src/pages/VaultTubePlaylistPreviewPage.tsx
++++ b/apps/desktop/src/pages/VaultTubePlaylistPreviewPage.tsx
+@@ -5,6 +5,7 @@ import { Button } from "@aethervault/ui-kit";
+ import { vaultTubeApi, type PlaybackMode, type VaultTubeVideo } from "../features/vaulttube/api";
+ import { addSubscriptionInMode } from "../features/vaulttube/followMode";
+ import { usePlayer } from "../player/PlayerContext";
++import { useGoBack } from "../hooks/useGoBack";
+ import { VaultTubeVideoGrid } from "./VaultTubeVideoGrid";
+ import { VaultTubePlaylistPicker, type PickableVideo } from "../components/VaultTubePlaylistPicker";
+ import "./pages.css";
+@@ -19,6 +20,7 @@ export function VaultTubePlaylistPreviewPage() {
+   // playlist est suivie DANS cet espace, puis on y retourne.
+   const asked = params.get("mode");
+   const mode: PlaybackMode | undefined = asked === "audio" || asked === "video" ? asked : undefined;
++  const goBack = useGoBack(mode === "audio" ? "/vaulttube/music" : "/vaulttube/video");
+   const { playQueue } = usePlayer();
+   const [videos, setVideos] = useState<VaultTubeVideo[] | null>(null);
+   const [error, setError] = useState<string | null>(null);
+@@ -64,7 +66,7 @@ export function VaultTubePlaylistPreviewPage() {
+   return (
+     <div>
+       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
+-        <Button variant="secondary" onClick={() => navigate(-1)}>
++        <Button variant="secondary" onClick={goBack}>
+           <ArrowLeft size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
+           Retour
+         </Button>
+@@ -115,7 +117,7 @@ export function VaultTubePlaylistPreviewPage() {
+         />
+       )}
+       {pickerVideo && (
+-        <VaultTubePlaylistPicker video={pickerVideo} onClose={() => setPickerVideo(null)} />
++        <VaultTubePlaylistPicker video={pickerVideo} onClose={() => setPickerVideo(null)} mode={mode} />
+       )}
+     </div>
+   );
+diff --git a/apps/desktop/src/pages/VaultTubePlaylistsPage.tsx b/apps/desktop/src/pages/VaultTubePlaylistsPage.tsx
+index 8636899..fdeec13 100644
+--- a/apps/desktop/src/pages/VaultTubePlaylistsPage.tsx
++++ b/apps/desktop/src/pages/VaultTubePlaylistsPage.tsx
+@@ -78,7 +78,9 @@ export function VaultTubePlaylistsPage() {
+         {playlists.map((pl) => (
+           <div
+             key={pl.id}
+-            onClick={() => navigate(`/vaulttube/playlist/${pl.youtube_id}`)}
++            onClick={() =>
++              navigate(`/vaulttube/playlist/${pl.youtube_id}${subscription ? `?mode=${subscription.mode}` : ""}`)
++            }
+             style={{
+               cursor: "pointer",
+               background: "var(--color-surface, #1e1e24)",
+diff --git a/apps/desktop/src/pages/VaultTubeUserPlaylistPage.tsx b/apps/desktop/src/pages/VaultTubeUserPlaylistPage.tsx
+index c1ff46e..e19c4d8 100644
+--- a/apps/desktop/src/pages/VaultTubeUserPlaylistPage.tsx
++++ b/apps/desktop/src/pages/VaultTubeUserPlaylistPage.tsx
+@@ -12,6 +12,7 @@ import { usePlayer } from "../player/PlayerContext";
+ import { formatDuration } from "./VaultTubeVideoGrid";
+ import { VaultTubeTrackList } from "./VaultTubeTrackList";
+ import "./pages.css";
++import { useGoBack } from "../hooks/useGoBack";
+ 
+ const rowBtn: CSSProperties = {
+   background: "transparent",
+@@ -48,6 +49,10 @@ export function VaultTubeUserPlaylistPage() {
+     refresh();
+   }, [refresh]);
+ 
++  // Retour : page précédente, sinon l'accueil de l'espace (Musique ou Vidéo) de la playlist.
++  const home = playlist?.mode === "audio" ? "/vaulttube/music" : "/vaulttube/video";
++  const goBack = useGoBack(home);
++
+   const handlePlayFrom = (index: number) => {
+     const queue = items.map((it, i) => ({
+       id: it.id || i + 1,
+@@ -77,17 +82,10 @@ export function VaultTubeUserPlaylistPage() {
+     refresh();
+   };
+ 
+-  const handleToggleMode = async () => {
+-    if (!playlist) return;
+-    const next = playlist.mode === "audio" ? "video" : "audio";
+-    await vaultTubeApi.setUserPlaylistMode(playlist.id, next);
+-    refresh();
+-  };
+-
+   const handleDeletePlaylist = async () => {
+     if (!window.confirm(`Supprimer la playlist « ${playlist?.name ?? ""} » ?`)) return;
+     await vaultTubeApi.deleteUserPlaylist(Number(id));
+-    navigate("/vaulttube");
++    navigate(home);
+   };
+ 
+   const isAudio = playlist?.mode === "audio";
+@@ -95,9 +93,9 @@ export function VaultTubeUserPlaylistPage() {
+   return (
+     <div>
+       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
+-        <Button variant="secondary" onClick={() => navigate("/vaulttube")}>
++        <Button variant="secondary" onClick={goBack}>
+           <ArrowLeft size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
+-          AetherFy
++          Retour
+         </Button>
+         <div style={{ flex: 1, minWidth: 0 }}>
+           <div style={{ fontSize: 20, fontWeight: 700 }}>{playlist?.name ?? "…"}</div>
+@@ -105,25 +103,6 @@ export function VaultTubeUserPlaylistPage() {
+             {items.length} vidéo(s) — playlist locale
+           </div>
+         </div>
+-        <button
+-          onClick={() => void handleToggleMode()}
+-          title={isAudio ? "Basculer en mode vidéo" : "Basculer en mode musique"}
+-          style={{
+-            padding: "7px 12px",
+-            borderRadius: 999,
+-            border: "1px solid #2a2a32",
+-            background: isAudio ? "rgba(29,185,84,.15)" : "transparent",
+-            color: isAudio ? "#1db954" : "var(--color-text-muted, #9a9aa3)",
+-            fontSize: 12,
+-            cursor: "pointer",
+-            display: "inline-flex",
+-            alignItems: "center",
+-            gap: 6,
+-          }}
+-        >
+-          {isAudio ? <Music size={13} /> : <Video size={13} />}
+-          {isAudio ? "Musique" : "Vidéo"}
+-        </button>
+         <Button onClick={() => handlePlayFrom(0)} disabled={items.length === 0}>
+           <Play size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
+           Tout lire
+diff --git a/apps/desktop/src/pages/VaultTubeVideosPage.tsx b/apps/desktop/src/pages/VaultTubeVideosPage.tsx
+index eea4db5..95fb67b 100644
+--- a/apps/desktop/src/pages/VaultTubeVideosPage.tsx
++++ b/apps/desktop/src/pages/VaultTubeVideosPage.tsx
+@@ -14,6 +14,7 @@ import { VaultTubeVideoGrid } from "./VaultTubeVideoGrid";
+ import { VaultTubeTrackList } from "./VaultTubeTrackList";
+ import { VaultTubePlaylistPicker, type PickableVideo } from "../components/VaultTubePlaylistPicker";
+ import "./pages.css";
++import { useGoBack } from "../hooks/useGoBack";
+ 
+ type SortKey = "recent" | "old" | "alpha";
+ 
+@@ -55,6 +56,9 @@ export function VaultTubeVideosPage() {
+     refresh();
+   }, [refresh]);
+ 
++  // Retour : page précédente, sinon l'accueil de l'espace (Musique ou Vidéo) de l'abonnement.
++  const goBack = useGoBack(subscription?.mode === "audio" ? "/vaulttube/music" : "/vaulttube/video");
++
+   const sorted = useMemo(() => {
+   const arr = [...videos];
+   if (sort === "recent") {
+@@ -98,9 +102,9 @@ export function VaultTubeVideosPage() {
+   return (
+     <div>
+       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
+-        <Button variant="secondary" onClick={() => navigate("/vaulttube")}>
++        <Button variant="secondary" onClick={goBack}>
+           <ArrowLeft size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
+-          Abonnements
++          Retour
+         </Button>
+         {subscription?.thumbnail_url ? (
+           <img
+@@ -215,7 +219,7 @@ export function VaultTubeVideosPage() {
+         />
+       )}
+       {pickerVideo && (
+-        <VaultTubePlaylistPicker video={pickerVideo} onClose={() => setPickerVideo(null)} />
++        <VaultTubePlaylistPicker video={pickerVideo} onClose={() => setPickerVideo(null)} mode={subscription?.mode} />
+       )}
+     </div>
+   );

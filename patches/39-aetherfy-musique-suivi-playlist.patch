@@ -1,0 +1,931 @@
+diff --git a/apps/desktop/src-tauri/src/commands/vaulttube.rs b/apps/desktop/src-tauri/src/commands/vaulttube.rs
+index 153f6d7..2a70d73 100644
+--- a/apps/desktop/src-tauri/src/commands/vaulttube.rs
++++ b/apps/desktop/src-tauri/src/commands/vaulttube.rs
+@@ -3,7 +3,8 @@
+ use crate::services::vaulttube::{
+     VaultTubePlaylist, VaultTubeRepository, VaultTubeSubscription, VaultTubeSync, VaultTubeVideo,
+ };
+-use crate::services::vaulttube::repository::detect_mode_from_url;
++use crate::db::DbPool;
++use crate::services::vaulttube::repository::{detect_mode_from_url, normalize_subscription_url};
+ use crate::state::AppState;
+ use tauri::State;
+ 
+@@ -22,17 +23,51 @@ pub fn vaulttube_list_videos(
+     VaultTubeRepository::new(state.db_pool.clone()).list_videos(subscription_id)
+ }
+ 
++/// Suit une chaîne ou une playlist.
++///
++/// `mode` (`"video"` | `"audio"`) est l'espace dans lequel on la suit (AetherFy Vidéo ou
++/// AetherFy Musique) ; absent, il est deviné d'après l'adresse. La même adresse peut être
++/// suivie dans les deux espaces. Déjà suivie dans le mode demandé : l'abonnement existant est
++/// renvoyé (aucune erreur, aucun appel réseau).
++///
++/// `async` + `spawn_blocking` : yt-dlp (sonde puis première synchronisation) dure plusieurs
++/// secondes ; une commande synchrone s'exécuterait sur le fil principal et gèlerait la fenêtre.
+ #[tauri::command]
+-pub fn vaulttube_add_subscription(
++pub async fn vaulttube_add_subscription(
+     state: State<'_, AppState>,
+     url: String,
++    mode: Option<String>,
+ ) -> Result<VaultTubeSubscription, String> {
+-    let repo = VaultTubeRepository::new(state.db_pool.clone());
+-    let sync = VaultTubeSync::new(VaultTubeRepository::new(state.db_pool.clone()));
++    let pool = state.db_pool.clone();
++    tauri::async_runtime::spawn_blocking(move || follow_subscription(pool, url, mode))
++        .await
++        .map_err(|e| format!("Opération interrompue : {e}"))?
++}
++
++fn follow_subscription(
++    pool: DbPool,
++    url: String,
++    mode: Option<String>,
++) -> Result<VaultTubeSubscription, String> {
++    let requested: Option<&str> = match mode.as_deref() {
++        None => None,
++        Some(m @ ("video" | "audio")) => Some(m),
++        Some(_) => return Err("Mode invalide : doit être 'video' ou 'audio'".to_string()),
++    };
++    let url = normalize_subscription_url(&url);
++    if url.is_empty() {
++        return Err("Adresse vide.".to_string());
++    }
++
++    let repo = VaultTubeRepository::new(pool.clone());
++    if let Some(existing) = repo.find_subscription(&url, requested)? {
++        return Ok(existing);
++    }
++
++    let sync = VaultTubeSync::new(VaultTubeRepository::new(pool));
+     let (name, youtube_id, kind, thumbnail, source) = sync.probe_url(&url)?;
+-    
+-    let mode = detect_mode_from_url(&url, &name);
+-    
++    let mode = requested.unwrap_or_else(|| detect_mode_from_url(&url, &name));
++
+     let id = repo.add_subscription(&name, &url, &kind, &youtube_id, thumbnail.as_deref(), &source, mode)?;
+     let sub = VaultTubeSubscription {
+         id,
+diff --git a/apps/desktop/src-tauri/src/services/vaulttube/repository.rs b/apps/desktop/src-tauri/src/services/vaulttube/repository.rs
+index c25eabb..0ecd801 100644
+--- a/apps/desktop/src-tauri/src/services/vaulttube/repository.rs
++++ b/apps/desktop/src-tauri/src/services/vaulttube/repository.rs
+@@ -1,5 +1,6 @@
+ //! Opérations SQLite pour VaultTube / AetherFy.
+ use crate::db::DbPool;
++use rusqlite::OptionalExtension;
+ use super::models::{UserPlaylist, UserPlaylistItem, VaultTubePlaylist, VaultTubeSubscription, VaultTubeVideo};
+ 
+ pub struct VaultTubeRepository {
+@@ -22,6 +23,230 @@ pub fn detect_mode_from_url(url: &str, title: &str) -> &'static str {
+     "video"
+ }
+ 
++// ---- Adresses d'abonnement (0.7.10) ----------------------------------------------
++
++/// Identifiant de playlist (`list=…`) d'une adresse YouTube / YouTube Music, quelle
++/// que soit l'écriture : `playlist?list=`, `watch?v=…&list=`, `music.youtube.com`,
++/// `youtu.be/…?list=`, paramètres de suivi (`si=`)… `None` pour toute autre adresse.
++pub fn youtube_playlist_id(url: &str) -> Option<String> {
++    let trimmed = url.trim();
++    let rest = trimmed
++        .strip_prefix("https://")
++        .or_else(|| trimmed.strip_prefix("http://"))?;
++    let (host, after_host) = match rest.find(|c| c == '/' || c == '?' || c == '#') {
++        Some(i) => (&rest[..i], &rest[i..]),
++        None => (rest, ""),
++    };
++    let host = host.to_ascii_lowercase();
++    let known = matches!(
++        host.as_str(),
++        "youtube.com" | "www.youtube.com" | "m.youtube.com" | "music.youtube.com" | "youtu.be"
++    );
++    if !known {
++        return None;
++    }
++    let query = after_host.split_once('?')?.1;
++    let query = query.split('#').next().unwrap_or("");
++    query
++        .split('&')
++        .filter_map(|pair| pair.strip_prefix("list="))
++        .map(|id| id.to_string())
++        .find(|id| {
++            id.len() >= 2 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
++        })
++}
++
++/// Forme canonique d'une adresse d'abonnement : une playlist YouTube s'écrit toujours
++/// `https://www.youtube.com/playlist?list=ID` (une même playlist ne peut ainsi pas être
++/// enregistrée sous plusieurs écritures) ; toute autre adresse est seulement nettoyée.
++pub fn normalize_subscription_url(url: &str) -> String {
++    match youtube_playlist_id(url) {
++        Some(id) => format!("https://www.youtube.com/playlist?list={id}"),
++        None => url.trim().to_string(),
++    }
++}
++
++fn map_subscription(row: &rusqlite::Row<'_>) -> rusqlite::Result<VaultTubeSubscription> {
++    Ok(VaultTubeSubscription {
++        id: row.get(0)?,
++        name: row.get(1)?,
++        url: row.get(2)?,
++        kind: row.get(3)?,
++        youtube_id: row.get(4)?,
++        thumbnail_url: row.get(5)?,
++        added_at: row.get(6)?,
++        last_synced_at: row.get(7)?,
++        source: row.get(8)?,
++        mode: row.get(9)?,
++    })
++}
++
++/// Message lisible à la place du texte brut de SQLite quand l'adresse est déjà suivie.
++fn friendly_subscription_error(error: &rusqlite::Error, mode: &str) -> String {
++    let text = error.to_string();
++    if !text.contains("UNIQUE constraint failed: vaulttube_subscriptions") {
++        return text;
++    }
++    if text.contains("vaulttube_subscriptions.mode") {
++        let space = if mode == "audio" { "AetherFy Musique" } else { "AetherFy Vidéo" };
++        format!("Cette adresse est déjà suivie dans {space}.")
++    } else {
++        // Ancien schéma `UNIQUE(url)` encore en place (mise à niveau impossible).
++        "Cette adresse est déjà suivie dans l'autre espace (AetherFy Vidéo ou Musique).".to_string()
++    }
++}
++
++// ---- Mise à niveau du schéma : UNIQUE(url) → UNIQUE(url, mode) (0.7.10) ----------
++//
++// Défaut corrigé : `url` était UNIQUE à elle seule. Une playlist déjà suivie (dans
++// AetherFy Vidéo, ou lors d'un essai précédent) interdisait donc de la suivre dans
++// AetherFy Musique : « UNIQUE constraint failed: vaulttube_subscriptions.url ».
++// Les deux espaces sont indépendants : l'unicité porte désormais sur (url, mode).
++//
++// SQLite ne sait pas retirer un `UNIQUE` : on reconstruit la table (procédure officielle
++// https://www.sqlite.org/lang_altertable.html). `PRAGMA foreign_keys` doit être coupé
++// pendant l'opération — sinon le `DROP TABLE` supprimerait en cascade toutes les
++// vidéos et playlists synchronisées — puis remis (la connexion retourne au pool).
++
++const SUBSCRIPTION_COLUMNS: [&str; 10] = [
++    "id", "name", "url", "kind", "youtube_id", "thumbnail_url", "added_at", "last_synced_at",
++    "source", "mode",
++];
++
++fn text_column(
++    conn: &rusqlite::Connection,
++    sql: &str,
++    arg: Option<&str>,
++) -> Result<Vec<String>, rusqlite::Error> {
++    let mut stmt = conn.prepare(sql)?;
++    let rows = match arg {
++        Some(a) => stmt.query_map([a], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?,
++        None => stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?,
++    };
++    Ok(rows)
++}
++
++/// `Ok(true)` si la table a été reconstruite, `Ok(false)` s'il n'y avait rien à faire.
++fn upgrade_subscription_uniqueness(conn: &mut rusqlite::Connection) -> Result<bool, String> {
++    let db = |e: rusqlite::Error| e.to_string();
++
++    // 1. Reste-t-il un index UNIQUE sur la seule colonne `url` ?
++    let unique_indexes = text_column(
++        conn,
++        "SELECT name FROM pragma_index_list('vaulttube_subscriptions') WHERE \"unique\" = 1",
++        None,
++    )
++    .map_err(db)?;
++    let mut url_only = false;
++    for index in &unique_indexes {
++        let columns = text_column(
++            conn,
++            "SELECT name FROM pragma_index_info(?1) ORDER BY seqno",
++            Some(index),
++        )
++        .map_err(db)?;
++        if columns.len() == 1 && columns[0] == "url" {
++            url_only = true;
++            break;
++        }
++    }
++    if !url_only {
++        return Ok(false);
++    }
++
++    // 2. Base très ancienne (avant les migrations 18 et 20) : `source` / `mode` n'existent
++    //    pas encore. La mise à niveau se fera au démarrage suivant, migrations passées.
++    let present = text_column(conn, "SELECT name FROM pragma_table_info('vaulttube_subscriptions')", None)
++        .map_err(db)?;
++    if !SUBSCRIPTION_COLUMNS.iter().all(|c| present.iter().any(|p| p.as_str() == *c)) {
++        return Ok(false);
++    }
++
++    // 3. Reconstruction, clés étrangères suspendues puis TOUJOURS rétablies.
++    conn.execute_batch("PRAGMA foreign_keys = OFF;").map_err(db)?;
++    let outcome = rebuild_subscriptions_table(conn);
++    let restored = conn.execute_batch("PRAGMA foreign_keys = ON;").map_err(db);
++    outcome?;
++    restored?;
++    Ok(true)
++}
++
++fn rebuild_subscriptions_table(conn: &mut rusqlite::Connection) -> Result<(), String> {
++    let db = |e: rusqlite::Error| e.to_string();
++    let tx = conn
++        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
++        .map_err(db)?;
++
++    let orphans_before: i64 = tx
++        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
++        .map_err(db)?;
++    let old_seq: Option<i64> = tx
++        .query_row(
++            "SELECT seq FROM sqlite_sequence WHERE name = 'vaulttube_subscriptions'",
++            [],
++            |r| r.get(0),
++        )
++        .optional()
++        .map_err(db)?;
++
++    tx.execute_batch(
++        "CREATE TABLE vaulttube_subscriptions_new (
++             id INTEGER PRIMARY KEY AUTOINCREMENT,
++             name TEXT NOT NULL,
++             url TEXT NOT NULL,
++             kind TEXT NOT NULL,
++             youtube_id TEXT NOT NULL,
++             thumbnail_url TEXT,
++             added_at INTEGER NOT NULL,
++             last_synced_at INTEGER,
++             source TEXT NOT NULL DEFAULT 'youtube',
++             mode TEXT NOT NULL DEFAULT 'video',
++             UNIQUE(url, mode)
++         );
++         INSERT INTO vaulttube_subscriptions_new
++             (id, name, url, kind, youtube_id, thumbnail_url, added_at, last_synced_at, source, mode)
++             SELECT id, name, url, kind, youtube_id, thumbnail_url, added_at, last_synced_at, source, mode
++             FROM vaulttube_subscriptions;
++         DROP TABLE vaulttube_subscriptions;
++         ALTER TABLE vaulttube_subscriptions_new RENAME TO vaulttube_subscriptions;",
++    )
++    .map_err(db)?;
++
++    // Les identifiants supprimés ne doivent pas être réattribués (AUTOINCREMENT).
++    if let Some(seq) = old_seq {
++        let updated = tx
++            .execute(
++                "UPDATE sqlite_sequence SET seq = ?1 WHERE name = 'vaulttube_subscriptions' AND seq < ?1",
++                [seq],
++            )
++            .map_err(db)?;
++        if updated == 0 {
++            let known: i64 = tx
++                .query_row(
++                    "SELECT COUNT(*) FROM sqlite_sequence WHERE name = 'vaulttube_subscriptions'",
++                    [],
++                    |r| r.get(0),
++                )
++                .map_err(db)?;
++            if known == 0 {
++                tx.execute(
++                    "INSERT INTO sqlite_sequence (name, seq) VALUES ('vaulttube_subscriptions', ?1)",
++                    [seq],
++                )
++                .map_err(db)?;
++            }
++        }
++    }
++
++    let orphans_after: i64 = tx
++        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
++        .map_err(db)?;
++    if orphans_after > orphans_before {
++        return Err("des vidéos ou playlists ne seraient plus rattachées à leur abonnement".to_string());
++    }
++    tx.commit().map_err(db)
++}
++
+ impl VaultTubeRepository {
+     pub fn new(pool: DbPool) -> Self {
+         Self { pool }
+@@ -29,20 +254,21 @@ impl VaultTubeRepository {
+ 
+     /// Crée les tables VaultTube si elles n'existent pas.
+     pub fn create_tables(&self) -> Result<(), String> {
+-        let conn = self.pool.get().map_err(|e| e.to_string())?;
++        let mut conn = self.pool.get().map_err(|e| e.to_string())?;
+         conn.execute_batch(
+             "
+             CREATE TABLE IF NOT EXISTS vaulttube_subscriptions (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name TEXT NOT NULL,
+-                url TEXT NOT NULL UNIQUE,
++                url TEXT NOT NULL,
+                 kind TEXT NOT NULL,
+                 youtube_id TEXT NOT NULL,
+                 thumbnail_url TEXT,
+                 added_at INTEGER NOT NULL,
+                 last_synced_at INTEGER,
+                 source TEXT NOT NULL DEFAULT 'youtube',
+-                mode TEXT NOT NULL DEFAULT 'video'
++                mode TEXT NOT NULL DEFAULT 'video',
++                UNIQUE(url, mode)
+             );
+             CREATE TABLE IF NOT EXISTS vaulttube_videos (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+@@ -94,6 +320,14 @@ impl VaultTubeRepository {
+             ",
+         )
+         .map_err(|e| e.to_string())?;
++
++        // 0.7.10 : une base créée avant ce correctif a encore `UNIQUE(url)`. Un échec ici
++        // n'empêche PAS l'application de démarrer (elle fonctionne comme avant).
++        match upgrade_subscription_uniqueness(&mut conn) {
++            Ok(true) => log::info!("[vaulttube] unicité des abonnements : UNIQUE(url) → UNIQUE(url, mode)"),
++            Ok(false) => {}
++            Err(e) => log::warn!("[vaulttube] mise à niveau de l'unicité des abonnements impossible : {e}"),
++        }
+         Ok(())
+     }
+ 
+@@ -118,7 +352,7 @@ impl VaultTubeRepository {
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             rusqlite::params![name, url, kind, youtube_id, thumbnail_url, now, source, mode],
+         )
+-        .map_err(|e| e.to_string())?;
++        .map_err(|e| friendly_subscription_error(&e, mode))?;
+         Ok(conn.last_insert_rowid())
+     }
+ 
+@@ -133,26 +367,39 @@ impl VaultTubeRepository {
+             )
+             .map_err(|e| e.to_string())?;
+         let subs = stmt
+-            .query_map([], |row| {
+-                Ok(VaultTubeSubscription {
+-                    id: row.get(0)?,
+-                    name: row.get(1)?,
+-                    url: row.get(2)?,
+-                    kind: row.get(3)?,
+-                    youtube_id: row.get(4)?,
+-                    thumbnail_url: row.get(5)?,
+-                    added_at: row.get(6)?,
+-                    last_synced_at: row.get(7)?,
+-                    source: row.get(8)?,
+-                    mode: row.get(9)?,
+-                })
+-            })
++            .query_map([], map_subscription)
+             .map_err(|e| e.to_string())?
+             .filter_map(|r| r.ok())
+             .collect();
+         Ok(subs)
+     }
+ 
++    /// Cherche l'abonnement déjà enregistré pour cette adresse — ou pour cette playlist
++    /// YouTube, quelle que soit l'écriture de l'adresse. `mode` = `None` : tous modes.
++    pub fn find_subscription(
++        &self,
++        url: &str,
++        mode: Option<&str>,
++    ) -> Result<Option<VaultTubeSubscription>, String> {
++        let conn = self.pool.get().map_err(|e| e.to_string())?;
++        let canonical = normalize_subscription_url(url);
++        let raw = url.trim().to_string();
++        let list_id = youtube_playlist_id(&canonical).unwrap_or_default();
++        conn.query_row(
++            "SELECT id, name, url, kind, youtube_id, thumbnail_url, added_at, last_synced_at, source, mode
++             FROM vaulttube_subscriptions
++             WHERE (url IN (?1, ?2)
++                    OR (?3 <> '' AND source = 'youtube' AND kind = 'playlist' AND youtube_id = ?3))
++               AND (?4 IS NULL OR mode = ?4)
++             ORDER BY id ASC
++             LIMIT 1",
++            rusqlite::params![canonical, raw, list_id, mode],
++            map_subscription,
++        )
++        .optional()
++        .map_err(|e| e.to_string())
++    }
++
+     /// Supprime un abonnement (et ses vidéos en cascade).
+     pub fn remove_subscription(&self, id: i64) -> Result<(), String> {
+         let conn = self.pool.get().map_err(|e| e.to_string())?;
+@@ -525,18 +772,320 @@ impl VaultTubeRepository {
+     }
+ 
+     /// Bascule un abonnement en mode video/audio et propage aux vidéos.
++    /// Refusé (message clair) si la même adresse est déjà suivie dans le mode demandé.
+     pub fn set_subscription_mode(&self, id: i64, mode: &str) -> Result<(), String> {
+-        let conn = self.pool.get().map_err(|e| e.to_string())?;
+-        conn.execute(
++        let mut conn = self.pool.get().map_err(|e| e.to_string())?;
++        let tx = conn.transaction().map_err(|e| e.to_string())?;
++        tx.execute(
+             "UPDATE vaulttube_subscriptions SET mode = ?1 WHERE id = ?2",
+             rusqlite::params![mode, id],
+         )
+-        .map_err(|e| e.to_string())?;
+-        conn.execute(
++        .map_err(|e| friendly_subscription_error(&e, mode))?;
++        tx.execute(
+             "UPDATE vaulttube_videos SET mode = ?1 WHERE subscription_id = ?2",
+             rusqlite::params![mode, id],
+         )
+         .map_err(|e| e.to_string())?;
++        tx.commit().map_err(|e| e.to_string())?;
+         Ok(())
+     }
+-}
+\ No newline at end of file
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// Base SQLite réelle (fichier temporaire) avec les réglages de l'application.
++    struct TempDb {
++        path: std::path::PathBuf,
++        pool: DbPool,
++    }
++
++    impl TempDb {
++        fn new(name: &str) -> TempDb {
++            let path = std::env::temp_dir().join(format!("avm-vaulttube-{name}-{}.db", std::process::id()));
++            let _ = std::fs::remove_file(&path);
++            let pool = crate::db::init_pool(&path).expect("init_pool");
++            TempDb { path, pool }
++        }
++        fn repo(&self) -> VaultTubeRepository {
++            VaultTubeRepository::new(self.pool.clone())
++        }
++    }
++
++    impl Drop for TempDb {
++        fn drop(&mut self) {
++            let _ = std::fs::remove_file(&self.path);
++        }
++    }
++
++    const URL: &str = "https://www.youtube.com/playlist?list=PLabc123";
++
++    fn add(repo: &VaultTubeRepository, url: &str, mode: &str) -> Result<i64, String> {
++        repo.add_subscription("Playlist", url, "playlist", "PLabc123", None, "youtube", mode)
++    }
++
++    #[test]
++    fn les_ecritures_d_une_meme_playlist_youtube_donnent_la_meme_adresse() {
++        let canonical = "https://www.youtube.com/playlist?list=PLabc123";
++        for variant in [
++            "https://www.youtube.com/playlist?list=PLabc123",
++            "  https://www.youtube.com/playlist?list=PLabc123&si=xyz  ",
++            "https://youtube.com/playlist?si=xyz&list=PLabc123",
++            "http://m.youtube.com/playlist?list=PLabc123#fragment",
++            "https://music.youtube.com/playlist?list=PLabc123",
++            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc123&index=3",
++            "https://youtu.be/dQw4w9WgXcQ?list=PLabc123",
++        ] {
++            assert_eq!(normalize_subscription_url(variant), canonical, "{variant}");
++        }
++    }
++
++    #[test]
++    fn les_autres_adresses_ne_sont_pas_modifiees() {
++        for url in [
++            "https://www.youtube.com/@artiste",
++            "https://www.youtube.com/channel/UC1234567890",
++            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
++            "https://www.dailymotion.com/playlist/x7abc",
++            "https://example.com/watch?list=PLabc123",
++            "https://www.youtube.com/playlist?list=",
++        ] {
++            assert_eq!(normalize_subscription_url(url), url, "{url}");
++        }
++        assert_eq!(normalize_subscription_url("  https://www.youtube.com/@a  "), "https://www.youtube.com/@a");
++    }
++
++    #[test]
++    fn la_meme_playlist_peut_etre_suivie_dans_les_deux_espaces() {
++        let db = TempDb::new("deux-modes");
++        let repo = db.repo();
++        repo.create_tables().unwrap();
++        // Cas du bug : la playlist est déjà dans AetherFy Vidéo, on la suit dans Musique.
++        let video = add(&repo, URL, "video").unwrap();
++        let audio = add(&repo, URL, "audio").expect("suivre dans l'autre mode doit fonctionner");
++        assert_ne!(video, audio);
++        assert_eq!(repo.find_subscription(URL, Some("audio")).unwrap().unwrap().id, audio);
++        assert_eq!(repo.find_subscription(URL, Some("video")).unwrap().unwrap().id, video);
++    }
++
++    #[test]
++    fn suivre_deux_fois_dans_le_meme_mode_donne_un_message_clair() {
++        let db = TempDb::new("meme-mode");
++        let repo = db.repo();
++        repo.create_tables().unwrap();
++        add(&repo, URL, "audio").unwrap();
++        let err = add(&repo, URL, "audio").unwrap_err();
++        assert_eq!(err, "Cette adresse est déjà suivie dans AetherFy Musique.");
++        assert!(!err.contains("UNIQUE"));
++    }
++
++    #[test]
++    fn find_subscription_retrouve_la_playlist_sous_une_autre_ecriture() {
++        let db = TempDb::new("find");
++        let repo = db.repo();
++        repo.create_tables().unwrap();
++        // Enregistrée autrefois avec un paramètre de suivi dans l'adresse.
++        let id = repo
++            .add_subscription(
++                "Playlist",
++                "https://www.youtube.com/playlist?list=PLabc123&si=old",
++                "playlist",
++                "PLabc123",
++                None,
++                "youtube",
++                "audio",
++            )
++            .unwrap();
++        for query in [URL, "https://music.youtube.com/playlist?list=PLabc123", "https://www.youtube.com/watch?v=x&list=PLabc123"] {
++            assert_eq!(repo.find_subscription(query, Some("audio")).unwrap().map(|s| s.id), Some(id), "{query}");
++            assert_eq!(repo.find_subscription(query, None).unwrap().map(|s| s.id), Some(id), "{query}");
++            assert!(repo.find_subscription(query, Some("video")).unwrap().is_none(), "{query}");
++        }
++        assert!(repo.find_subscription("https://www.youtube.com/playlist?list=PLautre", None).unwrap().is_none());
++    }
++
++    #[test]
++    fn changer_de_mode_vers_un_mode_deja_suivi_est_refuse_proprement() {
++        let db = TempDb::new("bascule");
++        let repo = db.repo();
++        repo.create_tables().unwrap();
++        let video = add(&repo, URL, "video").unwrap();
++        add(&repo, URL, "audio").unwrap();
++        let err = repo.set_subscription_mode(video, "audio").unwrap_err();
++        assert_eq!(err, "Cette adresse est déjà suivie dans AetherFy Musique.");
++        // Rien n'a bougé.
++        assert_eq!(repo.find_subscription(URL, Some("video")).unwrap().unwrap().id, video);
++    }
++
++    // ---- Mise à niveau d'une base créée AVANT le correctif ----
++
++    /// Schéma exact de l'ancienne version : `url TEXT NOT NULL UNIQUE`.
++    const OLD_SCHEMA: &str = "
++        CREATE TABLE vaulttube_subscriptions (
++            id INTEGER PRIMARY KEY AUTOINCREMENT,
++            name TEXT NOT NULL,
++            url TEXT NOT NULL UNIQUE,
++            kind TEXT NOT NULL,
++            youtube_id TEXT NOT NULL,
++            thumbnail_url TEXT,
++            added_at INTEGER NOT NULL,
++            last_synced_at INTEGER,
++            source TEXT NOT NULL DEFAULT 'youtube',
++            mode TEXT NOT NULL DEFAULT 'video'
++        );
++        CREATE TABLE vaulttube_videos (
++            id INTEGER PRIMARY KEY AUTOINCREMENT,
++            subscription_id INTEGER NOT NULL REFERENCES vaulttube_subscriptions(id) ON DELETE CASCADE,
++            youtube_id TEXT NOT NULL,
++            title TEXT NOT NULL,
++            description TEXT,
++            thumbnail_url TEXT,
++            duration_seconds INTEGER,
++            published_at INTEGER,
++            added_at INTEGER NOT NULL,
++            source TEXT NOT NULL DEFAULT 'youtube',
++            mode TEXT NOT NULL DEFAULT 'video',
++            is_short INTEGER NOT NULL DEFAULT 0,
++            UNIQUE(subscription_id, youtube_id)
++        );
++        CREATE TABLE vaulttube_playlists (
++            id INTEGER PRIMARY KEY AUTOINCREMENT,
++            subscription_id INTEGER NOT NULL REFERENCES vaulttube_subscriptions(id) ON DELETE CASCADE,
++            youtube_id TEXT NOT NULL,
++            title TEXT NOT NULL,
++            thumbnail_url TEXT,
++            video_count INTEGER,
++            added_at INTEGER NOT NULL,
++            source TEXT NOT NULL DEFAULT 'youtube',
++            UNIQUE(subscription_id, youtube_id)
++        );";
++
++    fn count(conn: &rusqlite::Connection, table: &str) -> i64 {
++        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap()
++    }
++
++    #[test]
++    fn une_ancienne_base_est_mise_a_niveau_sans_perdre_aucune_donnee() {
++        let db = TempDb::new("migration");
++        {
++            let conn = db.pool.get().unwrap();
++            conn.execute_batch(OLD_SCHEMA).unwrap();
++            // 3 abonnements ; le n°3 est supprimé ensuite : l'identifiant 3 ne doit pas être réattribué.
++            for (i, url) in ["https://www.youtube.com/@a", URL, "https://www.youtube.com/@c"].iter().enumerate() {
++                conn.execute(
++                    "INSERT INTO vaulttube_subscriptions (name, url, kind, youtube_id, added_at, mode)
++                     VALUES (?1, ?2, 'channel', 'x', 1, ?3)",
++                    rusqlite::params![format!("Abo {i}"), url, if i == 1 { "audio" } else { "video" }],
++                )
++                .unwrap();
++            }
++            for sub in 1..=2 {
++                for v in 0..5 {
++                    conn.execute(
++                        "INSERT INTO vaulttube_videos (subscription_id, youtube_id, title, added_at)
++                         VALUES (?1, ?2, 'Titre', 1)",
++                        rusqlite::params![sub, format!("vid{sub}{v}")],
++                    )
++                    .unwrap();
++                }
++                conn.execute(
++                    "INSERT INTO vaulttube_playlists (subscription_id, youtube_id, title, added_at)
++                     VALUES (?1, 'PLx', 'Liste', 1)",
++                    [sub],
++                )
++                .unwrap();
++            }
++            conn.execute("DELETE FROM vaulttube_subscriptions WHERE id = 3", []).unwrap();
++            // L'ancienne contrainte est bien là : c'est le bug.
++            let err = conn
++                .execute(
++                    "INSERT INTO vaulttube_subscriptions (name, url, kind, youtube_id, added_at, mode)
++                     VALUES ('Doublon', ?1, 'playlist', 'PLabc123', 1, 'audio')",
++                    [URL],
++                )
++                .unwrap_err()
++                .to_string();
++            assert!(err.contains("UNIQUE constraint failed: vaulttube_subscriptions.url"), "{err}");
++        }
++
++        let repo = db.repo();
++        repo.create_tables().expect("la mise à niveau ne doit pas empêcher le démarrage");
++
++        let conn = db.pool.get().unwrap();
++        assert_eq!(count(&conn, "vaulttube_subscriptions"), 2);
++        assert_eq!(count(&conn, "vaulttube_videos"), 10, "les vidéos synchronisées doivent être conservées");
++        assert_eq!(count(&conn, "vaulttube_playlists"), 2);
++        let fk: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
++        assert_eq!(fk, 1, "les clés étrangères doivent être rétablies avant le retour au pool");
++
++        // Les abonnements existants gardent leur contenu.
++        let subs = repo.list_subscriptions().unwrap();
++        assert_eq!(subs.len(), 2);
++        assert_eq!(repo.find_subscription(URL, Some("audio")).unwrap().unwrap().id, 2);
++
++        // Le bug est corrigé : même adresse dans l'autre mode ; même mode = message clair.
++        add(&repo, URL, "video").expect("la même adresse dans l'autre mode doit être acceptée");
++        assert_eq!(
++            add(&repo, URL, "audio").unwrap_err(),
++            "Cette adresse est déjà suivie dans AetherFy Musique."
++        );
++        // L'identifiant 3 (supprimé) n'est pas réattribué.
++        assert_eq!(repo.find_subscription(URL, Some("video")).unwrap().unwrap().id, 4);
++
++        // La cascade fonctionne toujours après la reconstruction.
++        conn.execute("DELETE FROM vaulttube_subscriptions WHERE id = 1", []).unwrap();
++        assert_eq!(count(&conn, "vaulttube_videos"), 5);
++        assert_eq!(count(&conn, "vaulttube_playlists"), 1);
++
++        // Idempotent : un second démarrage ne reconstruit rien.
++        drop(conn);
++        repo.create_tables().unwrap();
++        let mut conn = db.pool.get().unwrap();
++        assert!(!upgrade_subscription_uniqueness(&mut conn).unwrap());
++        assert_eq!(count(&conn, "vaulttube_videos"), 5);
++    }
++
++    #[test]
++    fn une_base_neuve_a_directement_le_bon_schema() {
++        let db = TempDb::new("neuve");
++        let repo = db.repo();
++        repo.create_tables().unwrap();
++        let mut conn = db.pool.get().unwrap();
++        assert!(!upgrade_subscription_uniqueness(&mut conn).unwrap(), "rien à reconstruire sur une base neuve");
++    }
++
++    #[test]
++    fn une_base_tres_ancienne_sans_colonne_mode_n_est_pas_touchee() {
++        let db = TempDb::new("tres-ancienne");
++        {
++            let conn = db.pool.get().unwrap();
++            conn.execute_batch(
++                "CREATE TABLE vaulttube_subscriptions (
++                     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, url TEXT NOT NULL UNIQUE,
++                     kind TEXT NOT NULL, youtube_id TEXT NOT NULL, thumbnail_url TEXT,
++                     added_at INTEGER NOT NULL, last_synced_at INTEGER);
++                 INSERT INTO vaulttube_subscriptions (name, url, kind, youtube_id, added_at)
++                     VALUES ('Vieux', 'https://www.youtube.com/@v', 'channel', 'UC1', 1);",
++            )
++            .unwrap();
++        }
++        let mut conn = db.pool.get().unwrap();
++        assert!(!upgrade_subscription_uniqueness(&mut conn).unwrap());
++        assert_eq!(count(&conn, "vaulttube_subscriptions"), 1);
++    }
++
++    #[test]
++    fn si_la_mise_a_niveau_est_impossible_le_message_reste_lisible() {
++        // Ancien schéma conservé (ex. mise à niveau reportée) : jamais de texte SQLite brut.
++        let db = TempDb::new("ancien-schema");
++        {
++            let conn = db.pool.get().unwrap();
++            conn.execute_batch(OLD_SCHEMA).unwrap();
++        }
++        let repo = db.repo();
++        add(&repo, URL, "video").unwrap();
++        let err = add(&repo, URL, "audio").unwrap_err();
++        assert_eq!(err, "Cette adresse est déjà suivie dans l'autre espace (AetherFy Vidéo ou Musique).");
++    }
++}
+diff --git a/apps/desktop/src/features/music/MusicSearchView.tsx b/apps/desktop/src/features/music/MusicSearchView.tsx
+index 34a51ab..6c5d85a 100644
+--- a/apps/desktop/src/features/music/MusicSearchView.tsx
++++ b/apps/desktop/src/features/music/MusicSearchView.tsx
+@@ -85,6 +85,8 @@ interface MusicSearchViewProps {
+   query: string;
+   /** Suit une playlist (dans les abonnements de la page Musique) ; `true` si ajoutée. */
+   onFollow: (url: string) => Promise<boolean>;
++  /** Playlists déjà suivies dans Musique (identifiants YouTube) : affichées « Suivie ». */
++  followedPlaylistIds?: ReadonlySet<string>;
+ }
+ 
+ /**
+@@ -93,7 +95,7 @@ interface MusicSearchViewProps {
+  * Titres, albums et artistes viennent du catalogue (MusicBrainz) ; playlists,
+  * livres audio et vidéos de YouTube.
+  */
+-export function MusicSearchView({ query, onFollow }: MusicSearchViewProps) {
++export function MusicSearchView({ query, onFollow, followedPlaylistIds }: MusicSearchViewProps) {
+   const navigate = useNavigate();
+   const { playQueue } = usePlayer();
+   const { play: playTrack, busyId, error: playError } = usePlayTrack();
+@@ -256,14 +258,14 @@ export function MusicSearchView({ query, onFollow }: MusicSearchViewProps) {
+         {get("playlists")
+           .slice(0, limit)
+           .map((r) => {
+-            const isFollowed = followed.has(r.url);
++            const isFollowed = followed.has(r.url) || (followedPlaylistIds?.has(r.id) ?? false);
+             return (
+               <div
+                 key={r.id}
+                 className="avm-ms-web"
+                 role="button"
+                 tabIndex={0}
+-                onClick={() => navigate(`/vaulttube/playlist/${r.id}`)}
++                onClick={() => navigate(`/vaulttube/playlist/${r.id}?mode=audio`)}
+               >
+                 <span className="avm-ms-web__thumb">
+                   {r.thumbnail_url ? (
+diff --git a/apps/desktop/src/features/vaulttube/api.ts b/apps/desktop/src/features/vaulttube/api.ts
+index 5fe9a97..5b29438 100644
+--- a/apps/desktop/src/features/vaulttube/api.ts
++++ b/apps/desktop/src/features/vaulttube/api.ts
+@@ -110,8 +110,9 @@ export const vaultTubeApi = {
+   listSubscriptions: () => invoke<VaultTubeSubscription[]>("vaulttube_list_subscriptions"),
+   listVideos: (subscriptionId: number) =>
+     invoke<VaultTubeVideo[]>("vaulttube_list_videos", { subscriptionId }),
+-  addSubscription: (url: string) =>
+-    invoke<VaultTubeSubscription>("vaulttube_add_subscription", { url }),
++  /** `mode` : l'espace où suivre (Musique = "audio", Vidéo = "video") ; absent, il est deviné. */
++  addSubscription: (url: string, mode?: PlaybackMode) =>
++    invoke<VaultTubeSubscription>("vaulttube_add_subscription", { url, mode: mode ?? null }),
+   refreshSubscription: (subscriptionId: number) =>
+     invoke<number>("vaulttube_refresh_subscription", { subscriptionId }),
+   removeSubscription: (subscriptionId: number) =>
+diff --git a/apps/desktop/src/features/vaulttube/followMode.ts b/apps/desktop/src/features/vaulttube/followMode.ts
+index 33c5654..edd3f00 100644
+--- a/apps/desktop/src/features/vaulttube/followMode.ts
++++ b/apps/desktop/src/features/vaulttube/followMode.ts
+@@ -5,19 +5,42 @@ type PlaybackMode = VaultTubeSubscription["mode"];
+ /**
+  * Suit une chaîne ou une playlist DANS le mode de la page courante.
+  *
+- * Le backend devine le mode d'un abonnement d'après son adresse : une playlist
+- * YouTube ordinaire reste en mode « vidéo ». La page Musique n'affichant que les
+- * abonnements en mode « audio », la playlist ajoutée depuis la page Musique
+- * n'apparaissait jamais dans « Abonnements ». On force donc le mode voulu.
++ * Le mode est transmis au backend, qui crée l'abonnement directement dans le bon espace
++ * (Musique = « audio », Vidéo = « video ») : plus d'abonnement créé « vidéo » puis basculé
++ * dans un second appel, qui restait invisible dans Musique si le second appel n'avait pas lieu.
++ * Une même playlist peut être suivie dans les deux espaces ; la suivre deux fois dans le même
++ * espace renvoie simplement l'abonnement existant.
+  */
+ export async function addSubscriptionInMode(
+   url: string,
+   mode: PlaybackMode | undefined
+ ): Promise<VaultTubeSubscription> {
+-  const subscription = await vaultTubeApi.addSubscription(url);
+-  if (mode && subscription.mode !== mode) {
+-    await vaultTubeApi.setSubscriptionMode(subscription.id, mode);
+-    return { ...subscription, mode };
++  return vaultTubeApi.addSubscription(url, mode);
++}
++
++const YOUTUBE_HOSTS = ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"];
++
++/** Identifiant de playlist YouTube (`list=`) d'une adresse, ou `null` (même règle que le backend). */
++export function youtubePlaylistId(url: string): string | null {
++  try {
++    const parsed = new URL(url.trim());
++    if (!YOUTUBE_HOSTS.includes(parsed.hostname.toLowerCase())) return null;
++    const id = parsed.searchParams.get("list");
++    return id && /^[A-Za-z0-9_-]{2,}$/.test(id) ? id : null;
++  } catch {
++    return null;
++  }
++}
++
++/** Identifiants des playlists déjà suivies dans un mode (pour afficher « Suivie »). */
++export function followedPlaylistIds(
++  subscriptions: VaultTubeSubscription[],
++  mode: PlaybackMode | undefined
++): Set<string> {
++  const ids = new Set<string>();
++  for (const s of subscriptions) {
++    if (s.kind !== "playlist" || (mode && s.mode !== mode)) continue;
++    ids.add(youtubePlaylistId(s.url) ?? s.youtube_id);
+   }
+-  return subscription;
++  return ids;
+ }
+diff --git a/apps/desktop/src/pages/VaultTubePage.tsx b/apps/desktop/src/pages/VaultTubePage.tsx
+index 9dba409..980da48 100644
+--- a/apps/desktop/src/pages/VaultTubePage.tsx
++++ b/apps/desktop/src/pages/VaultTubePage.tsx
+@@ -23,7 +23,7 @@ import {
+ } from "../features/vaulttube/api";
+ import { usePlayer } from "../player/PlayerContext";
+ import { MusicSearchView } from "../features/music/MusicSearchView";
+-import { addSubscriptionInMode } from "../features/vaulttube/followMode";
++import { addSubscriptionInMode, followedPlaylistIds } from "../features/vaulttube/followMode";
+ import { formatDuration } from "./VaultTubeVideoGrid";
+ import { VaultTubePlaylistPicker, type PickableVideo } from "../components/VaultTubePlaylistPicker";
+ import "./pages.css";
+@@ -593,7 +593,7 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+ 
+   const handleSearchPreviewPlaylist = (r: SearchResult) => {
+     const m = r.url.match(/[?&]list=([^&]+)/);
+-    if (m) navigate(`/vaulttube/playlist/${m[1]}`);
++    if (m) navigate(`/vaulttube/playlist/${m[1]}${defaultMode ? `?mode=${defaultMode}` : ""}`);
+   };
+ 
+   /* ────────────────────────────────────────────────────────────────
+@@ -732,7 +732,13 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+           query={searchQuery}
+           onQuery={setSearchQuery}
+           searchView={
+-            searchQuery.trim() ? <MusicSearchView query={searchQuery} onFollow={handleFollowUrl} /> : null
++            searchQuery.trim() ? (
++              <MusicSearchView
++                query={searchQuery}
++                onFollow={handleFollowUrl}
++                followedPlaylistIds={followedPlaylistIds(subscriptions, "audio")}
++              />
++            ) : null
+           }
+           following={adding}
+           onPlayTrack={(id) => {
+diff --git a/apps/desktop/src/pages/VaultTubePlaylistPreviewPage.tsx b/apps/desktop/src/pages/VaultTubePlaylistPreviewPage.tsx
+index 1ae4cfe..7925c01 100644
+--- a/apps/desktop/src/pages/VaultTubePlaylistPreviewPage.tsx
++++ b/apps/desktop/src/pages/VaultTubePlaylistPreviewPage.tsx
+@@ -1,8 +1,9 @@
+ import { useEffect, useState } from "react";
+-import { useNavigate, useParams } from "react-router-dom";
++import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+ import { ArrowLeft, Plus } from "lucide-react";
+ import { Button } from "@aethervault/ui-kit";
+-import { vaultTubeApi, type VaultTubeVideo } from "../features/vaulttube/api";
++import { vaultTubeApi, type PlaybackMode, type VaultTubeVideo } from "../features/vaulttube/api";
++import { addSubscriptionInMode } from "../features/vaulttube/followMode";
+ import { usePlayer } from "../player/PlayerContext";
+ import { VaultTubeVideoGrid } from "./VaultTubeVideoGrid";
+ import { VaultTubePlaylistPicker, type PickableVideo } from "../components/VaultTubePlaylistPicker";
+@@ -13,6 +14,11 @@ import "./pages.css";
+ export function VaultTubePlaylistPreviewPage() {
+   const { playlistId } = useParams<{ playlistId: string }>();
+   const navigate = useNavigate();
++  const [params] = useSearchParams();
++  // L'espace d'où l'on vient (`?mode=audio` depuis Musique, `?mode=video` depuis Vidéo) : la
++  // playlist est suivie DANS cet espace, puis on y retourne.
++  const asked = params.get("mode");
++  const mode: PlaybackMode | undefined = asked === "audio" || asked === "video" ? asked : undefined;
+   const { playQueue } = usePlayer();
+   const [videos, setVideos] = useState<VaultTubeVideo[] | null>(null);
+   const [error, setError] = useState<string | null>(null);
+@@ -35,8 +41,8 @@ export function VaultTubePlaylistPreviewPage() {
+   const handleFollow = async () => {
+     setFollowing(true);
+     try {
+-      await vaultTubeApi.addSubscription(url);
+-      navigate("/vaulttube");
++      await addSubscriptionInMode(url, mode);
++      navigate(mode === "audio" ? "/vaulttube/music" : mode === "video" ? "/vaulttube/video" : "/vaulttube");
+     } catch (e) {
+       setError(String(e));
+       setFollowing(false);

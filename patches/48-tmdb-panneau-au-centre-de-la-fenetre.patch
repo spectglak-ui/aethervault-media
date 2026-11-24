@@ -1,0 +1,92 @@
+diff --git a/apps/desktop/src/pages/TitleDetailPage.tsx b/apps/desktop/src/pages/TitleDetailPage.tsx
+index 0625a85..103f39b 100644
+--- a/apps/desktop/src/pages/TitleDetailPage.tsx
++++ b/apps/desktop/src/pages/TitleDetailPage.tsx
+@@ -574,7 +574,9 @@ export function TitleDetailPage() {
+       <GenreRow titleId={title.id} categoryKey={key ?? ""} />
+ 
+       {/* FONCTIONNALITÉ : correction manuelle de correspondance TMDB. */}
+-      <Modal open={tmdbModalOpen} onClose={() => setTmdbModalOpen(false)} title="Corriger la correspondance TMDB">
++      {/* `portal` : la fiche force `position: relative` sur ses enfants directs, ce qui sortait
++          le panneau du centre de la fenêtre pour le poser en bas de la page. */}
++      <Modal portal open={tmdbModalOpen} onClose={() => setTmdbModalOpen(false)} title="Corriger la correspondance TMDB">
+         <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 360 }}>
+           <div style={{ display: "flex", gap: 8 }}>
+             <input
+diff --git a/packages/ui-kit/src/components/Modal.tsx b/packages/ui-kit/src/components/Modal.tsx
+index 5e39d0b..8937b19 100644
+--- a/packages/ui-kit/src/components/Modal.tsx
++++ b/packages/ui-kit/src/components/Modal.tsx
+@@ -1,4 +1,5 @@
+ import { useEffect, type ReactNode } from "react";
++import { createPortal } from "react-dom";
+ import { AnimatePresence, motion } from "framer-motion";
+ 
+ interface ModalProps {
+@@ -6,6 +7,13 @@ interface ModalProps {
+   onClose: () => void;
+   title: string;
+   children: ReactNode;
++  /**
++   * Rend la boîte dans `document.body` : le fond `position: fixed` est alors centré dans la
++   * FENÊTRE quoi que fassent les styles de la page appelante. À activer quand une règle de la
++   * page vise ses enfants directs (ex. `.avm-title-page > * { position: relative }`, qui
++   * écrasait le `fixed` du fond : le panneau tombait dans le flux, tout en bas de la page).
++   */
++  portal?: boolean;
+ }
+ 
+ /**
+@@ -15,7 +23,7 @@ interface ModalProps {
+  * ici — un composant de mise en page réutilisable pour tout futur besoin de
+  * dialogue modal.
+  */
+-export function Modal({ open, onClose, title, children }: ModalProps) {
++export function Modal({ open, onClose, title, children, portal = false }: ModalProps) {
+   useEffect(() => {
+     if (!open) return;
+     const handleKeyDown = (event: KeyboardEvent) => {
+@@ -25,11 +33,11 @@ export function Modal({ open, onClose, title, children }: ModalProps) {
+     return () => window.removeEventListener("keydown", handleKeyDown);
+   }, [open, onClose]);
+ 
+-  return (
++  const dialog = (
+     <AnimatePresence>
+       {open && (
+         <motion.div
+-          className="avm-modal-backdrop"
++          className={portal ? "avm-modal-backdrop avm-modal-backdrop--portal" : "avm-modal-backdrop"}
+           initial={{ opacity: 0 }}
+           animate={{ opacity: 1 }}
+           exit={{ opacity: 0 }}
+@@ -56,4 +64,6 @@ export function Modal({ open, onClose, title, children }: ModalProps) {
+       )}
+     </AnimatePresence>
+   );
++
++  return portal ? createPortal(dialog, document.body) : dialog;
+ }
+diff --git a/packages/ui-kit/src/components/components.css b/packages/ui-kit/src/components/components.css
+index a8d6648..2942769 100644
+--- a/packages/ui-kit/src/components/components.css
++++ b/packages/ui-kit/src/components/components.css
+@@ -296,6 +296,8 @@
+   justify-content: center;
+   z-index: 50;
+ }
++/* Rendue dans <body> (prop `portal`) : au-dessus de la barre du haut (100) et du lecteur. */
++.avm-modal-backdrop--portal { z-index: 1000; }
+ .avm-modal-panel {
+   background: var(--color-surface);
+   border: 1px solid var(--color-border);
+@@ -303,6 +305,9 @@
+   padding: 1.5rem;
+   min-width: 360px;
+   max-width: 480px;
++  /* Fenêtre basse : le panneau défile au lieu de dépasser de l'écran. */
++  max-height: calc(100vh - 3rem);
++  overflow-y: auto;
+   box-shadow: var(--elevation-2);
+ }
+ .avm-modal-panel__header h2 {

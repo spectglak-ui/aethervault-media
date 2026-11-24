@@ -1,0 +1,690 @@
+diff --git a/apps/desktop/src-tauri/src/db/repositories/episode_repository.rs b/apps/desktop/src-tauri/src/db/repositories/episode_repository.rs
+index d2d0006..a615147 100644
+--- a/apps/desktop/src-tauri/src/db/repositories/episode_repository.rs
++++ b/apps/desktop/src-tauri/src/db/repositories/episode_repository.rs
+@@ -130,6 +130,33 @@ pub fn missing_still_paths(
+     rows.collect()
+ }
+ 
++/// Chemins des vignettes déjà enregistrées pour les épisodes d'une bibliothèque (contrôle
++/// des vignettes noires, voir `services::episode_thumbnails::repair_dark_stills`).
++pub fn list_still_paths(
++    conn: &Connection,
++    library_id: i64,
++) -> rusqlite::Result<Vec<(i64, String)>> {
++    let mut stmt = conn.prepare(
++        "SELECT e.id, e.still_path FROM episodes e
++         JOIN media_files mf ON mf.episode_id = e.id
++         WHERE mf.library_id = ?1 AND e.still_path IS NOT NULL AND e.still_path <> ''
++         ORDER BY e.id ASC",
++    )?;
++    let rows = stmt.query_map(rusqlite::params![library_id], |row| {
++        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
++    })?;
++    rows.collect()
++}
++
++/// Retire la vignette d'un épisode : il redevient une cible de `missing_still_paths`.
++pub fn clear_still_path(conn: &Connection, episode_id: i64) -> rusqlite::Result<()> {
++    conn.execute(
++        "UPDATE episodes SET still_path = NULL WHERE id = ?1",
++        rusqlite::params![episode_id],
++    )?;
++    Ok(())
++}
++
+ /// Enregistre le chemin de la vignette générée (Étape 6d).
+ pub fn update_still_path(conn: &Connection, episode_id: i64, still_path: &str) -> rusqlite::Result<()> {
+     conn.execute(
+@@ -137,4 +164,79 @@ pub fn update_still_path(conn: &Connection, episode_id: i64, still_path: &str) -
+         rusqlite::params![still_path, episode_id],
+     )?;
+     Ok(())
+-}
+\ No newline at end of file
++}
++#[cfg(test)]
++mod stills_tests {
++    use super::*;
++    use crate::db::migrations::MIGRATIONS;
++
++    fn setup() -> Connection {
++        let conn = Connection::open_in_memory().unwrap();
++        conn.execute_batch(
++            "PRAGMA foreign_keys = OFF;
++             CREATE TABLE vaulttube_subscriptions (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_videos (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_playlists (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_user_playlists (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_user_playlist_items (id INTEGER PRIMARY KEY);",
++        )
++        .unwrap();
++        for m in MIGRATIONS {
++            conn.execute_batch(m.sql).unwrap_or_else(|e| panic!("migration {} : {e}", m.version));
++        }
++        conn
++    }
++
++    /// Série 10, saison 1 ; épisode `n` rattaché au fichier 100+n de la bibliothèque `library`.
++    fn add_episode(conn: &Connection, n: i64, library: i64, still: Option<&str>) {
++        if n == 1 {
++            conn.execute(
++                "INSERT INTO titles (id, category_id, kind, name, created_at, updated_at)
++                 VALUES (10, 1, 'series', 'Serie', 'x', 'x')",
++                [],
++            )
++            .unwrap();
++            conn.execute("INSERT INTO seasons (id, title_id, season_number, created_at) VALUES (1, 10, 1, 'x')", [])
++                .unwrap();
++        }
++        conn.execute(
++            "INSERT INTO episodes (id, title_id, season_id, episode_number, created_at, still_path)
++             VALUES (?1, 10, 1, ?1, 'x', ?2)",
++            rusqlite::params![n, still],
++        )
++        .unwrap();
++        conn.execute(
++            "INSERT INTO media_files (id, library_id, folder_id, path, file_name, size_bytes,
++                                      modified_at, discovered_at, updated_at, episode_id)
++             VALUES (?1, ?2, 1, ?3, 'f', 1, 'x', 'x', 'x', ?4)",
++            rusqlite::params![100 + n, library, format!("/m/{n}.mkv"), n],
++        )
++        .unwrap();
++    }
++
++    #[test]
++    fn les_vignettes_enregistrees_sont_listees_par_bibliotheque() {
++        let conn = setup();
++        add_episode(&conn, 1, 1, Some("/data/thumbnails/episodes/episode_1.jpg"));
++        add_episode(&conn, 2, 1, None);
++        add_episode(&conn, 3, 1, Some(""));
++        add_episode(&conn, 4, 2, Some("/data/thumbnails/episodes/episode_4.jpg"));
++        let lib1 = list_still_paths(&conn, 1).unwrap();
++        assert_eq!(lib1, vec![(1, "/data/thumbnails/episodes/episode_1.jpg".to_string())]);
++        let lib2 = list_still_paths(&conn, 2).unwrap();
++        assert_eq!(lib2.len(), 1);
++        assert_eq!(lib2[0].0, 4);
++    }
++
++    #[test]
++    fn retirer_une_vignette_la_remet_dans_les_manquantes() {
++        let conn = setup();
++        add_episode(&conn, 1, 1, Some("/data/thumbnails/episodes/episode_1.jpg"));
++        let missing_before: Vec<i64> = missing_still_paths(&conn, 1).unwrap().into_iter().map(|m| m.0).collect();
++        assert!(!missing_before.contains(&1), "déjà pourvue : pas à générer");
++        clear_still_path(&conn, 1).unwrap();
++        let missing_after: Vec<i64> = missing_still_paths(&conn, 1).unwrap().into_iter().map(|m| m.0).collect();
++        assert!(missing_after.contains(&1), "retirée : à régénérer");
++        assert!(list_still_paths(&conn, 1).unwrap().is_empty());
++    }
++}
+diff --git a/apps/desktop/src-tauri/src/services/episode_thumbnails.rs b/apps/desktop/src-tauri/src/services/episode_thumbnails.rs
+index c965f65..8e06924 100644
+--- a/apps/desktop/src-tauri/src/services/episode_thumbnails.rs
++++ b/apps/desktop/src-tauri/src/services/episode_thumbnails.rs
+@@ -27,9 +27,20 @@
+ //!       `sw_render.rs`).
+ //!
+ //! 0.6.5 (correctif vignettes manquantes) : stratégie multi-positions
+-//! de seek avec repli automatique — si la position par défaut (1s) échoue,
+-//! essaie successivement 25%, 50%, 10% de la durée, puis la première frame.
+-//! Timeout proportionnel à la taille du fichier (2s de base + 1s par 100 Mo).
++//! de seek avec repli automatique. Timeout proportionnel à la taille du
++//! fichier (2s de base + 1s par 100 Mo).
++//!
++//! Vignettes NOIRES (Anime, Séries) — deux défauts corrigés :
++//!   1. la durée était lue JUSTE après `loadfile`, avant que le fichier soit
++//!      ouvert : absente, elle faisait retomber TOUTES les positions en
++//!      ratio sur 1 s — donc la même image de début (fondu, logo sur noir) à
++//!      chaque tentative. On attend maintenant que la durée soit connue ;
++//!   2. la première image obtenue était gardée sans jamais être regardée.
++//!      Les images noires ou unies sont maintenant écartées (`frame_stats`)
++//!      et la capture passe à la position suivante (25 %, 40 %, 10 %, 55 %,
++//!      70 %…), en gardant la meilleure image si aucune n'est claire.
++//! Les vignettes DÉJÀ générées et noires sont régénérées une fois par
++//! bibliothèque (`repair_dark_stills`).
+ //!
+ //! Anti-gel : chaque extraction tourne dans un thread dédié avec délai
+ //! absolu (`grab_one_frame_guarded`) ; un traceur d'étape (`Stage`)
+@@ -55,13 +66,19 @@ use tauri::{AppHandle, Emitter};
+ const THUMB_WIDTH: usize = 480;
+ const JPEG_QUALITY: u8 = 80;
+ 
+-/// Positions de seek à essayer (en secondes ou ratio de la durée)
++/// Positions de seek à essayer (en secondes ou ratio de la durée). Le début d'un épisode est
++/// souvent noir (fondu, logo du studio) et l'ouverture/générique n'est pas représentative : on
++/// commence à 25 % (récit), puis 40 %, 10 %, 55 %, 70 %, et seulement ensuite les positions
++/// courtes (30 s, 1 s, première image) pour les médias très courts ou sans durée fiable.
+ const SEEK_POSITIONS: &[SeekPosition] = &[
+-    SeekPosition::Absolute(1.0),  // 1 seconde (par défaut)
+-    SeekPosition::Ratio(0.25),    // 25% de la durée
+-    SeekPosition::Ratio(0.50),    // 50% de la durée
+-    SeekPosition::Ratio(0.10),    // 10% de la durée
+-    SeekPosition::Absolute(0.0),  // Première frame
++    SeekPosition::Ratio(0.25),
++    SeekPosition::Ratio(0.40),
++    SeekPosition::Ratio(0.10),
++    SeekPosition::Ratio(0.55),
++    SeekPosition::Ratio(0.70),
++    SeekPosition::Absolute(30.0),
++    SeekPosition::Absolute(1.0),
++    SeekPosition::Absolute(0.0),
+ ];
+ 
+ /// Timeout de base pour un fichier (augmenté proportionnellement à la taille)
+@@ -187,6 +204,20 @@ fn command(functions: &MpvFunctions, mpv: *mut c_void, args: &[&str]) -> Result<
+     }
+ }
+ 
++/// Attend (jusqu'à `max_wait`) que mpv connaisse la durée du fichier ouvert.
++fn wait_for_duration(functions: &MpvFunctions, mpv: *mut c_void, max_wait: Duration) -> Option<f64> {
++    let start = Instant::now();
++    loop {
++        if let Some(d) = get_property_double(functions, mpv, "duration").filter(|d| *d > 0.0) {
++            return Some(d);
++        }
++        if start.elapsed() >= max_wait {
++            return None;
++        }
++        std::thread::sleep(Duration::from_millis(40));
++    }
++}
++
+ fn get_property_double(functions: &MpvFunctions, mpv: *mut c_void, name: &str) -> Option<f64> {
+     let cname = CString::new(name).ok()?;
+     let mut value: f64 = 0.0;
+@@ -260,7 +291,10 @@ fn grab_one_frame(
+         let seek_seconds = match seek_pos {
+             SeekPosition::Absolute(secs) => secs,
+             SeekPosition::Ratio(ratio) => {
+-                let duration = get_property_double(functions, mpv, "duration").unwrap_or(0.0);
++                // La durée n'existe qu'une fois le fichier ouvert : on l'attend (bornée), sinon
++                // toutes les positions en ratio retombaient sur 1 s (vignettes noires).
++                let duration = wait_for_duration(functions, mpv, timeout.min(Duration::from_secs(5)))
++                    .unwrap_or(0.0);
+                 if duration > 0.0 {
+                     duration * ratio
+                 } else {
+@@ -414,7 +448,135 @@ fn grab_one_frame(
+     }
+ }
+ 
+-/// Essaie plusieurs positions de seek jusqu'à réussir ou épuiser les tentatives
++// ---- Vignettes : images noires (début) ----
++
++/// Luminosité à partir de laquelle un pixel compte comme « allumé » (0–255).
++const BRIGHT_LUMA: f64 = 40.0;
++
++/// Statistiques d'une image RGB8 (triplets R, G, B).
++#[derive(Clone, Copy, Debug)]
++pub struct FrameStats {
++    pub mean_luma: f32,
++    pub std_dev: f32,
++    /// Part des pixels « allumés » (> `BRIGHT_LUMA`).
++    pub bright_ratio: f32,
++}
++
++pub fn frame_stats(rgb: &[u8]) -> FrameStats {
++    let n = rgb.len() / 3;
++    if n == 0 {
++        return FrameStats { mean_luma: 0.0, std_dev: 0.0, bright_ratio: 0.0 };
++    }
++    let (mut sum, mut sum_sq, mut bright) = (0f64, 0f64, 0usize);
++    for px in rgb.chunks_exact(3) {
++        let luma = 0.299 * px[0] as f64 + 0.587 * px[1] as f64 + 0.114 * px[2] as f64;
++        sum += luma;
++        sum_sq += luma * luma;
++        if luma > BRIGHT_LUMA {
++            bright += 1;
++        }
++    }
++    let count = n as f64;
++    let mean = sum / count;
++    let variance = (sum_sq / count - mean * mean).max(0.0);
++    FrameStats {
++        mean_luma: mean as f32,
++        std_dev: variance.sqrt() as f32,
++        bright_ratio: (bright as f64 / count) as f32,
++    }
++}
++
++/// Image acceptable comme vignette : ni noire (fondu, écran noir de début d'épisode) ni
++/// uniforme (écran plat noir, blanc ou d'une seule couleur). Une scène de nuit, sombre mais
++/// avec du détail, reste acceptée.
++pub fn frame_is_usable(stats: &FrameStats) -> bool {
++    let black = stats.mean_luma < 16.0 && stats.bright_ratio < 0.05;
++    let flat = stats.std_dev < 6.0;
++    !black && !flat
++}
++
++/// Pour départager des images non acceptables : la plus claire et la plus contrastée.
++pub fn frame_score(stats: &FrameStats) -> f32 {
++    stats.mean_luma.min(128.0) + stats.std_dev
++}
++
++/// Garde la meilleure image vue au fil des positions essayées.
++pub struct FrameChooser {
++    best: Option<(f32, usize, usize, Vec<u8>)>,
++}
++
++impl FrameChooser {
++    pub fn new() -> Self {
++        Self { best: None }
++    }
++
++    /// Propose une image : `true` si elle est acceptable (inutile d'essayer d'autres positions).
++    pub fn offer(&mut self, width: usize, height: usize, rgb: Vec<u8>) -> bool {
++        let stats = frame_stats(&rgb);
++        let usable = frame_is_usable(&stats);
++        let score = frame_score(&stats);
++        if usable || self.best.as_ref().map_or(true, |(best, ..)| score > *best) {
++            self.best = Some((score, width, height, rgb));
++        }
++        usable
++    }
++
++    pub fn into_best(self) -> Option<(usize, usize, Vec<u8>)> {
++        self.best.map(|(_, w, h, rgb)| (w, h, rgb))
++    }
++}
++
++/// Une vignette JPEG déjà enregistrée est-elle noire/unie ? `None` si elle est illisible.
++pub fn dark_still_bytes(jpeg: &[u8]) -> Option<bool> {
++    let image = image::load_from_memory(jpeg).ok()?.to_rgb8();
++    Some(!frame_is_usable(&frame_stats(image.as_raw())))
++}
++
++/// Marque (par bibliothèque) le contrôle des vignettes noires déjà effectué.
++const DARK_CHECK_MARKER: &str = ".dark-check-v1";
++
++/// Vignettes DÉJÀ générées mais noires (anciennes captures à 1 s) ou dont le fichier a disparu :
++/// retirées de la base pour être régénérées par `generate_missing`. Une seule fois par
++/// bibliothèque (marqueur dans le dossier des vignettes). Ne touche que les images de ce dossier :
++/// une image venue d'ailleurs (TMDB) n'est jamais supprimée. Renvoie le nombre retirées.
++fn repair_dark_stills(conn: &rusqlite::Connection, dir: &std::path::Path, library_id: i64) -> u32 {
++    let marker = dir.join(format!("{DARK_CHECK_MARKER}-lib{library_id}"));
++    if marker.exists() {
++        return 0;
++    }
++    let stills = match episode_repository::list_still_paths(conn, library_id) {
++        Ok(stills) => stills,
++        Err(e) => {
++            log::warn!("[vignettes] contrôle des vignettes noires impossible : {e}");
++            return 0;
++        }
++    };
++    let mut cleared = 0u32;
++    for (episode_id, still) in stills {
++        let path = std::path::Path::new(&still);
++        if !path.starts_with(dir) {
++            continue;
++        }
++        let unusable = match std::fs::read(path) {
++            Ok(bytes) => dark_still_bytes(&bytes).unwrap_or(false),
++            Err(_) => true, // fichier absent : à régénérer
++        };
++        if unusable && episode_repository::clear_still_path(conn, episode_id).is_ok() {
++            let _ = std::fs::remove_file(path);
++            cleared += 1;
++        }
++    }
++    let _ = std::fs::write(&marker, b"ok");
++    log::info!(
++        "[vignettes] bibliothèque {library_id} : {cleared} vignette(s) noire(s) ou absente(s) à régénérer."
++    );
++    cleared
++}
++
++// ---- Vignettes : images noires (fin) ----
++
++/// Essaie plusieurs positions de seek jusqu'à obtenir une image acceptable (ni noire ni unie) ;
++/// si aucune ne l'est, garde la meilleure. Échoue seulement si AUCUNE image n'a pu être obtenue.
+ fn grab_one_frame_with_retries(
+     functions: &MpvFunctions,
+     path: &str,
+@@ -422,44 +584,54 @@ fn grab_one_frame_with_retries(
+ ) -> Result<(usize, usize, Vec<u8>), String> {
+     let timeout = compute_timeout(path);
+     let mut last_error = String::new();
++    let name = || {
++        std::path::Path::new(path)
++            .file_name()
++            .map(|n| n.to_string_lossy().into_owned())
++            .unwrap_or_default()
++    };
++    let mut chooser = FrameChooser::new();
+ 
+     for (i, &seek_pos) in SEEK_POSITIONS.iter().enumerate() {
+         set_stage(&stage, "tentative");
+         match grab_one_frame(functions, path, seek_pos, stage.clone(), timeout) {
+-            Ok(result) => {
+-                if i > 0 {
+-                    log::debug!(
+-                        "[vignettes] {} : vignette obtenue à la tentative {} ({:?})",
+-                        std::path::Path::new(path)
+-                            .file_name()
+-                            .map(|n| n.to_string_lossy())
+-                            .unwrap_or_default(),
+-                        i + 1,
+-                        seek_pos
+-                    );
++            Ok((width, height, rgb)) => {
++                if chooser.offer(width, height, rgb) {
++                    if i > 0 {
++                        log::debug!(
++                            "[vignettes] {} : image claire obtenue à la tentative {} ({:?})",
++                            name(),
++                            i + 1,
++                            seek_pos
++                        );
++                    }
++                    return chooser
++                        .into_best()
++                        .ok_or_else(|| "image acceptable introuvable".to_string());
+                 }
+-                return Ok(result);
++                log::debug!(
++                    "[vignettes] {} : image noire/unie à la position {:?}, autre position…",
++                    name(),
++                    seek_pos
++                );
+             }
+             Err(e) => {
++                log::debug!("[vignettes] {} : échec à la position {:?} — {}", name(), seek_pos, e);
+                 last_error = e;
+-                log::debug!(
+-                    "[vignettes] {} : échec à la position {:?} — {}",
+-                    std::path::Path::new(path)
+-                        .file_name()
+-                        .map(|n| n.to_string_lossy())
+-                        .unwrap_or_default(),
+-                    seek_pos,
+-                    last_error
+-                );
+-                continue;
+             }
+         }
+     }
+ 
+-    Err(format!(
+-        "toutes les positions de seek ont échoué : {}",
+-        last_error
+-    ))
++    match chooser.into_best() {
++        Some(frame) => {
++            log::warn!(
++                "[vignettes] {} : aucune image claire trouvée, la meilleure image est conservée.",
++                name()
++            );
++            Ok(frame)
++        }
++        None => Err(format!("toutes les positions de seek ont échoué : {last_error}")),
++    }
+ }
+ 
+ /// Filet de sécurité : thread dédié + délai absolu. En cas de gel, le
+@@ -473,7 +645,10 @@ fn grab_one_frame_guarded(
+ ) -> Result<(usize, usize, Vec<u8>), String> {
+     // 0.6.5 : calcul du timeout AVANT le spawn — `path` est déplacé dans
+     // la closure et ne serait plus disponible après.
+-    let timeout = compute_timeout(&path) + Duration::from_secs(5);
++    // Plus de positions possibles (image noire → autre position) : le budget global suit.
++    let timeout = compute_timeout(&path)
++        + Duration::from_secs(5)
++        + Duration::from_secs(2 * (SEEK_POSITIONS.len() as u64 - 1));
+     
+     let (tx, rx) = std::sync::mpsc::channel();
+     let stage_for_thread = stage.clone();
+@@ -544,6 +719,10 @@ pub fn generate_missing(
+         log::error!("[vignettes] connexion base indisponible (bibliothèque {library_id}).");
+         return;
+     };
++    let thumbs_dir = std::path::Path::new(data_dir).join("thumbnails").join("episodes");
++    if std::fs::create_dir_all(&thumbs_dir).is_ok() {
++        repair_dark_stills(&conn, &thumbs_dir, library_id);
++    }
+     let targets = match episode_repository::missing_still_paths(&conn, library_id) {
+         Ok(targets) => targets,
+         Err(e) => {
+@@ -676,4 +855,239 @@ pub fn generate_missing(
+             failed,
+         },
+     );
+-}
+\ No newline at end of file
++}
++
++#[cfg(test)]
++mod frame_tests {
++    use super::*;
++
++    fn solid(w: usize, h: usize, rgb: [u8; 3]) -> Vec<u8> {
++        (0..w * h).flat_map(|_| rgb).collect()
++    }
++
++    /// Dégradé + motif : une vraie « scène ».
++    fn scene(w: usize, h: usize, base: u8) -> Vec<u8> {
++        let mut v = Vec::with_capacity(w * h * 3);
++        for y in 0..h {
++            for x in 0..w {
++                let shade = base as usize + ((x * 3 + y * 2) % 90);
++                let c = shade.min(255) as u8;
++                v.extend_from_slice(&[c, c.saturating_sub(10), c.saturating_sub(25)]);
++            }
++        }
++        v
++    }
++
++    fn jpeg(w: u32, h: u32, rgb: &[u8]) -> Vec<u8> {
++        let mut out = Vec::new();
++        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80)
++            .encode(rgb, w, h, image::ExtendedColorType::Rgb8)
++            .unwrap();
++        out
++    }
++
++    #[test]
++    fn une_image_noire_est_rejetee() {
++        let s = frame_stats(&solid(64, 36, [0, 0, 0]));
++        assert!(!frame_is_usable(&s));
++        // Fondu d'entrée presque noir (cas typique à 1 s d'un épisode).
++        assert!(!frame_is_usable(&frame_stats(&solid(64, 36, [6, 6, 8]))));
++    }
++
++    #[test]
++    fn une_image_unie_est_rejetee_noire_blanche_ou_coloree() {
++        for rgb in [[255, 255, 255], [128, 128, 128], [200, 30, 30], [0, 0, 0]] {
++            assert!(!frame_is_usable(&frame_stats(&solid(64, 36, rgb))), "{rgb:?}");
++        }
++    }
++
++    #[test]
++    fn une_vraie_scene_est_acceptee() {
++        assert!(frame_is_usable(&frame_stats(&scene(64, 36, 60))));
++    }
++
++    #[test]
++    fn une_scene_de_nuit_sombre_mais_detaillee_est_acceptee() {
++        // Moyenne basse, mais du détail et des zones allumées : pas une image noire.
++        let mut night = solid(64, 36, [8, 8, 12]);
++        for px in night.chunks_exact_mut(3).step_by(5) {
++            px.copy_from_slice(&[120, 110, 90]); // fenêtres allumées
++        }
++        let s = frame_stats(&night);
++        assert!(s.mean_luma < 40.0 && s.bright_ratio >= 0.05, "{s:?}");
++        assert!(frame_is_usable(&s));
++    }
++
++    #[test]
++    fn image_vide_ou_tronquee_ne_plante_pas() {
++        let s = frame_stats(&[]);
++        assert!(!frame_is_usable(&s));
++        let _ = frame_stats(&[1, 2]); // moins d'un pixel
++    }
++
++    #[test]
++    fn le_selecteur_s_arrete_a_la_premiere_image_claire_et_la_garde() {
++        let mut c = FrameChooser::new();
++        assert!(!c.offer(64, 36, solid(64, 36, [0, 0, 0])), "noire : on continue");
++        assert!(!c.offer(64, 36, solid(64, 36, [255, 255, 255])), "unie : on continue");
++        let bonne = scene(64, 36, 80);
++        assert!(c.offer(64, 36, bonne.clone()), "claire : on s'arrête");
++        let (w, h, rgb) = c.into_best().unwrap();
++        assert_eq!((w, h), (64, 36));
++        assert_eq!(rgb, bonne);
++    }
++
++    #[test]
++    fn sans_image_claire_la_meilleure_des_sombres_est_gardee() {
++        let mut c = FrameChooser::new();
++        let tres_noire = solid(64, 36, [0, 0, 0]);
++        // Un peu plus claire mais toujours uniforme : meilleure que la noire.
++        let grise_sombre = solid(64, 36, [14, 14, 14]);
++        assert!(!c.offer(64, 36, tres_noire));
++        assert!(!c.offer(64, 36, grise_sombre.clone()));
++        assert!(!c.offer(64, 36, solid(64, 36, [2, 2, 2])));
++        assert_eq!(c.into_best().unwrap().2, grise_sombre);
++    }
++
++    #[test]
++    fn un_selecteur_vide_ne_renvoie_rien() {
++        assert!(FrameChooser::new().into_best().is_none());
++    }
++
++    #[test]
++    fn les_vignettes_deja_enregistrees_noires_sont_reconnues_via_un_vrai_jpeg() {
++        let noire = jpeg(64, 36, &solid(64, 36, [0, 0, 0]));
++        let claire = jpeg(64, 36, &scene(64, 36, 70));
++        assert_eq!(dark_still_bytes(&noire), Some(true));
++        assert_eq!(dark_still_bytes(&claire), Some(false));
++        assert_eq!(dark_still_bytes(b"ceci n'est pas un jpeg"), None);
++        assert_eq!(dark_still_bytes(&[]), None);
++    }
++}
++
++#[cfg(test)]
++mod repair_tests {
++    use super::*;
++    use crate::db::migrations::MIGRATIONS;
++
++    fn jpeg(rgb: &[u8]) -> Vec<u8> {
++        let mut out = Vec::new();
++        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80)
++            .encode(rgb, 64, 36, image::ExtendedColorType::Rgb8)
++            .unwrap();
++        out
++    }
++
++    fn black() -> Vec<u8> {
++        jpeg(&vec![0u8; 64 * 36 * 3])
++    }
++
++    fn bright() -> Vec<u8> {
++        let mut v = Vec::new();
++        for y in 0..36usize {
++            for x in 0..64usize {
++                let c = (60 + (x * 3 + y * 2) % 100) as u8;
++                v.extend_from_slice(&[c, c, c.saturating_sub(20)]);
++            }
++        }
++        jpeg(&v)
++    }
++
++    fn setup(dir_tag: &str) -> (rusqlite::Connection, std::path::PathBuf) {
++        let conn = rusqlite::Connection::open_in_memory().unwrap();
++        conn.execute_batch(
++            "PRAGMA foreign_keys = OFF;
++             CREATE TABLE vaulttube_subscriptions (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_videos (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_playlists (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_user_playlists (id INTEGER PRIMARY KEY);
++             CREATE TABLE vaulttube_user_playlist_items (id INTEGER PRIMARY KEY);",
++        )
++        .unwrap();
++        for m in MIGRATIONS {
++            conn.execute_batch(m.sql).unwrap_or_else(|e| panic!("migration {} : {e}", m.version));
++        }
++        conn.execute(
++            "INSERT INTO titles (id, category_id, kind, name, created_at, updated_at) VALUES (10, 1, 'series', 'S', 'x', 'x')",
++            [],
++        )
++        .unwrap();
++        conn.execute("INSERT INTO seasons (id, title_id, season_number, created_at) VALUES (1, 10, 1, 'x')", [])
++            .unwrap();
++        let dir = std::env::temp_dir().join(format!("avm-stills-{dir_tag}-{}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&dir);
++        std::fs::create_dir_all(&dir).unwrap();
++        (conn, dir)
++    }
++
++    fn add_episode(conn: &rusqlite::Connection, n: i64, still: &std::path::Path) {
++        conn.execute(
++            "INSERT INTO episodes (id, title_id, season_id, episode_number, created_at, still_path)
++             VALUES (?1, 10, 1, ?1, 'x', ?2)",
++            rusqlite::params![n, still.to_string_lossy().to_string()],
++        )
++        .unwrap();
++        conn.execute(
++            "INSERT INTO media_files (id, library_id, folder_id, path, file_name, size_bytes,
++                                      modified_at, discovered_at, updated_at, episode_id)
++             VALUES (?1, 1, 1, ?2, 'f', 1, 'x', 'x', 'x', ?1)",
++            rusqlite::params![n, format!("/m/{n}.mkv")],
++        )
++        .unwrap();
++    }
++
++    fn still_of(conn: &rusqlite::Connection, n: i64) -> Option<String> {
++        conn.query_row("SELECT still_path FROM episodes WHERE id = ?1", [n], |r| r.get(0)).unwrap()
++    }
++
++    #[test]
++    fn les_vignettes_noires_ou_absentes_sont_retirees_les_bonnes_et_les_externes_conservees() {
++        let (conn, dir) = setup("reparation");
++        let noire = dir.join("episode_1.jpg");
++        let claire = dir.join("episode_2.jpg");
++        let absente = dir.join("episode_3.jpg"); // jamais écrite
++        let externe_dir = std::env::temp_dir().join(format!("avm-stills-externe-{}", std::process::id()));
++        std::fs::create_dir_all(&externe_dir).unwrap();
++        let externe = externe_dir.join("tmdb_still.jpg"); // image « TMDB » noire hors du dossier : intouchable
++        std::fs::write(&noire, black()).unwrap();
++        std::fs::write(&claire, bright()).unwrap();
++        std::fs::write(&externe, black()).unwrap();
++        add_episode(&conn, 1, &noire);
++        add_episode(&conn, 2, &claire);
++        add_episode(&conn, 3, &absente);
++        add_episode(&conn, 4, &externe);
++
++        assert_eq!(repair_dark_stills(&conn, &dir, 1), 2, "la noire et l'absente");
++        assert_eq!(still_of(&conn, 1), None);
++        assert!(!noire.exists(), "le fichier noir est supprimé");
++        assert_eq!(still_of(&conn, 2).as_deref(), Some(claire.to_string_lossy().as_ref()));
++        assert!(claire.exists());
++        assert_eq!(still_of(&conn, 3), None);
++        assert!(still_of(&conn, 4).is_some(), "une image hors du dossier des vignettes n'est jamais touchée");
++        assert!(externe.exists());
++
++        // Les retirées redeviennent des cibles de génération.
++        let missing: Vec<i64> = episode_repository::missing_still_paths(&conn, 1).unwrap().into_iter().map(|m| m.0).collect();
++        assert_eq!(missing, vec![1, 3]);
++        let _ = std::fs::remove_dir_all(dir);
++        let _ = std::fs::remove_dir_all(externe_dir);
++    }
++
++    #[test]
++    fn le_controle_ne_s_execute_qu_une_fois_par_bibliotheque() {
++        let (conn, dir) = setup("une-fois");
++        let noire = dir.join("episode_1.jpg");
++        std::fs::write(&noire, black()).unwrap();
++        add_episode(&conn, 1, &noire);
++        assert_eq!(repair_dark_stills(&conn, &dir, 1), 1);
++        // Une vignette noire régénérée ensuite (meilleure image disponible) ne sera pas rejetée en boucle.
++        std::fs::write(&noire, black()).unwrap();
++        conn.execute("UPDATE episodes SET still_path = ?1 WHERE id = 1", [noire.to_string_lossy().to_string()]).unwrap();
++        assert_eq!(repair_dark_stills(&conn, &dir, 1), 0, "marqueur présent : rien à refaire");
++        assert!(still_of(&conn, 1).is_some());
++        // Une autre bibliothèque a son propre marqueur.
++        assert!(dir.join(".dark-check-v1-lib1").exists());
++        assert!(!dir.join(".dark-check-v1-lib2").exists());
++        let _ = std::fs::remove_dir_all(dir);
++    }
++}

@@ -1,0 +1,349 @@
+diff --git a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+index a62c92e..9901999 100644
+--- a/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
++++ b/apps/desktop/src-tauri/src/services/playback_engine/mod.rs
+@@ -364,7 +364,11 @@ pub struct PlaybackEngineHandle {
+     mpv: MpvHandlePtr,
+     surface: Mutex<Option<SurfaceState>>,
+     /// 0.5.0 : dernière source chargée (vidéo, audio séparé éventuel).
+-    last_source: Mutex<Option<(String, Option<String>)>>,
++    /// `Arc` : le rechargement correctif de `attach_surface` la relit APRÈS son délai.
++    last_source: Arc<Mutex<Option<(String, Option<String>)>>>,
++    /// Incrémenté à CHAQUE chargement de média (fichier local, flux, audio seul) : permet à
++    /// `attach_surface` de savoir qu'un chargement plus récent a eu lieu pendant son délai.
++    load_epoch: Arc<AtomicU64>,
+     /// 0.6.0 (visualiseur) : URL d'origine demandée par le frontend
+     /// (page YouTube, fichier local…) — permet au visualiseur de faire
+     /// correspondre la source réellement chargée (flux extrait) au média
+@@ -555,7 +559,8 @@ impl PlaybackEngineHandle {
+             functions: functions.clone(),
+             mpv,
+             surface: Mutex::new(None),
+-            last_source: Mutex::new(None),
++            last_source: Arc::new(Mutex::new(None)),
++            load_epoch: Arc::new(AtomicU64::new(0)),
+             audio_origin: Mutex::new(None),
+             audio_session: AtomicBool::new(false),
+             preferred_quality: Mutex::new(None),
+@@ -609,6 +614,7 @@ impl PlaybackEngineHandle {
+     fn load_direct(&self, path: &str) -> Result<(), String> {
+         // Spatialisation : chaîne audio dans l'état voulu AVANT le loadfile.
+         self.apply_audio_filter();
++        self.load_epoch.fetch_add(1, Ordering::SeqCst);
+         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
+             Some((path.to_string(), None));
+         // 0.6.0 (visualiseur) : pour un fichier local, l'origine = le chemin lui-même.
+@@ -795,6 +801,7 @@ impl PlaybackEngineHandle {
+         // Spatialisation : chaîne audio dans l'état voulu AVANT le loadfile
+         // (couvre AetherFy, TV/HLS, changement de qualité…).
+         self.apply_audio_filter();
++        self.load_epoch.fetch_add(1, Ordering::SeqCst);
+         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
+             Some((video.to_string(), audio.map(|s| s.to_string())));
+         // 0.6.0 (visualiseur) : on NE touche PLUS à `audio_origin` ici.
+@@ -860,6 +867,7 @@ impl PlaybackEngineHandle {
+             .ok_or_else(|| "aucun flux audio extrait".to_string())?;
+         // 0.6.0 (visualiseur) : mémorise le flux audio extrait ET l'URL
+         // d'origine — le visualiseur Symphonia ré-ouvrira ce flux précis.
++        self.load_epoch.fetch_add(1, Ordering::SeqCst);
+         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
+             Some((audio_url.clone(), None));
+         *self.audio_origin.lock().unwrap_or_else(|p| p.into_inner()) =
+@@ -1339,11 +1347,9 @@ impl PlaybackEngineHandle {
+         // contexte présent. Configuration d'origine PROUVÉE (image OK sur
+         // HLS TV) : ni skip « flux direct » (0.9.12 → plus aucun son),
+         // ni wake seek (0.9.10 → image toujours noire).
+-        let source = self
+-            .last_source
+-            .lock()
+-            .unwrap_or_else(|p| p.into_inner())
+-            .clone();
++        let last_source = self.last_source.clone();
++        let load_epoch = self.load_epoch.clone();
++        let load_epoch_at_attach = load_epoch.load(Ordering::SeqCst);
+         let functions_for_reload = self.functions.clone();
+         let mpv_addr = self.mpv.0 as usize;
+         let gate = self.gate.clone();
+@@ -1351,9 +1357,6 @@ impl PlaybackEngineHandle {
+         let epoch_at_attach = stop_epoch.load(Ordering::SeqCst);
+         std::thread::spawn(move || {
+             std::thread::sleep(std::time::Duration::from_millis(300));
+-            let Some((video, audio)) = source else {
+-                return;
+-            };
+             // Un stop() est intervenu pendant les 300 ms d'attente : ne
+             // surtout pas relancer le flux (audio fantôme sans image).
+             if stop_epoch.load(Ordering::SeqCst) != epoch_at_attach {
+@@ -1362,6 +1365,22 @@ impl PlaybackEngineHandle {
+                 );
+                 return;
+             }
++            // La source est relue ICI, après l'attente — jamais à l'attache : changer d'épisode
++            // rattache la surface AVANT que le nouvel épisode soit chargé, et l'ancienne source
++            // revenait écraser le nouvel épisode (l'interface annonçait l'épisode 2, l'épisode 1
++            // était relu). Si un chargement a eu lieu depuis l'attache, rien à corriger.
++            let source_now = last_source.lock().unwrap_or_else(|p| p.into_inner()).clone();
++            let (video, audio) = match corrective_reload_decision(
++                load_epoch_at_attach,
++                load_epoch.load(Ordering::SeqCst),
++                source_now,
++            ) {
++                CorrectiveReload::Skip(why) => {
++                    log::info!("[playback] rechargement correctif annulé : {why}");
++                    return;
++                }
++                CorrectiveReload::Reload { video, audio } => (video, audio),
++            };
+             let mpv_ptr = mpv_addr as *mut c_void;
+             // Reprend la position courante pour que le rechargement
+             // correctif ne remette PAS la lecture à zéro.
+@@ -1839,6 +1858,37 @@ fn cobalt_extract(url: &str, height: Option<i64>) -> Option<String> {
+ }
+ 
+ /// Exécute yt-dlp `-J -f <sel>` et renvoie le JSON décrit.
++// ---- Rechargement correctif après attache de la surface (début) ----
++
++/// Décision du « rechargement correctif » lancé 300 ms après `attach_surface`.
++#[derive(Debug, PartialEq)]
++enum CorrectiveReload {
++    /// Rien à recharger (raison journalisée).
++    Skip(&'static str),
++    /// Recharger cette source (vidéo, audio séparé éventuel).
++    Reload { video: String, audio: Option<String> },
++}
++
++/// Le rechargement sert au cas où mpv a démarré son VO AVANT l'existence du contexte de rendu
++/// (écran noir). Il ne doit viser que la source COURANTE, et seulement si aucun chargement n'a
++/// eu lieu depuis l'attache : un chargement postérieur démarre déjà avec le bon contexte, et
++/// recharger une source plus ancienne l'écraserait (bug « suivant → relit l'épisode précédent »).
++fn corrective_reload_decision(
++    load_epoch_at_attach: u64,
++    load_epoch_now: u64,
++    source_now: Option<(String, Option<String>)>,
++) -> CorrectiveReload {
++    if load_epoch_now != load_epoch_at_attach {
++        return CorrectiveReload::Skip("un nouveau média a été chargé depuis l'attache de la surface");
++    }
++    match source_now {
++        None => CorrectiveReload::Skip("aucune source à recharger"),
++        Some((video, audio)) => CorrectiveReload::Reload { video, audio },
++    }
++}
++
++// ---- Rechargement correctif après attache de la surface (fin) ----
++
+ // ---- yt-dlp : raisons d'échec et extraction audio seul (début) ----
+ 
+ /// Raison lisible de l'échec d'un yt-dlp : sa ligne `ERROR:` (sinon la dernière ligne de
+@@ -2541,3 +2591,48 @@ mod ytdlp_tests {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod reload_tests {
++    use super::*;
++
++    fn src(v: &str) -> Option<(String, Option<String>)> {
++        Some((v.to_string(), None))
++    }
++
++    #[test]
++    fn ecran_noir_d_origine_le_chargement_precede_l_attache_on_recharge_la_source_courante() {
++        // Le média est chargé AVANT l'attache (epoch inchangé) : le VO a pu démarrer sans contexte.
++        assert_eq!(
++            corrective_reload_decision(4, 4, src("ep1.mkv")),
++            CorrectiveReload::Reload { video: "ep1.mkv".into(), audio: None }
++        );
++    }
++
++    #[test]
++    fn episode_suivant_le_chargement_suit_l_attache_aucun_rechargement_de_l_ancienne_source() {
++        // Scénario du bug : « suivant » → la surface se rattache (source encore = ép. 1) puis
++        // l'ép. 2 est chargé (epoch + 1) pendant les 300 ms. L'ép. 1 ne doit PAS revenir.
++        assert!(matches!(
++            corrective_reload_decision(4, 5, src("ep2.mkv")),
++            CorrectiveReload::Skip(_)
++        ));
++        // Même après plusieurs chargements successifs (suivant, suivant, précédent…).
++        assert!(matches!(corrective_reload_decision(4, 7, src("ep2.mkv")), CorrectiveReload::Skip(_)));
++    }
++
++    #[test]
++    fn la_source_rechargee_est_toujours_celle_d_apres_le_delai() {
++        // Aucun nouveau chargement mais la source a changé (ex. flux extrait) : on prend la courante.
++        let d = corrective_reload_decision(2, 2, Some(("video.m3u8".into(), Some("audio.m4a".into()))));
++        assert_eq!(
++            d,
++            CorrectiveReload::Reload { video: "video.m3u8".into(), audio: Some("audio.m4a".into()) }
++        );
++    }
++
++    #[test]
++    fn sans_source_rien_n_est_recharge() {
++        assert!(matches!(corrective_reload_decision(0, 0, None), CorrectiveReload::Skip(_)));
++    }
++}
+diff --git a/apps/desktop/src/player/PlayerContext.tsx b/apps/desktop/src/player/PlayerContext.tsx
+index 37a05b4..7061e4c 100644
+--- a/apps/desktop/src/player/PlayerContext.tsx
++++ b/apps/desktop/src/player/PlayerContext.tsx
+@@ -16,6 +16,7 @@ import type {
+   PlayerStateEvent,
+ } from "@aethervault/shared-types";
+ import { playerApi } from "../features/player/api";
++import { SeekScrubber } from "./seekScrubber";
+ import { titleApi } from "../features/title/api";
+ import { windowApi } from "../features/window/api";
+ import { playerSettingsApi } from "../features/playerSettings/api";
+@@ -263,7 +264,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
+   const watchStartedNotifiedRef = useRef<number | null>(null);
+ 
+   const userPausedRef = useRef(false);
+-  const seekDebounceRef = useRef<number | null>(null);
++  // Glissement de la barre de progression : seeks au fil de l'eau + positions du moteur ignorées
++  // tant que le seek n'a pas abouti (voir seekScrubber.ts).
++  const scrubberRef = useRef<SeekScrubber | null>(null);
++  if (scrubberRef.current === null) {
++    scrubberRef.current = new SeekScrubber((seconds) => {
++      void playerApi.seek(seconds);
++    });
++  }
+   const volumeDebounceRef = useRef<number | null>(null);
+ 
+   useEffect(() => {
+@@ -399,7 +407,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
+       const { position_seconds, duration_seconds, playing, ended, error } =
+         event.payload;
+       if (position_seconds !== undefined && position_seconds !== null) {
+-        setPosition(position_seconds);
++        // Pendant un seek manuel, la position réelle (ancienne) ramènerait le curseur en arrière.
++        if (scrubberRef.current?.acceptPosition(position_seconds) !== false) {
++          setPosition(position_seconds);
++        }
+       }
+       if (duration_seconds !== undefined && duration_seconds !== null) {
+         setDuration(duration_seconds);
+@@ -451,6 +462,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
+         setBuffered(0);
+         endedHandledRef.current = null;
+         userPausedRef.current = false;
++        scrubberRef.current?.reset();
+         const onAetherFyWatch = window.location.hash.includes("/aetherfy/watch");
+         if (media?.mode && !state2.background && !onAetherFyWatch) {
+           setImmersiveOpen(true);
+@@ -611,7 +623,7 @@ useEffect(() => {
+           currentIndex === 0
+         ) {
+           setPosition(0);
+-          void playerApi.seek(0);
++          scrubberRef.current?.seek(0, 0);
+           return;
+         }
+         loadAndBroadcast(items, currentIndex - 1, true);
+@@ -624,12 +636,10 @@ useEffect(() => {
+       },
+       seek: (seconds) => {
+         setPosition(seconds);
+-        if (seekDebounceRef.current !== null) {
+-          window.clearTimeout(seekDebounceRef.current);
+-        }
+-        seekDebounceRef.current = window.setTimeout(() => {
+-          void playerApi.seek(seconds);
+-        }, 150);
++        // Fichier local : un seek toutes les 120 ms au plus pendant le glissement ; flux en
++        // ligne : 300 ms (chaque seek relance une requête réseau).
++        const media = currentMediaRef.current;
++        scrubberRef.current?.seek(seconds, media && isOnlineMedia(media) ? 300 : 120);
+       },
+       setVolumeLevel: (level) => {
+         setVolume(level);
+@@ -758,6 +768,7 @@ useEffect(() => {
+             .catch(() => {});
+         }
+         endedHandledRef.current = null;
++        scrubberRef.current?.reset();
+         void playerApi.stop();
+         friendsApi.clearActivity().catch(() => {});
+         windowApi
+diff --git a/apps/desktop/src/player/seekScrubber.ts b/apps/desktop/src/player/seekScrubber.ts
+new file mode 100644
+index 0000000..e8996d0
+--- /dev/null
++++ b/apps/desktop/src/player/seekScrubber.ts
+@@ -0,0 +1,75 @@
++/**
++ * Déplacement manuel de la barre de progression, sans saccade.
++ *
++ * Deux défauts rendaient le glissement saccadé :
++ *  1. le moteur renvoie en continu la position RÉELLE de lecture ; pendant le glissement elle
++ *     ramenait le curseur en arrière (et il re-sautait quand le seek, retardé, aboutissait) ;
++ *  2. le seek n'était envoyé qu'après 150 ms d'immobilité : l'image ne suivait pas le curseur.
++ *
++ * Ici : (1) tant qu'un seek n'a pas « atterri » (position réelle proche de la cible, ou délai
++ * maximal dépassé), les positions du moteur sont ignorées ; (2) les seeks partent au fil du
++ * glissement, au plus un toutes les `throttleMs` (le premier tout de suite, le dernier jamais
++ * perdu).
++ */
++export const SEEK_LANDED_TOLERANCE_SECONDS = 1.5;
++export const SEEK_HOLD_MAX_MS = 4000;
++
++export class SeekScrubber {
++  private target: { value: number; until: number } | null = null;
++  private pending: number | null = null;
++  private timer: ReturnType<typeof setTimeout> | null = null;
++  private lastSentAt = -Infinity;
++
++  constructor(
++    private readonly send: (seconds: number) => void,
++    private readonly now: () => number = Date.now,
++    private readonly setTimer: (fn: () => void, ms: number) => ReturnType<typeof setTimeout> = setTimeout,
++    private readonly clearTimer: (t: ReturnType<typeof setTimeout>) => void = clearTimeout
++  ) {}
++
++  /** L'utilisateur déplace la barre (ou un raccourci saute) vers `seconds`. */
++  seek(seconds: number, throttleMs: number): void {
++    const t = this.now();
++    this.target = { value: seconds, until: t + SEEK_HOLD_MAX_MS };
++    this.pending = seconds;
++    if (this.timer !== null) return; // un envoi différé est déjà prévu : il portera cette valeur
++    const wait = throttleMs - (t - this.lastSentAt);
++    if (wait <= 0) this.flush();
++    else this.timer = this.setTimer(() => this.flush(), wait);
++  }
++
++  private flush(): void {
++    this.timer = null;
++    if (this.pending === null) return;
++    const value = this.pending;
++    this.pending = null;
++    this.lastSentAt = this.now();
++    this.send(value);
++  }
++
++  /**
++   * Position réelle reçue du moteur : `true` = l'afficher, `false` = l'ignorer (un seek
++   * est en cours, le curseur reste sur la cible choisie par l'utilisateur).
++   */
++  acceptPosition(position: number): boolean {
++    const target = this.target;
++    if (!target) return true;
++    if (this.now() > target.until) {
++      this.target = null;
++      return true;
++    }
++    if (Math.abs(position - target.value) <= SEEK_LANDED_TOLERANCE_SECONDS) {
++      this.target = null;
++      return true;
++    }
++    return false;
++  }
++
++  /** Changement de média / arrêt : on oublie tout seek en cours. */
++  reset(): void {
++    if (this.timer !== null) this.clearTimer(this.timer);
++    this.timer = null;
++    this.pending = null;
++    this.target = null;
++  }
++}

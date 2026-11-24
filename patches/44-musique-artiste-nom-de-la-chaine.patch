@@ -1,0 +1,321 @@
+diff --git a/apps/desktop/src-tauri/src/services/vaulttube/models.rs b/apps/desktop/src-tauri/src/services/vaulttube/models.rs
+index a6e822a..26f2091 100644
+--- a/apps/desktop/src-tauri/src/services/vaulttube/models.rs
++++ b/apps/desktop/src-tauri/src/services/vaulttube/models.rs
+@@ -36,6 +36,10 @@ pub struct VaultTubeVideo {
+     /// ou détectée via l'onglet /shorts de la chaîne à la sync).
+     #[serde(default)]
+     pub is_short: bool,
++    /// Nom de la chaîne YouTube qui a publié la vidéo (AetherFy Musique : c'est le nom
++    /// d'artiste affiché sous le titre). `None` tant que l'abonnement n'a pas été resynchronisé.
++    #[serde(default)]
++    pub channel: Option<String>,
+ }
+ 
+ /// Playlist publique d'une chaîne suivie.
+diff --git a/apps/desktop/src-tauri/src/services/vaulttube/repository.rs b/apps/desktop/src-tauri/src/services/vaulttube/repository.rs
+index 0ecd801..75641ce 100644
+--- a/apps/desktop/src-tauri/src/services/vaulttube/repository.rs
++++ b/apps/desktop/src-tauri/src/services/vaulttube/repository.rs
+@@ -126,6 +126,23 @@ fn text_column(
+     Ok(rows)
+ }
+ 
++/// Ajoute une colonne à une table existante si elle n'y est pas (idempotent). `table`,
++/// `column` et `ddl_type` sont des constantes du code, jamais une saisie utilisateur.
++fn add_column_if_missing(
++    conn: &rusqlite::Connection,
++    table: &str,
++    column: &str,
++    ddl_type: &str,
++) -> Result<(), String> {
++    let present = text_column(conn, &format!("SELECT name FROM pragma_table_info('{table}')"), None)
++        .map_err(|e| e.to_string())?;
++    if present.iter().any(|c| c == column) {
++        return Ok(());
++    }
++    conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
++        .map_err(|e| e.to_string())
++}
++
+ /// `Ok(true)` si la table a été reconstruite, `Ok(false)` s'il n'y avait rien à faire.
+ fn upgrade_subscription_uniqueness(conn: &mut rusqlite::Connection) -> Result<bool, String> {
+     let db = |e: rusqlite::Error| e.to_string();
+@@ -283,6 +300,7 @@ impl VaultTubeRepository {
+                 source TEXT NOT NULL DEFAULT 'youtube',
+                 mode TEXT NOT NULL DEFAULT 'video',
+                 is_short INTEGER NOT NULL DEFAULT 0,
++                channel TEXT,
+                 UNIQUE(subscription_id, youtube_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_vaulttube_videos_subscription_id ON vaulttube_videos(subscription_id);
+@@ -323,6 +341,9 @@ impl VaultTubeRepository {
+ 
+         // 0.7.10 : une base créée avant ce correctif a encore `UNIQUE(url)`. Un échec ici
+         // n'empêche PAS l'application de démarrer (elle fonctionne comme avant).
++        // Colonnes ajoutées après coup : bases créées avant ces versions.
++        add_column_if_missing(&conn, "vaulttube_videos", "channel", "TEXT")?;
++
+         match upgrade_subscription_uniqueness(&mut conn) {
+             Ok(true) => log::info!("[vaulttube] unicité des abonnements : UNIQUE(url) → UNIQUE(url, mode)"),
+             Ok(false) => {}
+@@ -439,6 +460,7 @@ impl VaultTubeRepository {
+         published_at: Option<i64>,
+         source: &str,
+         is_short: bool,
++        channel: Option<&str>,
+     ) -> Result<(), String> {
+         let conn = self.pool.get().map_err(|e| e.to_string())?;
+         let mode: String = conn
+@@ -452,13 +474,17 @@ impl VaultTubeRepository {
+             .duration_since(std::time::UNIX_EPOCH)
+             .unwrap()
+             .as_secs() as i64;
+-                conn.execute(
+-            "INSERT OR IGNORE INTO vaulttube_videos
+-             (subscription_id, youtube_id, title, description, thumbnail_url, duration_seconds, published_at, added_at, source, mode, is_short)
+-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
++        // Déjà présente : seule la chaîne est rattrapée (les vidéos synchronisées avant l'ajout
++        // de la colonne la reçoivent à la resynchronisation) ; le reste n'est jamais modifié.
++        conn.execute(
++            "INSERT INTO vaulttube_videos
++             (subscription_id, youtube_id, title, description, thumbnail_url, duration_seconds, published_at, added_at, source, mode, is_short, channel)
++             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
++             ON CONFLICT(subscription_id, youtube_id)
++             DO UPDATE SET channel = COALESCE(excluded.channel, vaulttube_videos.channel)",
+             rusqlite::params![
+                 subscription_id, youtube_id, title, description, thumbnail_url,
+-                duration_seconds, published_at, now, source, mode, is_short as i64
++                duration_seconds, published_at, now, source, mode, is_short as i64, channel
+             ],
+         )
+         .map_err(|e| e.to_string())?;
+@@ -486,7 +512,7 @@ impl VaultTubeRepository {
+         let mut stmt = conn
+             .prepare(
+                 "SELECT id, subscription_id, youtube_id, title, description, thumbnail_url,
+-                        duration_seconds, published_at, added_at, source, mode, is_short
++                        duration_seconds, published_at, added_at, source, mode, is_short, channel
+                  FROM vaulttube_videos
+                  WHERE subscription_id = ?1
+                  ORDER BY published_at DESC NULLS LAST, added_at DESC",
+@@ -507,6 +533,7 @@ impl VaultTubeRepository {
+                     source: row.get(9)?,
+                     mode: row.get(10)?,
+                     is_short: row.get::<_, i64>(11).unwrap_or(0) != 0,
++                    channel: row.get(12)?,
+                 })
+             })
+             .map_err(|e| e.to_string())?
+@@ -1088,4 +1115,68 @@ mod tests {
+         let err = add(&repo, URL, "audio").unwrap_err();
+         assert_eq!(err, "Cette adresse est déjà suivie dans l'autre espace (AetherFy Vidéo ou Musique).");
+     }
++
++    // ---- Chaîne YouTube = nom d'artiste (AetherFy Musique) ----
++
++    fn add_track(repo: &VaultTubeRepository, sub: i64, id: &str, channel: Option<&str>) {
++        repo.add_video(sub, id, "Titre", None, None, Some(180), None, "youtube", false, channel).unwrap();
++    }
++
++    fn channel_of(repo: &VaultTubeRepository, sub: i64, id: &str) -> Option<String> {
++        repo.list_videos(sub).unwrap().into_iter().find(|v| v.youtube_id == id).unwrap().channel
++    }
++
++    #[test]
++    fn la_chaine_est_enregistree_puis_rattrapee_sans_toucher_au_reste() {
++        let db = TempDb::new("chaine");
++        let repo = db.repo();
++        repo.create_tables().unwrap();
++        let sub = add(&repo, URL, "audio").unwrap();
++
++        // Synchronisation d'avant : pas de chaîne.
++        add_track(&repo, sub, "a", None);
++        assert_eq!(channel_of(&repo, sub, "a"), None);
++        // Resynchronisation : la chaîne est rattrapée sur la vidéo DÉJÀ en base…
++        add_track(&repo, sub, "a", Some("Alohaii"));
++        assert_eq!(channel_of(&repo, sub, "a").as_deref(), Some("Alohaii"));
++        // …sans créer de doublon, ni changer le titre ou la durée.
++        let videos = repo.list_videos(sub).unwrap();
++        assert_eq!(videos.len(), 1);
++        assert_eq!((videos[0].title.as_str(), videos[0].duration_seconds), ("Titre", Some(180)));
++        // Une synchronisation qui ne fournit pas la chaîne n'efface pas celle qu'on connaît.
++        add_track(&repo, sub, "a", None);
++        assert_eq!(channel_of(&repo, sub, "a").as_deref(), Some("Alohaii"));
++        // Une chaîne renommée est mise à jour.
++        add_track(&repo, sub, "a", Some("Alohaii Music"));
++        assert_eq!(channel_of(&repo, sub, "a").as_deref(), Some("Alohaii Music"));
++    }
++
++    #[test]
++    fn une_ancienne_base_recoit_la_colonne_chaine_sans_perdre_ses_videos() {
++        let db = TempDb::new("chaine-ancienne");
++        {
++            let conn = db.pool.get().unwrap();
++            conn.execute_batch(OLD_SCHEMA).unwrap(); // vidéos SANS colonne `channel`
++            conn.execute(
++                "INSERT INTO vaulttube_subscriptions (name, url, kind, youtube_id, added_at, mode) VALUES ('P', ?1, 'playlist', 'PLabc123', 1, 'audio')",
++                [URL],
++            )
++            .unwrap();
++            conn.execute(
++                "INSERT INTO vaulttube_videos (subscription_id, youtube_id, title, added_at, mode) VALUES (1, 'v1', 'Ancienne piste', 1, 'audio')",
++                [],
++            )
++            .unwrap();
++        }
++        let repo = db.repo();
++        repo.create_tables().unwrap();
++        repo.create_tables().unwrap(); // idempotent : la colonne n'est ajoutée qu'une fois
++
++        let videos = repo.list_videos(1).unwrap();
++        assert_eq!(videos.len(), 1);
++        assert_eq!(videos[0].title, "Ancienne piste");
++        assert_eq!(videos[0].channel, None);
++        add_track(&repo, 1, "v1", Some("DOWNFVLL"));
++        assert_eq!(channel_of(&repo, 1, "v1").as_deref(), Some("DOWNFVLL"));
++    }
+ }
+diff --git a/apps/desktop/src-tauri/src/services/vaulttube/sync.rs b/apps/desktop/src-tauri/src/services/vaulttube/sync.rs
+index f015ba0..2fe42c3 100644
+--- a/apps/desktop/src-tauri/src/services/vaulttube/sync.rs
++++ b/apps/desktop/src-tauri/src/services/vaulttube/sync.rs
+@@ -42,6 +42,16 @@ fn detect_short(entry: &serde_json::Value) -> bool {
+     false
+ }
+ 
++/// Nom de la chaîne qui a publié une entrée yt-dlp (`channel`, sinon `uploader`).
++fn entry_channel(entry: &serde_json::Value) -> Option<String> {
++    ["channel", "uploader"]
++        .iter()
++        .filter_map(|k| entry.get(*k).and_then(|v| v.as_str()))
++        .map(str::trim)
++        .find(|s| !s.is_empty())
++        .map(str::to_string)
++}
++
+ fn entry_thumbnail(entry: &serde_json::Value) -> Option<String> {
+     entry.get("thumbnail").and_then(|v| v.as_str()).map(|s| s.to_string())
+         .or_else(|| {
+@@ -201,6 +211,7 @@ impl VaultTubeSync {
+                     published_at,
+                     &sub.source,
+                     is_short,
++                    entry_channel(&video).as_deref(),
+                 );
+                 count += 1;
+             }
+@@ -297,6 +308,7 @@ impl VaultTubeSync {
+                     published_at: parse_upload_date(video.get("upload_date").and_then(|v| v.as_str())),
+                     added_at: now_secs(), source: source.to_string(),
+                     mode: "video".to_string(), is_short: detect_short(&video),
++                    channel: entry_channel(&video),
+                 });
+             }
+         }
+diff --git a/apps/desktop/src/features/aetherfy/MusicHub.tsx b/apps/desktop/src/features/aetherfy/MusicHub.tsx
+index 689a40b..daa8e87 100644
+--- a/apps/desktop/src/features/aetherfy/MusicHub.tsx
++++ b/apps/desktop/src/features/aetherfy/MusicHub.tsx
+@@ -129,7 +129,8 @@ export function MusicHub(p: MusicHubProps) {
+   const topArtists = useMemo(() => {
+     const map = new Map<string, { name: string; cover: string | null; count: number }>();
+     for (const t of p.tracks) {
+-      const key = t.artist || "AetherFy";
++      if (!t.artist) continue; // artiste inconnu : on ne l'invente pas
++      const key = t.artist;
+       const cur = map.get(key);
+       if (cur) cur.count += 1;
+       else map.set(key, { name: key, cover: t.cover ?? null, count: 1 });
+@@ -169,7 +170,7 @@ export function MusicHub(p: MusicHubProps) {
+           </h1>
+           <p className="avm-mh-hero__sub">
+             {p.current
+-              ? `${p.current.title} — ${p.current.artist} · ${p.current.duration}`
++              ? `${p.current.title}${p.current.artist ? ` — ${p.current.artist}` : ""} · ${p.current.duration}`
+               : "Playlists, abonnements et flux audio — sans quitter AetherVault."}
+           </p>
+           <div className="avm-mh-hero__actions">
+diff --git a/apps/desktop/src/features/vaulttube/artist.ts b/apps/desktop/src/features/vaulttube/artist.ts
+new file mode 100644
+index 0000000..9eded1e
+--- /dev/null
++++ b/apps/desktop/src/features/vaulttube/artist.ts
+@@ -0,0 +1,9 @@
++/**
++ * AetherFy Musique : le nom d'artiste d'une piste est le nom de la chaîne YouTube qui la publie.
++ * Les chaînes générées par YouTube Music s'appellent « Artiste - Topic » : on garde « Artiste ».
++ * `null` si la chaîne est inconnue (piste pas encore resynchronisée).
++ */
++export function artistFromChannel(channel?: string | null): string | null {
++  const name = (channel ?? "").replace(/\s+-\s+Topic$/i, "").trim();
++  return name.length > 0 ? name : null;
++}
+diff --git a/apps/desktop/src/pages/VaultTubePage.tsx b/apps/desktop/src/pages/VaultTubePage.tsx
+index 58fc638..882d80a 100644
+--- a/apps/desktop/src/pages/VaultTubePage.tsx
++++ b/apps/desktop/src/pages/VaultTubePage.tsx
+@@ -24,6 +24,7 @@ import {
+ import { usePlayer } from "../player/PlayerContext";
+ import { MusicSearchView } from "../features/music/MusicSearchView";
+ import { addSubscriptionInMode, followedPlaylistIds } from "../features/vaulttube/followMode";
++import { artistFromChannel } from "../features/vaulttube/artist";
+ import { formatDuration } from "./VaultTubeVideoGrid";
+ import { VaultTubePlaylistPicker, type PickableVideo } from "../components/VaultTubePlaylistPicker";
+ import "./pages.css";
+@@ -608,9 +609,11 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+         ytId,
+         isResult ? r!.thumbnail_url : v!.thumbnail_url
+       );
+-      const artist = isResult
+-        ? (r!.channel ?? guessArtist(r!.title, "AetherFy"))
+-        : guessArtist(v!.title, v!.channel ?? "AetherFy");
++      // Artiste = chaîne YouTube qui publie la piste ; à défaut (piste pas encore resynchronisée),
++      // déduit du titre ; sinon vide (jamais « AetherFy »).
++      const artist =
++        artistFromChannel(isResult ? r!.channel : v!.channel) ??
++        guessArtist(isResult ? r!.title : v!.title, "");
+       return { r, v, source, ytId, covers, artist };
+     };
+ 
+@@ -682,7 +685,7 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
+       currentTrack = {
+         id: match?.id ?? String(currentBase.id),
+         title: currentBase.title,
+-        artist: match?.artist ?? currentBase.channel ?? guessArtist(currentBase.title, "AetherFy"),
++        artist: match?.artist ?? artistFromChannel(currentBase.channel) ?? guessArtist(currentBase.title, ""),
+         duration: formatDuration(duration > 0 ? duration : null),
+         cover: match?.cover ?? covers.cover,
+         coverFallback: match?.coverFallback ?? covers.coverFallback,
+diff --git a/apps/desktop/src/pages/VaultTubeUserPlaylistPage.tsx b/apps/desktop/src/pages/VaultTubeUserPlaylistPage.tsx
+index e19c4d8..48d3dfe 100644
+--- a/apps/desktop/src/pages/VaultTubeUserPlaylistPage.tsx
++++ b/apps/desktop/src/pages/VaultTubeUserPlaylistPage.tsx
+@@ -13,6 +13,7 @@ import { formatDuration } from "./VaultTubeVideoGrid";
+ import { VaultTubeTrackList } from "./VaultTubeTrackList";
+ import "./pages.css";
+ import { useGoBack } from "../hooks/useGoBack";
++import { artistFromChannel } from "../features/vaulttube/artist";
+ 
+ const rowBtn: CSSProperties = {
+   background: "transparent",
+@@ -128,7 +129,7 @@ export function VaultTubeUserPlaylistPage() {
+           items={items.map((it) => ({
+             key: it.id,
+             title: it.title,
+-            subtitle: it.channel,
++            subtitle: artistFromChannel(it.channel),
+             thumbnailUrl: it.thumbnail_url ?? `https://i.ytimg.com/vi/${it.youtube_id}/hqdefault.jpg`,
+             durationSeconds: it.duration_seconds,
+           }))}
+@@ -207,8 +208,8 @@ export function VaultTubeUserPlaylistPage() {
+                 {it.title}
+               </div>
+               <div style={{ fontSize: 11, color: "var(--color-text-muted, #9a9aa3)", marginTop: 2 }}>
+-                {it.channel ?? ""}
+-                {it.channel && it.duration_seconds !== null ? " · " : ""}
++                {artistFromChannel(it.channel) ?? ""}
++                {artistFromChannel(it.channel) && it.duration_seconds !== null ? " · " : ""}
+                 {formatDuration(it.duration_seconds)}
+               </div>
+             </div>
