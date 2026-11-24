@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { vaultTubeApi, type UserPlaylist } from "../features/vaulttube/api";
+import { vaultTubeApi, type PlaybackMode, type UserPlaylist } from "../features/vaulttube/api";
 
 export interface PickableVideo {
   youtube_id: string;
@@ -14,9 +14,12 @@ export interface PickableVideo {
 export function VaultTubePlaylistPicker({
   video,
   onClose,
+  mode,
 }: {
   video: PickableVideo;
   onClose: () => void;
+  /** Espace d'origine : seules ses playlists sont proposées, et les nouvelles y sont créées. */
+  mode?: PlaybackMode;
 }) {
   const [playlists, setPlaylists] = useState<UserPlaylist[]>([]);
   const [newName, setNewName] = useState("");
@@ -24,7 +27,7 @@ export function VaultTubePlaylistPicker({
   const [feedback, setFeedback] = useState<string | null>(null);
 
   useEffect(() => {
-    vaultTubeApi.listUserPlaylists().then(setPlaylists).catch(() => setPlaylists([]));
+    vaultTubeApi.listUserPlaylists(mode).then(setPlaylists).catch(() => setPlaylists([]));
   }, []);
 
   const add = async (playlistId: number) => {
@@ -53,7 +56,7 @@ export function VaultTubePlaylistPicker({
     if (!name || busy) return;
     setBusy(true);
     try {
-      const pid = await vaultTubeApi.createUserPlaylist(name);
+      const pid = await vaultTubeApi.createUserPlaylist(name, mode ?? "video");
       await add(pid);
     } finally {
       setBusy(false);

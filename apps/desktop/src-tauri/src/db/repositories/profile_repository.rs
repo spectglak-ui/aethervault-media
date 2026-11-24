@@ -129,21 +129,9 @@ pub fn delete(conn: &Connection, id: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Met à jour les champs d'authentification d'un profil (mot de passe
-/// et/ou code de récupération). `None` supprime le champ (profil sans
-/// mot de passe / sans code de récupération).
-pub fn update_auth(
-    conn: &Connection,
-    id: i64,
-    password_hash: Option<&str>,
-    recovery_code_hash: Option<&str>,
-) -> rusqlite::Result<()> {
-    // Sans précision, un secret est un mot de passe (comportement d'origine).
-    update_auth_with_kind(conn, id, password_hash, recovery_code_hash, password_hash.map(|_| "password"))
-}
-
-/// Comme `update_auth`, en précisant le type du secret (`"password"` | `"pin"`).
-/// Sans hash, le type est toujours effacé.
+/// Met à jour les champs d'authentification d'un profil : mot de passe ou code PIN
+/// (`auth_kind` = `"password"` | `"pin"`) et/ou code de récupération. `None` supprime
+/// le champ ; sans hash, le type est toujours effacé.
 pub fn update_auth_with_kind(
     conn: &Connection,
     id: i64,

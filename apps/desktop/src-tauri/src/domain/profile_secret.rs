@@ -141,16 +141,6 @@ mod tests {
         assert_eq!(after.auth_kind.as_deref(), Some("pin"));
     }
 
-    #[test]
-    fn l_ancienne_fonction_update_auth_pose_un_mot_de_passe() {
-        let conn = open(i32::MAX);
-        let id = new_profile(&conn, "Ancien");
-        profile_repository::update_auth(&conn, id, Some("hash"), Some("code")).unwrap();
-        assert_eq!(record(&conn, id).auth_kind.as_deref(), Some("password"));
-        profile_repository::update_auth(&conn, id, None, None).unwrap();
-        assert_eq!(record(&conn, id).auth_kind, None);
-    }
-
     /// Mise à jour d'une base existante : les secrets déjà posés sont des mots de passe.
     #[test]
     fn la_migration_29_marque_les_secrets_existants_comme_mots_de_passe() {

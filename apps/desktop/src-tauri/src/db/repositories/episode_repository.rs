@@ -130,6 +130,33 @@ pub fn missing_still_paths(
     rows.collect()
 }
 
+/// Chemins des vignettes déjà enregistrées pour les épisodes d'une bibliothèque (contrôle
+/// des vignettes noires, voir `services::episode_thumbnails::repair_dark_stills`).
+pub fn list_still_paths(
+    conn: &Connection,
+    library_id: i64,
+) -> rusqlite::Result<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT e.id, e.still_path FROM episodes e
+         JOIN media_files mf ON mf.episode_id = e.id
+         WHERE mf.library_id = ?1 AND e.still_path IS NOT NULL AND e.still_path <> ''
+         ORDER BY e.id ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![library_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.collect()
+}
+
+/// Retire la vignette d'un épisode : il redevient une cible de `missing_still_paths`.
+pub fn clear_still_path(conn: &Connection, episode_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE episodes SET still_path = NULL WHERE id = ?1",
+        rusqlite::params![episode_id],
+    )?;
+    Ok(())
+}
+
 /// Enregistre le chemin de la vignette générée (Étape 6d).
 pub fn update_still_path(conn: &Connection, episode_id: i64, still_path: &str) -> rusqlite::Result<()> {
     conn.execute(
@@ -137,4 +164,79 @@ pub fn update_still_path(conn: &Connection, episode_id: i64, still_path: &str) -
         rusqlite::params![still_path, episode_id],
     )?;
     Ok(())
+}
+#[cfg(test)]
+mod stills_tests {
+    use super::*;
+    use crate::db::migrations::MIGRATIONS;
+
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             CREATE TABLE vaulttube_subscriptions (id INTEGER PRIMARY KEY);
+             CREATE TABLE vaulttube_videos (id INTEGER PRIMARY KEY);
+             CREATE TABLE vaulttube_playlists (id INTEGER PRIMARY KEY);
+             CREATE TABLE vaulttube_user_playlists (id INTEGER PRIMARY KEY);
+             CREATE TABLE vaulttube_user_playlist_items (id INTEGER PRIMARY KEY);",
+        )
+        .unwrap();
+        for m in MIGRATIONS {
+            conn.execute_batch(m.sql).unwrap_or_else(|e| panic!("migration {} : {e}", m.version));
+        }
+        conn
+    }
+
+    /// Série 10, saison 1 ; épisode `n` rattaché au fichier 100+n de la bibliothèque `library`.
+    fn add_episode(conn: &Connection, n: i64, library: i64, still: Option<&str>) {
+        if n == 1 {
+            conn.execute(
+                "INSERT INTO titles (id, category_id, kind, name, created_at, updated_at)
+                 VALUES (10, 1, 'series', 'Serie', 'x', 'x')",
+                [],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO seasons (id, title_id, season_number, created_at) VALUES (1, 10, 1, 'x')", [])
+                .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO episodes (id, title_id, season_id, episode_number, created_at, still_path)
+             VALUES (?1, 10, 1, ?1, 'x', ?2)",
+            rusqlite::params![n, still],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO media_files (id, library_id, folder_id, path, file_name, size_bytes,
+                                      modified_at, discovered_at, updated_at, episode_id)
+             VALUES (?1, ?2, 1, ?3, 'f', 1, 'x', 'x', 'x', ?4)",
+            rusqlite::params![100 + n, library, format!("/m/{n}.mkv"), n],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn les_vignettes_enregistrees_sont_listees_par_bibliotheque() {
+        let conn = setup();
+        add_episode(&conn, 1, 1, Some("/data/thumbnails/episodes/episode_1.jpg"));
+        add_episode(&conn, 2, 1, None);
+        add_episode(&conn, 3, 1, Some(""));
+        add_episode(&conn, 4, 2, Some("/data/thumbnails/episodes/episode_4.jpg"));
+        let lib1 = list_still_paths(&conn, 1).unwrap();
+        assert_eq!(lib1, vec![(1, "/data/thumbnails/episodes/episode_1.jpg".to_string())]);
+        let lib2 = list_still_paths(&conn, 2).unwrap();
+        assert_eq!(lib2.len(), 1);
+        assert_eq!(lib2[0].0, 4);
+    }
+
+    #[test]
+    fn retirer_une_vignette_la_remet_dans_les_manquantes() {
+        let conn = setup();
+        add_episode(&conn, 1, 1, Some("/data/thumbnails/episodes/episode_1.jpg"));
+        let missing_before: Vec<i64> = missing_still_paths(&conn, 1).unwrap().into_iter().map(|m| m.0).collect();
+        assert!(!missing_before.contains(&1), "déjà pourvue : pas à générer");
+        clear_still_path(&conn, 1).unwrap();
+        let missing_after: Vec<i64> = missing_still_paths(&conn, 1).unwrap().into_iter().map(|m| m.0).collect();
+        assert!(missing_after.contains(&1), "retirée : à régénérer");
+        assert!(list_still_paths(&conn, 1).unwrap().is_empty());
+    }
 }

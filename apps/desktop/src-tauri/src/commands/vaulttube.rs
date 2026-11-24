@@ -3,9 +3,20 @@
 use crate::services::vaulttube::{
     VaultTubePlaylist, VaultTubeRepository, VaultTubeSubscription, VaultTubeSync, VaultTubeVideo,
 };
-use crate::services::vaulttube::repository::detect_mode_from_url;
+use crate::db::DbPool;
+use crate::services::vaulttube::repository::{detect_mode_from_url, normalize_subscription_url};
 use crate::state::AppState;
 use tauri::State;
+
+/// Les commandes qui lancent yt-dlp (plusieurs secondes) s'exécutent hors du fil principal :
+/// une commande Tauri synchrone y tourne et gèle la fenêtre (même modèle que `music.rs`).
+async fn blocking<T: Send + 'static>(
+    job: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(job)
+        .await
+        .map_err(|e| format!("Opération interrompue : {e}"))?
+}
 
 #[tauri::command]
 pub fn vaulttube_list_subscriptions(
@@ -22,17 +33,51 @@ pub fn vaulttube_list_videos(
     VaultTubeRepository::new(state.db_pool.clone()).list_videos(subscription_id)
 }
 
+/// Suit une chaîne ou une playlist.
+///
+/// `mode` (`"video"` | `"audio"`) est l'espace dans lequel on la suit (AetherFy Vidéo ou
+/// AetherFy Musique) ; absent, il est deviné d'après l'adresse. La même adresse peut être
+/// suivie dans les deux espaces. Déjà suivie dans le mode demandé : l'abonnement existant est
+/// renvoyé (aucune erreur, aucun appel réseau).
+///
+/// `async` + `spawn_blocking` : yt-dlp (sonde puis première synchronisation) dure plusieurs
+/// secondes ; une commande synchrone s'exécuterait sur le fil principal et gèlerait la fenêtre.
 #[tauri::command]
-pub fn vaulttube_add_subscription(
+pub async fn vaulttube_add_subscription(
     state: State<'_, AppState>,
     url: String,
+    mode: Option<String>,
 ) -> Result<VaultTubeSubscription, String> {
-    let repo = VaultTubeRepository::new(state.db_pool.clone());
-    let sync = VaultTubeSync::new(VaultTubeRepository::new(state.db_pool.clone()));
+    let pool = state.db_pool.clone();
+    tauri::async_runtime::spawn_blocking(move || follow_subscription(pool, url, mode))
+        .await
+        .map_err(|e| format!("Opération interrompue : {e}"))?
+}
+
+fn follow_subscription(
+    pool: DbPool,
+    url: String,
+    mode: Option<String>,
+) -> Result<VaultTubeSubscription, String> {
+    let requested: Option<&str> = match mode.as_deref() {
+        None => None,
+        Some(m @ ("video" | "audio")) => Some(m),
+        Some(_) => return Err("Mode invalide : doit être 'video' ou 'audio'".to_string()),
+    };
+    let url = normalize_subscription_url(&url);
+    if url.is_empty() {
+        return Err("Adresse vide.".to_string());
+    }
+
+    let repo = VaultTubeRepository::new(pool.clone());
+    if let Some(existing) = repo.find_subscription(&url, requested)? {
+        return Ok(existing);
+    }
+
+    let sync = VaultTubeSync::new(VaultTubeRepository::new(pool));
     let (name, youtube_id, kind, thumbnail, source) = sync.probe_url(&url)?;
-    
-    let mode = detect_mode_from_url(&url, &name);
-    
+    let mode = requested.unwrap_or_else(|| detect_mode_from_url(&url, &name));
+
     let id = repo.add_subscription(&name, &url, &kind, &youtube_id, thumbnail.as_deref(), &source, mode)?;
     let sub = VaultTubeSubscription {
         id,
@@ -56,27 +101,31 @@ pub fn vaulttube_add_subscription(
 }
 
 #[tauri::command]
-pub fn vaulttube_refresh_subscription(
+pub async fn vaulttube_refresh_subscription(
     state: State<'_, AppState>,
     subscription_id: i64,
 ) -> Result<usize, String> {
-    let repo = VaultTubeRepository::new(state.db_pool.clone());
-    let sub = repo
-        .list_subscriptions()?
-        .into_iter()
-        .find(|s| s.id == subscription_id)
-        .ok_or_else(|| "Abonnement introuvable.".to_string())?;
-    let sync = VaultTubeSync::new(VaultTubeRepository::new(state.db_pool.clone()));
-    let n = sync.sync_subscription(&sub)?;
-    let _ = sync.sync_playlists(&sub);
-    if sub.thumbnail_url.is_none() {
-        if let Ok((_name, _id, _kind, thumb, _source)) = sync.probe_url(&sub.url) {
-            if let Some(t) = thumb {
-                let _ = repo.update_thumbnail(sub.id, &t);
+    let pool = state.db_pool.clone();
+    blocking(move || {
+        let repo = VaultTubeRepository::new(pool.clone());
+        let sub = repo
+            .list_subscriptions()?
+            .into_iter()
+            .find(|s| s.id == subscription_id)
+            .ok_or_else(|| "Abonnement introuvable.".to_string())?;
+        let sync = VaultTubeSync::new(VaultTubeRepository::new(pool));
+        let n = sync.sync_subscription(&sub)?;
+        let _ = sync.sync_playlists(&sub);
+        if sub.thumbnail_url.is_none() {
+            if let Ok((_name, _id, _kind, thumb, _source)) = sync.probe_url(&sub.url) {
+                if let Some(t) = thumb {
+                    let _ = repo.update_thumbnail(sub.id, &t);
+                }
             }
         }
-    }
-    Ok(n)
+        Ok(n)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -88,35 +137,40 @@ pub fn vaulttube_list_playlists(
 }
 
 #[tauri::command]
-pub fn vaulttube_sync_playlists(
+pub async fn vaulttube_sync_playlists(
     state: State<'_, AppState>,
     subscription_id: i64,
 ) -> Result<usize, String> {
-    let repo = VaultTubeRepository::new(state.db_pool.clone());
-    let sub = repo
-        .list_subscriptions()?
-        .into_iter()
-        .find(|s| s.id == subscription_id)
-        .ok_or_else(|| "Abonnement introuvable.".to_string())?;
-    VaultTubeSync::new(repo).sync_playlists(&sub)
+    let pool = state.db_pool.clone();
+    blocking(move || {
+        let repo = VaultTubeRepository::new(pool);
+        let sub = repo
+            .list_subscriptions()?
+            .into_iter()
+            .find(|s| s.id == subscription_id)
+            .ok_or_else(|| "Abonnement introuvable.".to_string())?;
+        VaultTubeSync::new(repo).sync_playlists(&sub)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn vaulttube_preview_videos(
+pub async fn vaulttube_preview_videos(
     state: State<'_, AppState>,
     url: String,
 ) -> Result<Vec<VaultTubeVideo>, String> {
-    VaultTubeSync::new(VaultTubeRepository::new(state.db_pool.clone())).preview_videos(&url)
+    let pool = state.db_pool.clone();
+    blocking(move || VaultTubeSync::new(VaultTubeRepository::new(pool)).preview_videos(&url)).await
 }
 
 #[tauri::command]
-pub fn vaulttube_search(
+pub async fn vaulttube_search(
     state: State<'_, AppState>,
     query: String,
     source: Option<String>,
 ) -> Result<Vec<crate::services::vaulttube::models::SearchResult>, String> {
-    VaultTubeSync::new(VaultTubeRepository::new(state.db_pool.clone()))
-        .search(&query, source.as_deref())
+    let pool = state.db_pool.clone();
+    blocking(move || VaultTubeSync::new(VaultTubeRepository::new(pool)).search(&query, source.as_deref())).await
 }
 
 #[tauri::command]
@@ -203,6 +257,16 @@ pub fn vaulttube_set_user_playlist_mode(
         return Err("Mode invalide : doit être 'video' ou 'audio'".to_string());
     }
     VaultTubeRepository::new(state.db_pool.clone()).set_user_playlist_mode(playlist_id, &mode)
+}
+
+/// Image d'une playlist locale (data URL carrée, voir `validate_cover_image`) ; `None` la retire.
+#[tauri::command]
+pub fn vaulttube_set_user_playlist_cover(
+    state: State<'_, AppState>,
+    playlist_id: i64,
+    image: Option<String>,
+) -> Result<(), String> {
+    VaultTubeRepository::new(state.db_pool.clone()).set_user_playlist_cover(playlist_id, image.as_deref())
 }
 
 #[tauri::command]

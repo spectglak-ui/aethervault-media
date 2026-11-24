@@ -5,6 +5,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import type { AppStatus, VaultStatus } from "@aethervault/shared-types";
 import { Button, IconButton, useTheme } from "@aethervault/ui-kit";
 import { AccountSecuritySection } from "../features/profile/AccountSecuritySection";
+import { RemoteControlSection } from "../features/remote/RemoteControlSection";
 import {
   AnimatedBackdropLibrarySection,
   HeroTrailerSection,
@@ -27,7 +28,7 @@ import "../components/backdrop-presets.css";
 import { useActiveProfile } from "../profile/ActiveProfileContext";
 import { privacyApi } from "../features/privacy/api";
 import "./pages.css";
-import { metadataApi } from "../features/settings/api";
+import { autoScanApi, metadataApi } from "../features/settings/api";
 import { playerApi, type CinemaLevel, type SpatialLevel } from "../features/player/api";
 import { usePlayer } from "../player/PlayerContext";
 import {
@@ -37,6 +38,12 @@ import {
 } from "../theme/persistedCustomTheme";
 import { RenderQualitySection } from "./RenderQualitySection";
 import { readCategoryBackdropHidden, CATEGORY_BACKDROP_EVENT } from "../hooks/useCategoryBackdropHidden";
+import {
+  loadPrefetchSettings,
+  savePrefetchSetting,
+  type PrefetchKind,
+  type PrefetchSettings,
+} from "../player/prefetchPolicy";
 
 type DiagnosticsState =
   | { kind: "loading" }
@@ -610,6 +617,87 @@ function SkipSettingsSection() {
       <p className="avm-settings-muted">
         Quand cette option est activée, les segments « intro » et « outro » détectés ou marqués
         manuellement sont automatiquement sautés pendant la lecture.
+      </p>
+    </section>
+  );
+}
+
+/* Scan automatique des bibliothèques : quand de nouveaux fichiers apparaissent dans les dossiers
+des Films, Séries, Anime et Documentaires (et au démarrage, pour ceux ajoutés logiciel fermé). */
+function AutoScanSettingsSection() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    autoScanApi
+      .isEnabled()
+      .then(setEnabled)
+      .catch((e) => setError(String(e)));
+  }, []);
+  const toggle = async (next: boolean) => {
+    setError(null);
+    try {
+      await autoScanApi.setEnabled(next);
+      setEnabled(next);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+  return (
+    <section className="avm-settings-section">
+      <h2>Bibliothèques — scan automatique</h2>
+      <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input
+          type="checkbox"
+          checked={enabled ?? true}
+          disabled={enabled === null}
+          onChange={(e) => void toggle(e.target.checked)}
+        />
+        Analyser automatiquement les nouveaux fichiers (Films, Séries, Anime, Documentaires)
+      </label>
+      <p className="avm-settings-muted">
+        Quand un fichier vidéo apparaît dans le dossier d'une bibliothèque, le logiciel attend que sa
+        copie soit terminée, puis lance l'analyse complète : reconnaissance du titre, affiche et
+        informations, vignettes d'épisodes. Au démarrage, une analyse de rattrapage couvre les
+        fichiers ajoutés pendant que le logiciel était fermé. Sur un disque réseau, les nouveaux
+        fichiers ne sont pas toujours signalés : le bouton « Scanner » reste disponible.
+      </p>
+      {error && <p style={{ color: "var(--color-danger, #e5484d)" }}>{error}</p>}
+    </section>
+  );
+}
+
+/* Préchargement du média suivant : Vidéo (films, séries, AetherFy Vidéo) et Musique (AetherFy
+Musique) se règlent séparément ; activé par défaut. */
+function PrefetchSettingsSection() {
+  const [settings, setSettings] = useState<PrefetchSettings>(() => loadPrefetchSettings());
+  const toggle = (kind: PrefetchKind, enabled: boolean) => {
+    savePrefetchSetting(kind, enabled);
+    setSettings(loadPrefetchSettings());
+  };
+  return (
+    <section className="avm-settings-section">
+      <h2>Lecture — préchargement</h2>
+      <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input
+          type="checkbox"
+          checked={settings.video}
+          onChange={(e) => toggle("video", e.target.checked)}
+        />
+        Précharger la vidéo suivante (films, séries, AetherFy Vidéo)
+      </label>
+      <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
+        <input
+          type="checkbox"
+          checked={settings.music}
+          onChange={(e) => toggle("music", e.target.checked)}
+        />
+        Précharger la piste suivante (AetherFy Musique)
+      </label>
+      <p className="avm-settings-muted">
+        Pendant la lecture, le média suivant de la file est préparé en arrière-plan pour démarrer
+        sans attente quand le courant se termine. Pour les flux en ligne, l'adresse de lecture est
+        résolue à l'avance ; pour un fichier local, son début est lu pour le cache du système. Sans
+        effet en lecture aléatoire.
       </p>
     </section>
   );
@@ -1474,6 +1562,8 @@ export function SettingsPage() {
       <TransparentThemeSection />
       <TypographySection />
       <SkipSettingsSection />
+      <AutoScanSettingsSection />
+      <PrefetchSettingsSection />
       <RenderQualitySection />
       <TmdbSection />
       <HidePrivateSection />
@@ -1483,6 +1573,7 @@ export function SettingsPage() {
 	  <AccountSecuritySection />
       <SecuritySection />
       <ExperimentalPlayerSection />
+	  <RemoteControlSection />
       <SystemInfoSection />
     </div>
   );

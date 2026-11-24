@@ -14,6 +14,7 @@ import { VaultTubeVideoGrid } from "./VaultTubeVideoGrid";
 import { VaultTubeTrackList } from "./VaultTubeTrackList";
 import { VaultTubePlaylistPicker, type PickableVideo } from "../components/VaultTubePlaylistPicker";
 import "./pages.css";
+import { useGoBack } from "../hooks/useGoBack";
 
 type SortKey = "recent" | "old" | "alpha";
 
@@ -54,6 +55,9 @@ export function VaultTubeVideosPage() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Retour : page précédente, sinon l'accueil de l'espace (Musique ou Vidéo) de l'abonnement.
+  const goBack = useGoBack(subscription?.mode === "audio" ? "/vaulttube/music" : "/vaulttube/video");
 
   const sorted = useMemo(() => {
   const arr = [...videos];
@@ -98,9 +102,9 @@ export function VaultTubeVideosPage() {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
-        <Button variant="secondary" onClick={() => navigate("/vaulttube")}>
+        <Button variant="secondary" onClick={goBack}>
           <ArrowLeft size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
-          Abonnements
+          Retour
         </Button>
         {subscription?.thumbnail_url ? (
           <img
@@ -215,7 +219,7 @@ export function VaultTubeVideosPage() {
         />
       )}
       {pickerVideo && (
-        <VaultTubePlaylistPicker video={pickerVideo} onClose={() => setPickerVideo(null)} />
+        <VaultTubePlaylistPicker video={pickerVideo} onClose={() => setPickerVideo(null)} mode={subscription?.mode} />
       )}
     </div>
   );

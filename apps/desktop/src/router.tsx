@@ -38,6 +38,7 @@ import { AetherFyChannelPlaylistPage } from "./features/aetherfy/AetherFyChannel
 import { MusicSearchTabs } from "./features/music/MusicSearchTabs";
 import { MusicArtistPage } from "./features/music/MusicArtistPage";
 import { MusicAlbumPage } from "./features/music/MusicAlbumPage";
+import { ProvidersPage } from "./pages/ProvidersPage";
 import {
   AetherFyTrendingPage,
   AetherFyLivePage,
@@ -102,6 +103,7 @@ export const router = createHashRouter([
       { path: "/vaulttube/playlist/:playlistId", element: <VaultTubePlaylistPreviewPage /> },
       { path: "/vaulttube/:id/playlists", element: <VaultTubePlaylistsPage /> },
       { path: "/vaulttube/myplaylist/:id", element: <VaultTubeUserPlaylistPage /> },
+	  { path: "/providers", element: <ProvidersPage /> },
       {
         path: "/private/images/:libraryId/albums/:folderId",
         element: <PrivateAlbumPage />,

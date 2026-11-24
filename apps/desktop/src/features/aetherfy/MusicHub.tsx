@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { PlaylistCover } from "./PlaylistCover";
 import {
-  ListMusic, Music2, Pause, Play, Plus, Shuffle, SkipBack, SkipForward,
+  ArrowLeft, ImagePlus, ListMusic, Music2, Pause, Play, Plus, Shuffle, SkipBack, SkipForward, X,
 } from "lucide-react";
 
 export interface MusicTrack {
@@ -17,7 +18,10 @@ export interface MusicTrack {
 export interface MusicPlaylist {
   id: string;
   name: string;
+  /** Image choisie par l'utilisateur (data URL). */
   cover?: string | null;
+  /** Vignettes des 4 premiers titres : image par défaut (mosaïque). */
+  previews?: string[];
   count: number;
   local?: boolean;
 }
@@ -50,6 +54,10 @@ export interface MusicHubProps {
   onOpenSubscription: (id: string) => void;
   /** `false` si l'ajout a échoué (l'adresse saisie est alors conservée). */
   onFollowUrl: (url: string) => void | Promise<boolean | void>;
+  /** Retour : ferme la recherche en cours, sinon revient au choix Vidéo / Musique. */
+  onBack?: () => void;
+  /** Choisir (`File`) ou retirer (`null`) l'image d'une playlist locale. */
+  onSetPlaylistCover?: (id: string, file: File | null) => void | Promise<void>;
   onTogglePlay: () => void;
   onNext: () => void;
   onPrev: () => void;
@@ -118,6 +126,8 @@ export function MusicHub(p: MusicHubProps) {
   const [newName, setNewName] = useState("");
   const [followUrl, setFollowUrl] = useState("");
   const [artistArt, setArtistArt] = useState<Record<string, string | null>>({});
+  const coverInput = useRef<HTMLInputElement>(null);
+  const [coverTarget, setCoverTarget] = useState<string | null>(null);
 
   const pct =
     p.progress && p.progress.duration > 0
@@ -127,7 +137,8 @@ export function MusicHub(p: MusicHubProps) {
   const topArtists = useMemo(() => {
     const map = new Map<string, { name: string; cover: string | null; count: number }>();
     for (const t of p.tracks) {
-      const key = t.artist || "AetherFy";
+      if (!t.artist) continue; // artiste inconnu : on ne l'invente pas
+      const key = t.artist;
       const cur = map.get(key);
       if (cur) cur.count += 1;
       else map.set(key, { name: key, cover: t.cover ?? null, count: 1 });
@@ -167,7 +178,7 @@ export function MusicHub(p: MusicHubProps) {
           </h1>
           <p className="avm-mh-hero__sub">
             {p.current
-              ? `${p.current.title} — ${p.current.artist} · ${p.current.duration}`
+              ? `${p.current.title}${p.current.artist ? ` — ${p.current.artist}` : ""} · ${p.current.duration}`
               : "Playlists, abonnements et flux audio — sans quitter AetherVault."}
           </p>
           <div className="avm-mh-hero__actions">
@@ -191,6 +202,16 @@ export function MusicHub(p: MusicHubProps) {
 
       {/* ── Barre d'outils ───────────────────────────────────── */}
       <div className="avm-mh-toolbar">
+        {p.onBack && (
+          <button
+            type="button"
+            className="avm-mh-btn avm-mh-btn--small"
+            onClick={p.onBack}
+            title={p.query.trim() ? "Fermer la recherche" : "Retour au choix Vidéo / Musique"}
+          >
+            <ArrowLeft size={14} /> Retour
+          </button>
+        )}
         <input
           className="avm-mh-search"
           type="search"
@@ -204,47 +225,6 @@ export function MusicHub(p: MusicHubProps) {
         {/* ── Colonne principale ─────────────────────────────── */}
         <div className="avm-mh-main">
           {p.searchView ? p.searchView : (<>
-          {topArtists.length > 0 && (
-            <section className="avm-mh-panel">
-              <header className="avm-mh-head">
-                <h2>Top artistes</h2>
-                <span className="avm-mh-head__hint">depuis vos pistes</span>
-              </header>
-              <div className="avm-mh-artists">
-                {topArtists.map((a) => {
-                  const art = artistArt[a.name] ?? artistArtCache.get(a.name) ?? null;
-                  return (
-                    <div
-                      key={a.name}
-                      className="avm-mh-artist"
-                      role="button"
-                      tabIndex={0}
-                      style={{ cursor: "pointer" }}
-                      title={`Rechercher ${a.name}`}
-                      onClick={() => p.onQuery(a.name)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          p.onQuery(a.name);
-                        }
-                      }}
-                    >
-                      {art ? (
-                        <img src={art} alt="" loading="lazy" />
-                      ) : a.cover ? (
-                        <Cover src={a.cover} fallback={null} />
-                      ) : (
-                        <span className="avm-mh-artist__void"><Music2 size={20} /></span>
-                      )}
-                      <strong>{a.name}</strong>
-                      <small>{a.count} piste{a.count > 1 ? "s" : ""}</small>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          )}
-
           <section className="avm-mh-panel">
             <header className="avm-mh-head">
               <h2>Mes playlists</h2>
@@ -269,20 +249,56 @@ export function MusicHub(p: MusicHubProps) {
                 </button>
               </span>
             </header>
+            <input
+              ref={coverInput}
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file && coverTarget) void p.onSetPlaylistCover?.(coverTarget, file);
+              }}
+            />
             {p.playlists.length === 0 ? (
               <p className="avm-mh-empty">Aucune playlist locale — créez-en une ci-dessus.</p>
             ) : (
               <div className="avm-mh-playlists">
                 {p.playlists.map((pl) => (
-                  <button key={pl.id} className="avm-mh-pl" onClick={() => p.onOpenPlaylist(pl.id)}>
-                    {pl.cover ? (
-                      <img src={pl.cover} alt="" loading="lazy" />
-                    ) : (
-                      <span className="avm-mh-pl__void"><ListMusic size={22} /></span>
+                  <div key={pl.id} className="avm-mh-pl-item">
+                    <button className="avm-mh-pl" onClick={() => p.onOpenPlaylist(pl.id)}>
+                      <PlaylistCover custom={pl.cover} previews={pl.previews} />
+                      <strong>{pl.name}</strong>
+                      <small>{pl.count} piste{pl.count > 1 ? "s" : ""}{pl.local ? " · locale" : ""}</small>
+                    </button>
+                    {p.onSetPlaylistCover && (
+                      <span className="avm-mh-pl__tools">
+                        <button
+                          type="button"
+                          className="avm-mh-pl__tool"
+                          title="Choisir une image"
+                          aria-label={`Choisir une image pour ${pl.name}`}
+                          onClick={() => {
+                            setCoverTarget(pl.id);
+                            coverInput.current?.click();
+                          }}
+                        >
+                          <ImagePlus size={14} />
+                        </button>
+                        {pl.cover && (
+                          <button
+                            type="button"
+                            className="avm-mh-pl__tool"
+                            title="Retirer l'image"
+                            aria-label={`Retirer l'image de ${pl.name}`}
+                            onClick={() => void p.onSetPlaylistCover?.(pl.id, null)}
+                          >
+                            <X size={14} />
+                          </button>
+                        )}
+                      </span>
                     )}
-                    <strong>{pl.name}</strong>
-                    <small>{pl.count} piste{pl.count > 1 ? "s" : ""}{pl.local ? " · locale" : ""}</small>
-                  </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -296,11 +312,9 @@ export function MusicHub(p: MusicHubProps) {
               <div className="avm-mh-subs">
                 {p.subscriptions.map((s) => (
                   <button key={s.id} className="avm-mh-sub" onClick={() => p.onOpenSubscription(s.id)}>
-                    {s.cover ? (
-                      <img src={s.cover} alt="" loading="lazy" />
-                    ) : (
-                      <span className="avm-mh-sub__void"><Music2 size={18} /></span>
-                    )}
+                    <span className={`avm-mh-cover${s.cover ? "" : " avm-mh-cover--void"}`}>
+                      {s.cover ? <img src={s.cover} alt="" loading="lazy" draggable={false} /> : <Music2 size={26} />}
+                    </span>
                     <strong>{s.name}</strong>
                     <small>{s.kind === "channel" ? "Chaîne suivie" : "Playlist suivie"}</small>
                   </button>
@@ -378,6 +392,42 @@ export function MusicHub(p: MusicHubProps) {
                     </button>
                   </li>
                 ))}
+              </ul>
+            </section>
+          )}
+
+          {topArtists.length > 0 && (
+            <section className="avm-mh-panel">
+              <header className="avm-mh-head">
+                <h2>Top artistes</h2>
+                <span className="avm-mh-head__hint">depuis vos pistes</span>
+              </header>
+              <ul className="avm-mh-toplist">
+                {topArtists.map((a) => {
+                  const art = artistArt[a.name] ?? artistArtCache.get(a.name) ?? null;
+                  return (
+                    <li key={a.name}>
+                      <button
+                        type="button"
+                        className="avm-mh-toprow"
+                        title={`Rechercher ${a.name}`}
+                        onClick={() => p.onQuery(a.name)}
+                      >
+                        {art ? (
+                          <img src={art} alt="" loading="lazy" />
+                        ) : a.cover ? (
+                          <Cover src={a.cover} fallback={null} />
+                        ) : (
+                          <span className="avm-mh-toprow__void"><Music2 size={16} /></span>
+                        )}
+                        <span>
+                          <strong>{a.name}</strong>
+                          <small>{a.count} piste{a.count > 1 ? "s" : ""}</small>
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             </section>
           )}

@@ -8,6 +8,7 @@ pub mod metadata;
 pub mod playback_engine;
 pub mod private_image_scanner;
 pub mod private_video_scanner;
+pub mod auto_scan;
 pub mod scanner;
 pub mod watcher;
 pub mod episode_thumbnails;

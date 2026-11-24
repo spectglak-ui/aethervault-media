@@ -78,7 +78,9 @@ export function VaultTubePlaylistsPage() {
         {playlists.map((pl) => (
           <div
             key={pl.id}
-            onClick={() => navigate(`/vaulttube/playlist/${pl.youtube_id}`)}
+            onClick={() =>
+              navigate(`/vaulttube/playlist/${pl.youtube_id}${subscription ? `?mode=${subscription.mode}` : ""}`)
+            }
             style={{
               cursor: "pointer",
               background: "var(--color-surface, #1e1e24)",

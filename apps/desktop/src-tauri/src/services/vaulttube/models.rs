@@ -36,6 +36,10 @@ pub struct VaultTubeVideo {
     /// ou détectée via l'onglet /shorts de la chaîne à la sync).
     #[serde(default)]
     pub is_short: bool,
+    /// Nom de la chaîne YouTube qui a publié la vidéo (AetherFy Musique : c'est le nom
+    /// d'artiste affiché sous le titre). `None` tant que l'abonnement n'a pas été resynchronisé.
+    #[serde(default)]
+    pub channel: Option<String>,
 }
 
 /// Playlist publique d'une chaîne suivie.
@@ -74,6 +78,13 @@ pub struct UserPlaylist {
     pub item_count: i64,
     /// Mode de lecture : "video" ou "audio"
     pub mode: String,
+    /// Image choisie par l'utilisateur (data URL JPEG/PNG/WebP carrée), sinon `None`.
+    #[serde(default)]
+    pub cover_image: Option<String>,
+    /// Jusqu'à 4 vignettes DISTINCTES des premiers titres : image par défaut (mosaïque 2×2)
+    /// quand aucune image n'a été choisie.
+    #[serde(default)]
+    pub preview_thumbnails: Vec<String>,
 }
 
 /// Élément d'une playlist locale (l'ordre = `position`).

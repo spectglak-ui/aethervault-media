@@ -169,7 +169,7 @@ pub fn scan_library(app: AppHandle, state: tauri::State<AppState>, library_id: i
 /// fichiers découverts sont aussitôt rattachés à un Titre/Épisode ET
 /// illustrés d'une miniature, plutôt que de laisser la bibliothèque
 /// affichée avec des fichiers bruts en attendant une action manuelle.
-fn trigger_scan(
+pub(crate) fn trigger_scan(
     app: AppHandle,
     pool: crate::db::DbPool,
     scanning_libraries: watcher::ScanningLibraries,

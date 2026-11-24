@@ -80,6 +80,10 @@ pub struct WatchThresholds {
     pub tail_min_seconds: f64,
     pub tail_max_seconds: f64,
     pub in_progress_min_seconds: f64,
+    /// « Vu » : dès qu'il reste `seen_remaining_seconds` ou moins, sans descendre sous
+    /// `seen_min_ratio` de la durée.
+    pub seen_remaining_seconds: f64,
+    pub seen_min_ratio: f64,
 }
 
 #[tauri::command]
@@ -90,5 +94,7 @@ pub fn get_watch_thresholds() -> WatchThresholds {
         tail_min_seconds: watch_state::TAIL_MIN_SECONDS,
         tail_max_seconds: watch_state::TAIL_MAX_SECONDS,
         in_progress_min_seconds: watch_state::IN_PROGRESS_MIN_SECONDS,
+        seen_remaining_seconds: watch_state::SEEN_REMAINING_SECONDS,
+        seen_min_ratio: watch_state::SEEN_MIN_RATIO,
     }
 }

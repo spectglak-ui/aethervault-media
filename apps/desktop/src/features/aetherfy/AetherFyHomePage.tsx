@@ -43,7 +43,7 @@ export function AetherFyHomePage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const subs = await vaultTubeApi.listSubscriptions();
+      const subs = await vaultTubeApi.listSubscriptions("video");
       const chunks = await Promise.all(
         subs.slice(0, 10).map(async (sub) => {
           try {

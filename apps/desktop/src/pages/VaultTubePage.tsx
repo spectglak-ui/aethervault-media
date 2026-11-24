@@ -23,7 +23,9 @@ import {
 } from "../features/vaulttube/api";
 import { usePlayer } from "../player/PlayerContext";
 import { MusicSearchView } from "../features/music/MusicSearchView";
-import { addSubscriptionInMode } from "../features/vaulttube/followMode";
+import { addSubscriptionInMode, followedPlaylistIds } from "../features/vaulttube/followMode";
+import { artistFromChannel } from "../features/vaulttube/artist";
+import { squareJpegDataUrl } from "../features/music/coverImage";
 import { formatDuration } from "./VaultTubeVideoGrid";
 import { VaultTubePlaylistPicker, type PickableVideo } from "../components/VaultTubePlaylistPicker";
 import "./pages.css";
@@ -386,7 +388,8 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
   const [userPlaylists, setUserPlaylists] = useState<UserPlaylist[]>([]);
   const [newUrl, setNewUrl] = useState("");
   const [newPlaylist, setNewPlaylist] = useState("");
-  const [newPlaylistMode, setNewPlaylistMode] = useState<PlaybackMode>(defaultMode ?? "video");
+  // Une playlist est créée dans l'espace de la page (Musique ou Vidéo) : plus de choix.
+  const newPlaylistMode: PlaybackMode = defaultMode ?? "video";
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -499,6 +502,17 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
     }
   };
 
+  // Image d'une playlist locale : `file` = nouvelle image (recadrée en carré), `null` = la retirer.
+  const handleSetPlaylistCover = async (id: string, file: File | null) => {
+    try {
+      const image = file ? await squareJpegDataUrl(file) : null;
+      await vaultTubeApi.setUserPlaylistCover(Number(id), image);
+      vaultTubeApi.listUserPlaylists().then(setUserPlaylists).catch(() => {});
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const handleCreatePlaylist = async () => {
     const name = newPlaylist.trim();
     if (!name) return;
@@ -528,18 +542,6 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
   const handleDeletePlaylistFromGrid = async (id: number, name: string) => {
     if (!window.confirm(`Supprimer la playlist « ${name} » ?`)) return;
     await vaultTubeApi.deleteUserPlaylist(id);
-    refresh();
-  };
-
-  const handleToggleSubMode = async (sub: VaultTubeSubscription) => {
-    const next: PlaybackMode = sub.mode === "audio" ? "video" : "audio";
-    await vaultTubeApi.setSubscriptionMode(sub.id, next);
-    refresh();
-  };
-
-  const handleTogglePlaylistMode = async (p: UserPlaylist) => {
-    const next: PlaybackMode = p.mode === "audio" ? "video" : "audio";
-    await vaultTubeApi.setUserPlaylistMode(p.id, next);
     refresh();
   };
 
@@ -593,7 +595,7 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
 
   const handleSearchPreviewPlaylist = (r: SearchResult) => {
     const m = r.url.match(/[?&]list=([^&]+)/);
-    if (m) navigate(`/vaulttube/playlist/${m[1]}`);
+    if (m) navigate(`/vaulttube/playlist/${m[1]}${defaultMode ? `?mode=${defaultMode}` : ""}`);
   };
 
   /* ────────────────────────────────────────────────────────────────
@@ -619,9 +621,11 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
         ytId,
         isResult ? r!.thumbnail_url : v!.thumbnail_url
       );
-      const artist = isResult
-        ? (r!.channel ?? guessArtist(r!.title, "AetherFy"))
-        : guessArtist(v!.title, v!.channel ?? "AetherFy");
+      // Artiste = chaîne YouTube qui publie la piste ; à défaut (piste pas encore resynchronisée),
+      // déduit du titre ; sinon vide (jamais « AetherFy »).
+      const artist =
+        artistFromChannel(isResult ? r!.channel : v!.channel) ??
+        guessArtist(isResult ? r!.title : v!.title, "");
       return { r, v, source, ytId, covers, artist };
     };
 
@@ -664,7 +668,8 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
     const playlists: MusicPlaylist[] = visibleUserPlaylists.map((p) => ({
       id: String(p.id),
       name: p.name,
-      cover: null,
+      cover: p.cover_image ?? null,
+      previews: p.preview_thumbnails ?? [],
       count: p.item_count,
       local: true,
     }));
@@ -693,7 +698,7 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
       currentTrack = {
         id: match?.id ?? String(currentBase.id),
         title: currentBase.title,
-        artist: match?.artist ?? currentBase.channel ?? guessArtist(currentBase.title, "AetherFy"),
+        artist: match?.artist ?? artistFromChannel(currentBase.channel) ?? guessArtist(currentBase.title, ""),
         duration: formatDuration(duration > 0 ? duration : null),
         cover: match?.cover ?? covers.cover,
         coverFallback: match?.coverFallback ?? covers.coverFallback,
@@ -732,7 +737,13 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
           query={searchQuery}
           onQuery={setSearchQuery}
           searchView={
-            searchQuery.trim() ? <MusicSearchView query={searchQuery} onFollow={handleFollowUrl} /> : null
+            searchQuery.trim() ? (
+              <MusicSearchView
+                query={searchQuery}
+                onFollow={handleFollowUrl}
+                followedPlaylistIds={followedPlaylistIds(subscriptions, "audio")}
+              />
+            ) : null
           }
           following={adding}
           onPlayTrack={(id) => {
@@ -754,6 +765,8 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
           onOpenPlaylist={(id) => navigate(`/vaulttube/myplaylist/${id}`)}
           onOpenSubscription={(id) => navigate(`/vaulttube/${id}`)}
           onFollowUrl={handleFollowUrl}
+          onBack={() => (searchQuery.trim() ? setSearchQuery("") : navigate("/vaulttube"))}
+          onSetPlaylistCover={handleSetPlaylistCover}
           onTogglePlay={togglePlay}
           onNext={playNext}
           onPrev={playPrevious}
@@ -1005,21 +1018,6 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
           placeholder="Nouvelle playlist…"
           style={{ ...inputStyle, maxWidth: 220 }}
         />
-        <button
-          onClick={() => setNewPlaylistMode(newPlaylistMode === "audio" ? "video" : "audio")}
-          title="Mode de la nouvelle playlist"
-          style={{
-            padding: "7px 12px",
-            borderRadius: 999,
-            border: "1px solid #2a2a32",
-            background: newPlaylistMode === "audio" ? "rgba(29,185,84,.15)" : "transparent",
-            color: newPlaylistMode === "audio" ? "#1db954" : "var(--color-text-muted, #9a9aa3)",
-            fontSize: 12,
-            cursor: "pointer",
-          }}
-        >
-          {newPlaylistMode === "audio" ? "🎵 Musique" : "🎬 Vidéo"}
-        </button>
         <Button
           variant="secondary"
           onClick={() => void handleCreatePlaylist()}
@@ -1035,10 +1033,8 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
             title={p.name}
             subtitle={`${p.item_count} vidéo(s) · locale`}
             image={null}
-            mode={p.mode}
             onOpen={() => navigate(`/vaulttube/myplaylist/${p.id}`)}
             onPlayAll={() => void handlePlayAllPlaylist(p)}
-            onToggleMode={() => void handleTogglePlaylistMode(p)}
             onRemove={() => void handleDeletePlaylistFromGrid(p.id, p.name)}
           />
         ))}
@@ -1060,10 +1056,8 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
             subtitle={sub.kind === "playlist" ? "Playlist suivie" : "Chaîne suivie"}
             image={sub.thumbnail_url}
             source={sub.source}
-            mode={sub.mode}
             onOpen={() => navigate(`/vaulttube/${sub.id}`)}
             onPlayAll={() => void handlePlayAllSub(sub)}
-            onToggleMode={() => void handleToggleSubMode(sub)}
             onRemove={() => void handleRemove(sub.id)}
           />
         ))}
@@ -1106,7 +1100,7 @@ export function VaultTubePage({ defaultMode }: VaultTubePageProps) {
         </div>
       )}
       {pickerVideo && (
-        <VaultTubePlaylistPicker video={pickerVideo} onClose={() => setPickerVideo(null)} />
+        <VaultTubePlaylistPicker video={pickerVideo} onClose={() => setPickerVideo(null)} mode={defaultMode} />
       )}
     </div>
   );

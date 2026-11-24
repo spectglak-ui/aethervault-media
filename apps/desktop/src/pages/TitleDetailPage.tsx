@@ -574,7 +574,9 @@ export function TitleDetailPage() {
       <GenreRow titleId={title.id} categoryKey={key ?? ""} />
 
       {/* FONCTIONNALITÉ : correction manuelle de correspondance TMDB. */}
-      <Modal open={tmdbModalOpen} onClose={() => setTmdbModalOpen(false)} title="Corriger la correspondance TMDB">
+      {/* `portal` : la fiche force `position: relative` sur ses enfants directs, ce qui sortait
+          le panneau du centre de la fenêtre pour le poser en bas de la page. */}
+      <Modal portal open={tmdbModalOpen} onClose={() => setTmdbModalOpen(false)} title="Corriger la correspondance TMDB">
         <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 360 }}>
           <div style={{ display: "flex", gap: 8 }}>
             <input

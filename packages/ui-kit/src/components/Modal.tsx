@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 
 interface ModalProps {
@@ -6,6 +7,13 @@ interface ModalProps {
   onClose: () => void;
   title: string;
   children: ReactNode;
+  /**
+   * Rend la boîte dans `document.body` : le fond `position: fixed` est alors centré dans la
+   * FENÊTRE quoi que fassent les styles de la page appelante. À activer quand une règle de la
+   * page vise ses enfants directs (ex. `.avm-title-page > * { position: relative }`, qui
+   * écrasait le `fixed` du fond : le panneau tombait dans le flux, tout en bas de la page).
+   */
+  portal?: boolean;
 }
 
 /**
@@ -15,7 +23,7 @@ interface ModalProps {
  * ici — un composant de mise en page réutilisable pour tout futur besoin de
  * dialogue modal.
  */
-export function Modal({ open, onClose, title, children }: ModalProps) {
+export function Modal({ open, onClose, title, children, portal = false }: ModalProps) {
   useEffect(() => {
     if (!open) return;
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -25,11 +33,11 @@ export function Modal({ open, onClose, title, children }: ModalProps) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [open, onClose]);
 
-  return (
+  const dialog = (
     <AnimatePresence>
       {open && (
         <motion.div
-          className="avm-modal-backdrop"
+          className={portal ? "avm-modal-backdrop avm-modal-backdrop--portal" : "avm-modal-backdrop"}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -56,4 +64,6 @@ export function Modal({ open, onClose, title, children }: ModalProps) {
       )}
     </AnimatePresence>
   );
+
+  return portal ? createPortal(dialog, document.body) : dialog;
 }

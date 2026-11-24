@@ -80,7 +80,7 @@ export function AetherFyAccountMenu({
     setBusy(true);
     setError(null);
     try {
-      const sub = await vaultTubeApi.addSubscription(channelUrl.trim());
+      const sub = await vaultTubeApi.addSubscription(channelUrl.trim(), "video");
       await vaultTubeApi.syncPlaylists(sub.id).catch(() => {});
       saveAccount({
         pseudo: existing?.pseudo ?? sub.name,

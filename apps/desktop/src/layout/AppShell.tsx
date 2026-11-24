@@ -10,12 +10,16 @@ import { usePlayer } from "../player/PlayerContext";
 import { useUiSounds } from "../features/sound/useUiSounds";
 import { AudioPlayerOverlay } from "../player/AudioPlayerOverlay";
 import { VideoWatchLayout } from "../player/VideoWatchLayout";
+// 0.8.x — pont télécommande mobile (actions WS → navigation/lecteur,
+// état lecteur → WS). Rendu nul : purement logique.
+import { RemoteBridge } from "../features/remote/RemoteBridge";
 import "./layout.css";
 
 export function AppShell() {
   const location = useLocation();
   const { collapsed, isForced, toggleCollapsed } = useSidebarCollapsed();
   const { immersiveMode, immersiveOpen, isPlaying } = usePlayer();
+
   // Sons d'interface (0.7.8) : discrets pendant une lecture.
   useUiSounds({ ducked: isPlaying });
 
@@ -32,6 +36,8 @@ export function AppShell() {
         .filter(Boolean)
         .join(" ")}
     >
+      {/* 0.8.x — télécommande mobile : montée une seule fois, fenêtre main. */}
+     <RemoteBridge />
       <Sidebar
         collapsed={collapsed}
         canToggle={!isForced}

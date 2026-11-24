@@ -16,6 +16,8 @@ import type {
   PlayerStateEvent,
 } from "@aethervault/shared-types";
 import { playerApi } from "../features/player/api";
+import { SeekScrubber } from "./seekScrubber";
+import { loadPrefetchSettings, prefetchTarget } from "./prefetchPolicy";
 import { titleApi } from "../features/title/api";
 import { windowApi } from "../features/window/api";
 import { playerSettingsApi } from "../features/playerSettings/api";
@@ -263,7 +265,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const watchStartedNotifiedRef = useRef<number | null>(null);
 
   const userPausedRef = useRef(false);
-  const seekDebounceRef = useRef<number | null>(null);
+  // Glissement de la barre de progression : seeks au fil de l'eau + positions du moteur ignorées
+  // tant que le seek n'a pas abouti (voir seekScrubber.ts).
+  const scrubberRef = useRef<SeekScrubber | null>(null);
+  if (scrubberRef.current === null) {
+    scrubberRef.current = new SeekScrubber((seconds) => {
+      void playerApi.seek(seconds);
+    });
+  }
   const volumeDebounceRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -399,7 +408,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const { position_seconds, duration_seconds, playing, ended, error } =
         event.payload;
       if (position_seconds !== undefined && position_seconds !== null) {
-        setPosition(position_seconds);
+        // Pendant un seek manuel, la position réelle (ancienne) ramènerait le curseur en arrière.
+        if (scrubberRef.current?.acceptPosition(position_seconds) !== false) {
+          setPosition(position_seconds);
+        }
       }
       if (duration_seconds !== undefined && duration_seconds !== null) {
         setDuration(duration_seconds);
@@ -451,6 +463,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         setBuffered(0);
         endedHandledRef.current = null;
         userPausedRef.current = false;
+        scrubberRef.current?.reset();
         const onAetherFyWatch = window.location.hash.includes("/aetherfy/watch");
         if (media?.mode && !state2.background && !onAetherFyWatch) {
           setImmersiveOpen(true);
@@ -556,6 +569,23 @@ useEffect(() => {
   const immersiveMode: "audio" | "video" | null =
     currentMedia?.mode ?? (isAetherFyInlineVideo(currentMedia) ? "video" : null);
 
+  // Préchargement du média SUIVANT pendant la lecture du média courant : quand il se termine (ou
+  // sur « suivant »), son flux est déjà résolu et il démarre sans attendre l'extraction. On laisse
+  // d'abord le média courant démarrer (4 s) pour ne pas se disputer le réseau avec son tampon.
+  const prefetchedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (isPipWindow || !currentMedia) return;
+    const target = prefetchTarget(queue.items, queue.currentIndex, loadPrefetchSettings(), shuffleEnabled);
+    if (!target) return;
+    const key = `${target.audio ? "audio" : "video"}|${target.path}`;
+    if (prefetchedRef.current === key) return;
+    const timer = window.setTimeout(() => {
+      prefetchedRef.current = key;
+      void playerApi.prefetch(target.path, target.audio).catch(() => {});
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [isPipWindow, currentMedia?.id, currentMedia?.path, queue.items, queue.currentIndex, shuffleEnabled]);
+
   const value = useMemo<PlayerContextValue>(
     () => ({
       currentMedia,
@@ -611,7 +641,7 @@ useEffect(() => {
           currentIndex === 0
         ) {
           setPosition(0);
-          void playerApi.seek(0);
+          scrubberRef.current?.seek(0, 0);
           return;
         }
         loadAndBroadcast(items, currentIndex - 1, true);
@@ -624,12 +654,10 @@ useEffect(() => {
       },
       seek: (seconds) => {
         setPosition(seconds);
-        if (seekDebounceRef.current !== null) {
-          window.clearTimeout(seekDebounceRef.current);
-        }
-        seekDebounceRef.current = window.setTimeout(() => {
-          void playerApi.seek(seconds);
-        }, 150);
+        // Fichier local : un seek toutes les 120 ms au plus pendant le glissement ; flux en
+        // ligne : 300 ms (chaque seek relance une requête réseau).
+        const media = currentMediaRef.current;
+        scrubberRef.current?.seek(seconds, media && isOnlineMedia(media) ? 300 : 120);
       },
       setVolumeLevel: (level) => {
         setVolume(level);
@@ -758,6 +786,7 @@ useEffect(() => {
             .catch(() => {});
         }
         endedHandledRef.current = null;
+        scrubberRef.current?.reset();
         void playerApi.stop();
         friendsApi.clearActivity().catch(() => {});
         windowApi

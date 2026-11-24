@@ -21,6 +21,7 @@
 
 use crate::db::repositories::{folder_repository, media_repository};
 use crate::db::DbPool;
+use crate::services::auto_scan::{self, AutoScanPlanner, Launch};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -143,6 +144,10 @@ pub fn start(
         }
     }
 
+    // Scan de rattrapage 30 s après le démarrage : fichiers ajoutés pendant que le logiciel
+    // était fermé (voir `services::auto_scan`).
+    auto_scan::spawn_startup_scan(app_handle.clone());
+
     let processing_handle = app_handle.clone();
     std::thread::spawn(move || {
         run_debounce_loop(rx, pool, processing_handle, scanning_libraries);
@@ -162,6 +167,9 @@ fn run_debounce_loop(
 ) {
     let mut pending: HashMap<PathBuf, EventKind> = HashMap::new();
     let mut last_event_at = Instant::now();
+    // Scan automatique : regroupe les fichiers nouveaux par bibliothèque et attend qu'ils soient
+    // entièrement copiés avant de lancer la chaîne scan → appariement → vignettes.
+    let mut planner = AutoScanPlanner::standard();
 
     loop {
         match rx.recv_timeout(POLL_INTERVAL) {
@@ -177,7 +185,17 @@ fn run_debounce_loop(
             Err(RecvTimeoutError::Timeout) => {
                 if !pending.is_empty() && last_event_at.elapsed() >= DEBOUNCE_WINDOW {
                     let batch = std::mem::take(&mut pending);
-                    apply_batch(&pool, &app_handle, &scanning_libraries, batch);
+                    for (library_id, path) in apply_batch(&pool, &app_handle, &scanning_libraries, batch) {
+                        planner.note_file(library_id, path, Instant::now());
+                    }
+                }
+                if !planner.is_idle() {
+                    for library_id in planner.poll(Instant::now(), auto_scan::file_snapshot) {
+                        match auto_scan::launch(&app_handle, library_id) {
+                            Launch::Started | Launch::Skipped(_) => planner.finish(library_id),
+                            Launch::Busy => planner.postpone(library_id, Instant::now()),
+                        }
+                    }
                 }
             }
             Err(RecvTimeoutError::Disconnected) => break,
@@ -189,17 +207,22 @@ fn run_debounce_loop(
 /// modifié ou supprimé ne déclenche la mise à jour que de CE fichier —
 /// jamais un nouveau parcours complet de la bibliothèque (contrairement à
 /// `services::scanner::scan_library`, réservé au scan manuel/initial).
+///
+/// Renvoie les fichiers vidéo NOUVEAUX ou MODIFIÉS (bibliothèque, chemin) : c'est le signal du
+/// scan automatique (`services::auto_scan`), qui lance la chaîne complète une fois les fichiers
+/// entièrement copiés.
 fn apply_batch(
     pool: &DbPool,
     app_handle: &AppHandle,
     scanning_libraries: &ScanningLibraries,
     events: HashMap<PathBuf, EventKind>,
-) {
+) -> Vec<(i64, PathBuf)> {
+    let mut new_files: Vec<(i64, PathBuf)> = Vec::new();
     let conn = match pool.get() {
         Ok(conn) => conn,
         Err(err) => {
             log::warn!("Connexion base de données indisponible pour le watcher : {err}");
-            return;
+            return new_files;
         }
     };
 
@@ -207,13 +230,13 @@ fn apply_batch(
         Ok(folders) => folders,
         Err(err) => {
             log::warn!("Impossible de lister les dossiers surveillés : {err}");
-            return;
+            return new_files;
         }
     };
 
     let mut affected_libraries: HashSet<i64> = HashSet::new();
 
-    for (path, _kind) in events {
+    for (path, kind) in events {
         let Some(folder) = folders.iter().find(|f| path.starts_with(&f.path)) else {
             // Événement hors de tout dossier connu (ex. dossier retiré
             // entre-temps) : rien à faire.
@@ -260,6 +283,9 @@ fn apply_batch(
                     size_bytes,
                     &modified_at,
                 );
+                if matches!(kind, EventKind::Create(_) | EventKind::Modify(_)) {
+                    new_files.push((folder.library_id, path.clone()));
+                }
             }
         } else {
             // Le dossier existe toujours, mais ce chemin précis n'existe
@@ -276,4 +302,5 @@ fn apply_batch(
     for library_id in affected_libraries {
         let _ = app_handle.emit("library:updated", library_id);
     }
+    new_files
 }

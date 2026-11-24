@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { AlbumCard } from "./AlbumCard";
 import { errorMessage, musicApi, type MusicAlbum } from "./api";
+import { useGoBack } from "../../hooks/useGoBack";
 import "./music.css";
 
 const SECTIONS: { kind: string; label: string }[] = [
@@ -14,7 +15,7 @@ const SECTIONS: { kind: string; label: string }[] = [
 /** Fiche artiste : discographie (albums, EP, singles) classée du plus récent au plus ancien. */
 export function MusicArtistPage() {
   const { artistId = "" } = useParams();
-  const navigate = useNavigate();
+  const goBack = useGoBack("/vaulttube/music");
   const [albums, setAlbums] = useState<MusicAlbum[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,7 +40,7 @@ export function MusicArtistPage() {
 
   return (
     <div className="avm-music-page">
-      <button type="button" className="avm-music-back" onClick={() => navigate(-1)}>
+      <button type="button" className="avm-music-back" onClick={goBack}>
         <ArrowLeft size={16} aria-hidden="true" /> Retour
       </button>
       <h1 className="avm-music-page__title">{artistName}</h1>

@@ -217,7 +217,7 @@ export function AetherFyWatchPage() {
         }
       }
 
-      const subs = await vaultTubeApi.listSubscriptions();
+      const subs = await vaultTubeApi.listSubscriptions("video");
       for (const sub of subs) {
         try {
           const vids = await vaultTubeApi.listVideos(sub.id);

@@ -42,6 +42,16 @@ fn detect_short(entry: &serde_json::Value) -> bool {
     false
 }
 
+/// Nom de la chaîne qui a publié une entrée yt-dlp (`channel`, sinon `uploader`).
+fn entry_channel(entry: &serde_json::Value) -> Option<String> {
+    ["channel", "uploader"]
+        .iter()
+        .filter_map(|k| entry.get(*k).and_then(|v| v.as_str()))
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 fn entry_thumbnail(entry: &serde_json::Value) -> Option<String> {
     entry.get("thumbnail").and_then(|v| v.as_str()).map(|s| s.to_string())
         .or_else(|| {
@@ -201,6 +211,7 @@ impl VaultTubeSync {
                     published_at,
                     &sub.source,
                     is_short,
+                    entry_channel(&video).as_deref(),
                 );
                 count += 1;
             }
@@ -297,6 +308,7 @@ impl VaultTubeSync {
                     published_at: parse_upload_date(video.get("upload_date").and_then(|v| v.as_str())),
                     added_at: now_secs(), source: source.to_string(),
                     mode: "video".to_string(), is_short: detect_short(&video),
+                    channel: entry_channel(&video),
                 });
             }
         }

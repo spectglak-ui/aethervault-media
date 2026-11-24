@@ -18,6 +18,7 @@ import { HomeWelcome } from "./home/HomeWelcome";
 import { HeroTrailer } from "../features/trailer/HeroTrailer";
 import { useHeroTrailerKeys } from "../features/trailer/useHeroTrailerKeys";
 import { getHeroTrailerEnabled, subscribeHeroTrailerEnabled } from "../features/trailer/heroTrailerSetting";
+import { HomeProviders } from "./home/HomeProviders";
 
 /**
  * Accueil v2 : héro « à la une », tuiles catégories 16:9, rangées
@@ -153,6 +154,7 @@ export function HomePage() {
           couvrir ce contenu. */}
       <div className="avm-hx" style={{ position: "relative", zIndex: 3 }}>
         <HomeWelcome />
+		<HomeProviders />
         {hero && assetUrl(hero.banner) ? (
           <section className="avm-home-hero">
             <img src={assetUrl(hero.banner)} alt="" />

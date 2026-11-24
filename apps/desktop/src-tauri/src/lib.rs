@@ -8,6 +8,7 @@
 mod commands;
 mod db;
 mod domain;
+mod remote;
 mod security;
 mod services;
 mod state;
@@ -30,8 +31,7 @@ fn show_fatal_startup_error(handle: &tauri::AppHandle, what: &str, err: &dyn std
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "(introuvable)".to_string());
     let message = format!(
-        "AetherVault Media ne peut pas démarrer.\n\n{what} a échoué :\n{err}\n\n\
-         Le détail est enregistré dans le dossier de journaux :\n{log_dir}"
+        "AetherVault Media ne peut pas démarrer.\n\n{what} a échoué :\n{err}\n\nLe détail est enregistré dans le dossier de journaux :\n{log_dir}"
     );
     let handle = handle.clone();
     // `blocking_show` ne doit pas tourner sur le fil principal (qui affiche la boîte).
@@ -71,10 +71,12 @@ pub fn run() {
                 ])
                 .build(),
         )
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // 0.8.x — télécommande mobile : manager du serveur local (axum + WS).
+        .manage(remote::RemoteManager::default())
         .setup(|app| {
             let handle = app.handle().clone();
-
             // Répertoire de données de l'application (ex. %APPDATA%\com.aethervault.media
             // sous Windows), fourni par Tauri de façon standard par OS.
             let data_dir = handle
@@ -83,17 +85,14 @@ pub fn run() {
                 .expect("impossible de résoudre le répertoire de données de l'application");
             std::fs::create_dir_all(&data_dir)
                 .expect("impossible de créer le répertoire de données");
-
             // Privacy/Security Manager (Étape 6a, architecture A2, doc §6.4
             // bis) : nettoie un éventuel fichier de travail resté sur disque
             // après un arrêt brutal pendant un déverrouillage/une
             // persistance du coffre privé.
             security::vault::cleanup_stale_temp_file(&data_dir);
-
             let database_path = data_dir.join("aethervault.db");
             let pool = db::init_pool(&database_path)
                 .expect("impossible d'initialiser le pool de connexions SQLite");
-
             // 0.7.9 : toute la préparation de la base (tables VaultTube hors
             // migrations, tables Lecture, migrations, données par défaut,
             // catégorie Lecture) vit dans `db::startup::prepare_database`, testée
@@ -104,7 +103,6 @@ pub fn run() {
                 show_fatal_startup_error(&handle, "La préparation de la base de données", &err);
                 return Ok(());
             }
-
             let log_dir = handle
                 .path()
                 .app_log_dir()
@@ -113,7 +111,6 @@ pub fn run() {
                 "AetherVault Media démarre — base de données : {:?}",
                 database_path
             );
-
             // 0.3.0 : fenêtre « quasi-max » dès le démarrage — inset de 4 px de
             // la zone de travail : jamais l'état « maximisé » (artefacts DWM
             // après les transitions plein écran), jamais en contact avec les
@@ -131,14 +128,12 @@ pub fn run() {
                     let _ = window.center();
                 }
             }
-
             let scanning_libraries = std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             ));
             let watcher =
                 services::watcher::start(pool.clone(), handle.clone(), scanning_libraries.clone())
                     .expect("impossible de démarrer la surveillance des dossiers (Filesystem Watcher)");
-
             // Playback Engine Bridge (Étape 3b) : démarré une fois pour
             // toute la durée de vie de l'application, indépendamment de
             // toute fenêtre — voir `services::playback_engine`.
@@ -150,11 +145,9 @@ pub fn run() {
                         services::playback_engine::PlaybackEngineState::Unavailable(err)
                     }
                 };
-
             // Metadata Service (Étape 4, doc §3.4/§6.3).
             let metadata_service =
                 std::sync::Arc::new(services::metadata::MetadataService::new());
-
             app.manage(AppState {
                 db_pool: pool,
                 database_path: database_path.to_string_lossy().to_string(),
@@ -176,7 +169,6 @@ pub fn run() {
                 // 0.6.1 : synchronisation automatique VaultTube (toutes les 6h).
                 auto_sync_handle: std::sync::Mutex::new(None),
             });
-
             // Spatialisation audio : le niveau persisté est poussé dans le moteur
             // dès le démarrage (puis ré-appliqué par le moteur à chaque chargement).
             {
@@ -189,8 +181,7 @@ pub fn run() {
                     }
                 }
             }
-
-                        // 0.6.1 : lance la synchronisation automatique VaultTube (toutes les 6h)
+            // 0.6.1 : lance la synchronisation automatique VaultTube (toutes les 6h)
             {
                 let state = app.state::<AppState>();
                 let mut guard = state
@@ -203,7 +194,6 @@ pub fn run() {
                     log::info!("[vaulttube] auto-sync démarré au lancement");
                 }
             }
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -259,13 +249,14 @@ pub fn run() {
             commands::vaulttube::vaulttube_remove_from_user_playlist,
             commands::vaulttube::vaulttube_reorder_user_playlist,
             commands::vaulttube::vaulttube_set_user_playlist_mode,
+            commands::vaulttube::vaulttube_set_user_playlist_cover,
             commands::vaulttube::vaulttube_set_subscription_mode,
             // 0.6.1 : synchronisation automatique VaultTube
             commands::vaulttube::vaulttube_sync_all_now,
             commands::vaulttube::vaulttube_auto_sync_start,
             commands::vaulttube::vaulttube_auto_sync_stop,
-			commands::vaulttube::vaulttube_get_comments,
-			commands::vaulttube::vaulttube_download_video,
+            commands::vaulttube::vaulttube_get_comments,
+            commands::vaulttube::vaulttube_download_video,
             // Authentification des profils (Étape 6c)
             commands::auth::get_login_state,
             commands::auth::login_profile,
@@ -275,6 +266,8 @@ pub fn run() {
             commands::auth::change_own_password,
             commands::auth::admin_reset_password,
             commands::auth::recover_with_code,
+            commands::settings::get_auto_scan_enabled,
+            commands::settings::set_auto_scan_enabled,
             commands::settings::get_metadata_settings,
             commands::settings::save_metadata_settings,
             commands::settings::get_quick_access_enabled,
@@ -309,28 +302,26 @@ pub fn run() {
             commands::private_video::private_video_thumbnail,
             commands::private_video::add_private_video_folder,
             commands::private_video::remove_private_video_folder,
-			commands::private_video::remove_private_video_folder,
             commands::private_video::list_private_video_files,
             commands::private_video::scan_private_video_library,
-			commands::private_video::regenerate_private_video_thumbnails,
+            commands::private_video::regenerate_private_video_thumbnails,
             commands::private_video::get_private_playback_progress,
             commands::private_video::save_private_playback_progress,
             commands::private_image::list_private_image_folders,
             commands::private_image::add_private_image_folder,
             commands::private_image::remove_private_image_folder,
-			commands::private_image::rename_private_image_folder,
-			commands::private_image::rename_private_image_folder,
+            commands::private_image::rename_private_image_folder,
             commands::private_image::scan_private_image_library,
             commands::private_image::list_private_image_files,
             commands::private_image::get_private_image_thumbnail,
             commands::private_image::get_private_album_cover,
             commands::private_image::set_private_album_cover,
-			commands::private_tags::private_list_tags,
+            commands::private_tags::private_list_tags,
             commands::private_tags::private_tags_for_media,
             commands::private_tags::private_add_tag,
             commands::private_tags::private_remove_tag,
             commands::private_tags::private_delete_tag,
-			commands::reading::reading_list_libraries,
+            commands::reading::reading_list_libraries,
             commands::reading::reading_create_library,
             commands::reading::reading_rename_library,
             commands::reading::reading_delete_library,
@@ -345,7 +336,7 @@ pub fn run() {
             commands::reading::reading_list_continue,
             commands::reading::reading_get_settings,
             commands::reading::reading_save_settings,
-			commands::reading::reading_reset_progress,
+            commands::reading::reading_reset_progress,
             commands::reading::reading_reset_all_progress,
             commands::library::list_libraries,
             commands::library::generate_episode_thumbnails,
@@ -441,7 +432,7 @@ pub fn run() {
             commands::friends::clear_activity,
             commands::friends::set_activity_visibility,
             commands::friends::get_activity_visibility,
-			commands::tv::tv_list_channels,
+            commands::tv::tv_list_channels,
             commands::tv::tv_add_channel,
             commands::tv::tv_remove_channel,
             commands::tv::tv_import_m3u,
@@ -462,9 +453,14 @@ pub fn run() {
             services::playback_engine::player_load_url_audio,
             services::playback_engine::player_list_qualities,
             services::playback_engine::player_load_url_quality,
+            services::playback_engine::player_prefetch,
             services::playback_engine::player_set_preferred_quality,
             services::playback_engine::player_extract_media,
             services::playback_engine::player_unload,
+            // 0.8.x — télécommande mobile (serveur local + appairage QR).
+            remote::remote_start,
+            remote::remote_stop,
+            remote::remote_status,
         ])
         .run(tauri::generate_context!())
         .expect("erreur lors du lancement d'AetherVault Media");

@@ -1,15 +1,16 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, Disc3, Play } from "lucide-react";
 import { TrackRow } from "./TrackRow";
 import { ALBUM_KIND_LABELS, errorMessage, musicApi, type MusicAlbumDetail } from "./api";
 import { usePlayTrack } from "./usePlayTrack";
+import { useGoBack } from "../../hooks/useGoBack";
 import "./music.css";
 
 /** Page d'un album : pochette, informations et liste des pistes. */
 export function MusicAlbumPage() {
   const { albumId = "" } = useParams();
-  const navigate = useNavigate();
+  const goBack = useGoBack("/vaulttube/music");
   const [detail, setDetail] = useState<MusicAlbumDetail | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const { play, busyId, error: playError } = usePlayTrack();
@@ -35,7 +36,7 @@ export function MusicAlbumPage() {
 
   return (
     <div className="avm-music-page">
-      <button type="button" className="avm-music-back" onClick={() => navigate(-1)}>
+      <button type="button" className="avm-music-back" onClick={goBack}>
         <ArrowLeft size={16} aria-hidden="true" /> Retour
       </button>
 

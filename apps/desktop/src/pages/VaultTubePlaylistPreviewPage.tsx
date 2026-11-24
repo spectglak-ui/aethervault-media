@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Plus } from "lucide-react";
 import { Button } from "@aethervault/ui-kit";
-import { vaultTubeApi, type VaultTubeVideo } from "../features/vaulttube/api";
+import { vaultTubeApi, type PlaybackMode, type VaultTubeVideo } from "../features/vaulttube/api";
+import { addSubscriptionInMode } from "../features/vaulttube/followMode";
 import { usePlayer } from "../player/PlayerContext";
+import { useGoBack } from "../hooks/useGoBack";
 import { VaultTubeVideoGrid } from "./VaultTubeVideoGrid";
 import { VaultTubePlaylistPicker, type PickableVideo } from "../components/VaultTubePlaylistPicker";
 import "./pages.css";
@@ -13,6 +15,12 @@ import "./pages.css";
 export function VaultTubePlaylistPreviewPage() {
   const { playlistId } = useParams<{ playlistId: string }>();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  // L'espace d'où l'on vient (`?mode=audio` depuis Musique, `?mode=video` depuis Vidéo) : la
+  // playlist est suivie DANS cet espace, puis on y retourne.
+  const asked = params.get("mode");
+  const mode: PlaybackMode | undefined = asked === "audio" || asked === "video" ? asked : undefined;
+  const goBack = useGoBack(mode === "audio" ? "/vaulttube/music" : "/vaulttube/video");
   const { playQueue } = usePlayer();
   const [videos, setVideos] = useState<VaultTubeVideo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -35,8 +43,8 @@ export function VaultTubePlaylistPreviewPage() {
   const handleFollow = async () => {
     setFollowing(true);
     try {
-      await vaultTubeApi.addSubscription(url);
-      navigate("/vaulttube");
+      await addSubscriptionInMode(url, mode);
+      navigate(mode === "audio" ? "/vaulttube/music" : mode === "video" ? "/vaulttube/video" : "/vaulttube");
     } catch (e) {
       setError(String(e));
       setFollowing(false);
@@ -58,7 +66,7 @@ export function VaultTubePlaylistPreviewPage() {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
-        <Button variant="secondary" onClick={() => navigate(-1)}>
+        <Button variant="secondary" onClick={goBack}>
           <ArrowLeft size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
           Retour
         </Button>
@@ -109,7 +117,7 @@ export function VaultTubePlaylistPreviewPage() {
         />
       )}
       {pickerVideo && (
-        <VaultTubePlaylistPicker video={pickerVideo} onClose={() => setPickerVideo(null)} />
+        <VaultTubePlaylistPicker video={pickerVideo} onClose={() => setPickerVideo(null)} mode={mode} />
       )}
     </div>
   );

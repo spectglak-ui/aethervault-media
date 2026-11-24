@@ -17,6 +17,9 @@ export const playerApi = {
   load: (path: string) => invoke<void>("player_load", { path }),
   loadMode: (path: string, mode: string) => invoke("player_load_mode", { path, mode }),
   loadUrl: (url: string) => invoke<void>("player_load_url", { url }),
+  /** Précharge le média SUIVANT en arrière-plan : flux résolu (en ligne) ou fichier lu en partie
+   * (local). `audio` : piste de Musique (audio seul). Ne bloque pas, n'affecte pas la lecture. */
+  prefetch: (path: string, audio: boolean) => invoke<void>("player_prefetch", { path, audio }),
   extractMedia: (url: string) => invoke<ExtractedMedia>("player_extract_media", { url }),
   unload: () => invoke<void>("player_unload"),
   setPaused: (paused: boolean) => invoke<void>("player_set_paused", { paused }),

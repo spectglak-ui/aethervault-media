@@ -296,6 +296,8 @@
   justify-content: center;
   z-index: 50;
 }
+/* Rendue dans <body> (prop `portal`) : au-dessus de la barre du haut (100) et du lecteur. */
+.avm-modal-backdrop--portal { z-index: 1000; }
 .avm-modal-panel {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -303,6 +305,9 @@
   padding: 1.5rem;
   min-width: 360px;
   max-width: 480px;
+  /* Fenêtre basse : le panneau défile au lieu de dépasser de l'écran. */
+  max-height: calc(100vh - 3rem);
+  overflow-y: auto;
   box-shadow: var(--elevation-2);
 }
 .avm-modal-panel__header h2 {

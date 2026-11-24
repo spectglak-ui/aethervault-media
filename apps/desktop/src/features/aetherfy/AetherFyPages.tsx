@@ -134,7 +134,7 @@ export function AetherFyTrendingPage() {
 
 export function AetherFyLivePage() {
   const feed = useFeed(async () => {
-    const subs = await vaultTubeApi.listSubscriptions();
+    const subs = await vaultTubeApi.listSubscriptions("video");
     const channels = subs.filter((s) => s.kind === "channel").slice(0, 10);
     const chunks = await Promise.all(
       channels.map(async (sub) => {
@@ -215,7 +215,7 @@ export function AetherFySubscriptionsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await vaultTubeApi.listSubscriptions();
+      const list = await vaultTubeApi.listSubscriptions("video");
       setSubs(list);
       const cs: Record<number, number> = {};
       await Promise.all(
@@ -267,7 +267,7 @@ export function AetherFySubscriptionsPage() {
               <div>
                 <div className="afy-sub-card__name">{s.name}</div>
                 <div className="afy-sub-card__meta">
-                  {counts[s.id] ?? 0} vidéo(s) • {s.mode === "audio" ? "Musique" : "Vidéo"} • {s.source}
+                  {counts[s.id] ?? 0} vidéo(s) • {s.source}
                 </div>
               </div>
             </div>
@@ -302,7 +302,7 @@ export function AetherFyLibraryPage() {
   const history = listHistory().length;
 
   useEffect(() => {
-    vaultTubeApi.listUserPlaylists().then((p) => setPlaylists(p)).catch(() => {});
+    vaultTubeApi.listUserPlaylists("video").then((p) => setPlaylists(p)).catch(() => {});
   }, [tick]);
 
   const createEmpty = async () => {
@@ -406,7 +406,7 @@ export function AetherFyLibraryPage() {
               <div>
                 <div className="afy-sub-card__name">{p.name}</div>
                 <div className="afy-sub-card__meta">
-                  {p.item_count} vidéo(s) • {p.mode === "audio" ? "Musique" : "Vidéo"}
+                  {p.item_count} vidéo(s)
                 </div>
               </div>
             </div>

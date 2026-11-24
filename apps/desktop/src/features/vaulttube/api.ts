@@ -49,6 +49,10 @@ export interface UserPlaylist {
   created_at: number;
   item_count: number;
   mode: PlaybackMode;
+  /** Image choisie par l'utilisateur (data URL carrée), sinon absente. */
+  cover_image?: string | null;
+  /** Jusqu'à 4 vignettes distinctes des premiers titres (image par défaut : mosaïque). */
+  preview_thumbnails?: string[];
 }
 
 export interface UserPlaylistItem {
@@ -107,11 +111,16 @@ export const vaultTubeApi = {
     invoke<string>("vaulttube_download_video", { videoId, source: source ?? null }),
   getComments: (videoId: string, source?: string) =>
     invoke<Comment[]>("vaulttube_get_comments", { videoId, source: source ?? null }),
-  listSubscriptions: () => invoke<VaultTubeSubscription[]>("vaulttube_list_subscriptions"),
+  /** `mode` : ne renvoie que les abonnements de cet espace (Vidéo = "video", Musique = "audio"). */
+  listSubscriptions: (mode?: PlaybackMode) =>
+    invoke<VaultTubeSubscription[]>("vaulttube_list_subscriptions").then((list) =>
+      mode ? list.filter((s) => s.mode === mode) : list
+    ),
   listVideos: (subscriptionId: number) =>
     invoke<VaultTubeVideo[]>("vaulttube_list_videos", { subscriptionId }),
-  addSubscription: (url: string) =>
-    invoke<VaultTubeSubscription>("vaulttube_add_subscription", { url }),
+  /** `mode` : l'espace où suivre (Musique = "audio", Vidéo = "video") ; absent, il est deviné. */
+  addSubscription: (url: string, mode?: PlaybackMode) =>
+    invoke<VaultTubeSubscription>("vaulttube_add_subscription", { url, mode: mode ?? null }),
   refreshSubscription: (subscriptionId: number) =>
     invoke<number>("vaulttube_refresh_subscription", { subscriptionId }),
   removeSubscription: (subscriptionId: number) =>
@@ -127,9 +136,16 @@ export const vaultTubeApi = {
     invoke<SearchResult[]>("vaulttube_search", { query, source: source ?? null }),
   createUserPlaylist: (name: string, mode: PlaybackMode = "video") =>
     invoke<number>("vaulttube_create_user_playlist", { name, mode }),
-  listUserPlaylists: () => invoke<UserPlaylist[]>("vaulttube_list_user_playlists"),
+  /** `mode` : ne renvoie que les playlists locales de cet espace. */
+  listUserPlaylists: (mode?: PlaybackMode) =>
+    invoke<UserPlaylist[]>("vaulttube_list_user_playlists").then((list) =>
+      mode ? list.filter((p) => p.mode === mode) : list
+    ),
   deleteUserPlaylist: (playlistId: number) =>
     invoke<void>("vaulttube_delete_user_playlist", { playlistId }),
+  /** Définit l'image d'une playlist locale (data URL), ou la retire avec `null`. */
+  setUserPlaylistCover: (playlistId: number, image: string | null) =>
+    invoke<void>("vaulttube_set_user_playlist_cover", { playlistId, image }),
   setUserPlaylistMode: (playlistId: number, mode: PlaybackMode) =>
     invoke<void>("vaulttube_set_user_playlist_mode", { playlistId, mode }),
   listUserPlaylistItems: (playlistId: number) =>

@@ -19,6 +19,15 @@
 //!    analysées) : les derniers 5 % de la durée, bornés entre 45 s et 6 min
 //!    (et jamais plus du quart du média) → `tail`.
 //!
+//! ## « Vu » 15 minutes avant la fin
+//! Un film, un anime, une série ou un documentaire est « Vu » dès qu'il reste
+//! 15 minutes ou moins à lire (`SEEN_REMAINING_SECONDS`), sans jamais descendre
+//! sous 80 % de la durée (`SEEN_MIN_RATIO`) : pour un épisode de 25 minutes,
+//! « 15 minutes avant la fin » tomberait à 10 minutes de lecture. Le STATUT passe
+//! à « Vu » à ce moment-là, mais la position de reprise n'est effacée qu'à la
+//! vraie fin (voir `Verdict::Seen`) : arrêter un film à 1 h 50 le marque « Vu »
+//! SANS empêcher de le reprendre là où il en était.
+//!
 //! Le statut ne RECULE JAMAIS tout seul : revoir un film à moitié le laisse
 //! « Vu » (la position de reprise, elle, est bien mémorisée). Seule une action
 //! manuelle (« Marquer comme non vu ») remet un média à « À voir ».
@@ -47,6 +56,11 @@ pub const OUTRO_MIN_START_RATIO: f64 = 0.60;
 /// (un clic accidentel ou un aperçu de quelques secondes ne change rien).
 pub const IN_PROGRESS_MIN_SECONDS: f64 = 30.0;
 pub const IN_PROGRESS_MIN_RATIO: f64 = 0.01;
+/// « Vu » : dès qu'il reste 15 minutes ou moins à lire…
+pub const SEEN_REMAINING_SECONDS: f64 = 15.0 * 60.0;
+/// …mais jamais avant 80 % de la durée (garde-fou des médias courts : un épisode de
+/// 25 minutes ne doit pas être « Vu » à 10 minutes).
+pub const SEEN_MIN_RATIO: f64 = 0.80;
 /// Médias sans titre (musique…) : l'ancienne règle des 95 % est conservée.
 pub const LEGACY_COMPLETED_RATIO: f64 = 0.95;
 
@@ -73,6 +87,11 @@ pub enum Verdict {
     /// Trop peu regardé pour compter : le statut ne change pas.
     NotStarted,
     InProgress,
+    /// « Vu » (15 min avant la fin) mais la fin n'est pas atteinte : le statut passe à
+    /// « Vu » et la position de reprise est CONSERVÉE.
+    Seen(CompletedBy),
+    /// Terminé pour de bon (fin du fichier, générique, queue de secours) : « Vu » et la
+    /// position de reprise est effacée (le prochain clic repart du début).
     Completed(CompletedBy),
 }
 
@@ -106,6 +125,12 @@ pub fn completion_point(duration: f64, outro_start: Option<f64>) -> (f64, Comple
     }
 }
 
+/// Position à partir de laquelle le média est « Vu » : 15 minutes avant la fin, sans
+/// descendre sous 80 % de la durée.
+pub fn seen_point(duration: f64) -> f64 {
+    (duration - SEEN_REMAINING_SECONDS).max(duration * SEEN_MIN_RATIO)
+}
+
 /// Verdict pour une position donnée (fonction pure, entièrement testée).
 pub fn evaluate(position: f64, duration: f64, outro_start: Option<f64>) -> Verdict {
     if !(duration.is_finite() && duration > 0.0) || !position.is_finite() {
@@ -115,9 +140,14 @@ pub fn evaluate(position: f64, duration: f64, outro_start: Option<f64>) -> Verdi
     if position >= duration - END_REACHED_MARGIN_SECONDS {
         return Verdict::Completed(CompletedBy::Ended);
     }
-    let (point, by) = completion_point(duration, outro_start);
-    if position >= point {
+    let (finish, by) = completion_point(duration, outro_start);
+    let seen = seen_point(duration);
+    // La reprise n'est effacée qu'au point d'arrêt d'origine — jamais avant le seuil « Vu ».
+    if position >= finish.max(seen) {
         return Verdict::Completed(by);
+    }
+    if position >= seen {
+        return Verdict::Seen(by);
     }
     if position >= IN_PROGRESS_MIN_SECONDS && position / duration >= IN_PROGRESS_MIN_RATIO {
         return Verdict::InProgress;
@@ -258,7 +288,7 @@ pub fn record_progress(
     };
     let verdict = evaluate(position_seconds, duration_seconds, context.outro_start);
     let changed = match verdict {
-        Verdict::Completed(by) => {
+        Verdict::Completed(by) | Verdict::Seen(by) => {
             repo::mark_done(conn, profile_id, media_file_id, by.as_str()).map_err(err)?
         }
         Verdict::InProgress => repo::mark_in_progress(conn, profile_id, media_file_id).map_err(err)?,
@@ -373,18 +403,23 @@ mod tests {
 
     #[test]
     fn film_sans_generique_connu_utilise_la_queue_de_secours_plafonnee() {
-        // 5 % de 2 h = 6 min = plafond → seuil à 6840 s.
+        // 5 % de 2 h = 6 min = plafond → fin à 6840 s ; « Vu » 15 min avant la fin (6300 s).
         assert_eq!(tail_seconds(FILM), 360.0);
-        assert_eq!(evaluate(6839.0, FILM, None), Verdict::InProgress);
+        assert_eq!(evaluate(6299.0, FILM, None), Verdict::InProgress);
+        assert_eq!(evaluate(6300.0, FILM, None), Verdict::Seen(CompletedBy::Tail));
+        assert_eq!(evaluate(6839.0, FILM, None), Verdict::Seen(CompletedBy::Tail));
         assert_eq!(evaluate(6840.0, FILM, None), Verdict::Completed(CompletedBy::Tail));
         assert_eq!(evaluate(7199.0, FILM, None), Verdict::Completed(CompletedBy::Ended));
     }
 
     #[test]
     fn episode_court_a_une_queue_proportionnelle() {
-        // 5 % de 25 min = 75 s → seuil à 1425 s.
+        // 5 % de 25 min = 75 s → fin à 1425 s ; « Vu » au plancher de 80 % (1200 s) car
+        // 15 min avant la fin tomberait à 600 s.
         assert_eq!(tail_seconds(EPISODE), 75.0);
-        assert_eq!(evaluate(1424.0, EPISODE, None), Verdict::InProgress);
+        assert_eq!(evaluate(1199.0, EPISODE, None), Verdict::InProgress);
+        assert_eq!(evaluate(1200.0, EPISODE, None), Verdict::Seen(CompletedBy::Tail));
+        assert_eq!(evaluate(1424.0, EPISODE, None), Verdict::Seen(CompletedBy::Tail));
         assert_eq!(evaluate(1425.0, EPISODE, None), Verdict::Completed(CompletedBy::Tail));
     }
 
@@ -396,9 +431,11 @@ mod tests {
 
     #[test]
     fn arret_quelques_secondes_avant_le_generique_compte_comme_vu() {
-        // Générique à 1400 s → « Vu » dès 1385 s (15 s avant).
+        // Générique à 1400 s → fin à 1385 s (15 s avant) ; « Vu » dès 1200 s (plancher 80 %).
         let outro = Some(1400.0);
-        assert_eq!(evaluate(1384.0, EPISODE, outro), Verdict::InProgress);
+        assert_eq!(evaluate(1199.0, EPISODE, outro), Verdict::InProgress);
+        assert_eq!(evaluate(1200.0, EPISODE, outro), Verdict::Seen(CompletedBy::Credits));
+        assert_eq!(evaluate(1384.0, EPISODE, outro), Verdict::Seen(CompletedBy::Credits));
         assert_eq!(evaluate(1385.0, EPISODE, outro), Verdict::Completed(CompletedBy::Credits));
         // Pendant et après le générique : toujours « Vu ».
         assert_eq!(evaluate(1400.0, EPISODE, outro), Verdict::Completed(CompletedBy::Credits));
@@ -406,10 +443,43 @@ mod tests {
     }
 
     #[test]
+    fn vu_15_minutes_avant_la_fin_avec_plancher_a_80_pour_cent() {
+        // Films et longs médias : 15 minutes avant la fin, exactement.
+        assert_eq!(seen_point(7200.0), 6300.0); // film de 2 h : 1 h 45
+        assert_eq!(seen_point(6000.0), 5100.0); // film de 1 h 40 : 1 h 25
+        assert_eq!(seen_point(4.0 * 3600.0), 4.0 * 3600.0 - 900.0); // documentaire de 4 h
+        // 75 min : 15 min avant la fin = 80 % pile.
+        assert_eq!(seen_point(4500.0), 3600.0);
+        // Médias courts : le plancher de 80 % l'emporte (jamais « Vu » à 10 min d'un épisode de 25).
+        assert_eq!(seen_point(EPISODE), 1200.0);
+        assert_eq!(seen_point(2700.0), 2160.0); // 45 min
+        assert_eq!(seen_point(40.0), 32.0);
+        // Autour du seuil d'un film.
+        assert_eq!(evaluate(6299.0, FILM, None), Verdict::InProgress);
+        assert_eq!(evaluate(6300.0, FILM, None), Verdict::Seen(CompletedBy::Tail));
+        // Un générique détecté plus tôt ou plus tard ne déplace PAS le seuil « Vu »…
+        assert_eq!(evaluate(1199.0, EPISODE, Some(1260.0)), Verdict::InProgress);
+        assert_eq!(evaluate(1200.0, EPISODE, Some(1260.0)), Verdict::Seen(CompletedBy::Credits));
+        // …il ne fait que fixer la fin (reprise effacée), jamais avant le seuil « Vu ».
+        assert_eq!(evaluate(1244.0, EPISODE, Some(1260.0)), Verdict::Seen(CompletedBy::Credits));
+        assert_eq!(evaluate(1245.0, EPISODE, Some(1260.0)), Verdict::Completed(CompletedBy::Credits));
+        assert_eq!(evaluate(1199.0, EPISODE, Some(950.0)), Verdict::InProgress);
+        assert_eq!(evaluate(1200.0, EPISODE, Some(950.0)), Verdict::Completed(CompletedBy::Credits));
+        // Invariants pour toutes les durées usuelles.
+        for d in [30.0, 60.0, 1500.0, 2700.0, 4500.0, 7200.0, 14400.0, 36000.0] {
+            let s = seen_point(d);
+            assert!(s >= d * 0.80 - 1e-9, "d={d} s={s} : jamais avant 80 %");
+            assert!(s <= d, "d={d} s={s}");
+            assert!(d - s <= 900.0 + 1e-9 || (s - d * 0.80).abs() < 1e-9, "d={d} s={s} : au plus 15 min restantes sinon plancher");
+        }
+    }
+
+    #[test]
     fn faux_generique_trop_tot_est_ignore() {
         // Détecté à 40 % de la durée : invraisemblable → on retombe sur la queue.
         assert_eq!(plausible_outro_start(EPISODE, Some(600.0)), None);
         assert_eq!(evaluate(900.0, EPISODE, Some(600.0)), Verdict::InProgress);
+        assert_eq!(evaluate(1350.0, EPISODE, Some(600.0)), Verdict::Seen(CompletedBy::Tail));
         assert_eq!(evaluate(1425.0, EPISODE, Some(600.0)), Verdict::Completed(CompletedBy::Tail));
     }
 
@@ -440,10 +510,11 @@ mod tests {
 
     #[test]
     fn tres_court_media_reste_utilisable() {
-        // Clip de 40 s : queue = 10 s (25 % max) → « Vu » à partir de 30 s.
+        // Clip de 40 s : queue = 10 s (25 % max) → fin à 30 s ; « Vu » dès 80 % (32 s).
         assert_eq!(tail_seconds(40.0), 10.0);
         assert_eq!(evaluate(29.0, 40.0, None), Verdict::NotStarted);
-        assert_eq!(evaluate(30.0, 40.0, None), Verdict::Completed(CompletedBy::Tail));
+        assert_eq!(evaluate(31.0, 40.0, None), Verdict::InProgress);
+        assert_eq!(evaluate(32.0, 40.0, None), Verdict::Completed(CompletedBy::Tail));
     }
 
     #[test]
@@ -649,13 +720,23 @@ mod tests {
         crate::db::repositories::segment_repository::ensure_table(&conn).unwrap();
         crate::db::repositories::segment_repository::upsert(&conn, 1, "outro", 1400.0, 1500.0, "auto")
             .unwrap();
-        // Épisode 1 : générique à 1400 s → « Vu » dès 1385 s ; épisode 2 : queue (1425 s).
-        assert_eq!(record_progress(&conn, P, 101, 1380.0, EPISODE).unwrap(), Verdict::InProgress);
+        // Épisode 1 : générique à 1400 s → « Vu » dès 1200 s (plancher 80 %), fin à 1385 s ;
+        // épisode 2 : pas de générique → « Vu » dès 1200 s aussi, fin sur la queue (1425 s).
+        assert_eq!(record_progress(&conn, P, 101, 1100.0, EPISODE).unwrap(), Verdict::InProgress);
+        assert_eq!(status_of(&conn, 101), "in_progress");
+        assert_eq!(
+            record_progress(&conn, P, 101, 1380.0, EPISODE).unwrap(),
+            Verdict::Seen(CompletedBy::Credits)
+        );
         assert_eq!(
             record_progress(&conn, P, 101, 1386.0, EPISODE).unwrap(),
             Verdict::Completed(CompletedBy::Credits)
         );
-        assert_eq!(record_progress(&conn, P, 102, 1386.0, EPISODE).unwrap(), Verdict::InProgress);
+        assert_eq!(record_progress(&conn, P, 102, 1100.0, EPISODE).unwrap(), Verdict::InProgress);
+        assert_eq!(
+            record_progress(&conn, P, 102, 1386.0, EPISODE).unwrap(),
+            Verdict::Seen(CompletedBy::Tail)
+        );
     }
 
     #[test]
@@ -769,5 +850,108 @@ mod tests {
         // 2 : progression de 20 min → En cours ; 3 : session à 12 % + progression → En cours.
         let st = |id: i64| status_of(&conn, id);
         assert_eq!((st(1).as_str(), st(2).as_str(), st(3).as_str()), ("done", "in_progress", "in_progress"));
+    }
+
+    // ---- « Vu » entre 80 et 90 % : le statut passe, la reprise reste ----
+
+    /// Base SQLite en fichier (pool d'UNE connexion, clés étrangères coupées comme dans les
+    /// autres tests : les jeux d'essai n'ont ni bibliothèque ni profil) avec toutes les
+    /// migrations — `save_progress` prend un pool. Ne jamais garder une connexion entre deux appels.
+    fn pool_with_movie(name: &str) -> (crate::db::DbPool, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!("avm-watch-{name}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let manager = r2d2_sqlite::SqliteConnectionManager::file(&path)
+            .with_init(|c| c.execute_batch("PRAGMA foreign_keys = OFF;"));
+        let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE vaulttube_subscriptions (id INTEGER PRIMARY KEY);
+                 CREATE TABLE vaulttube_videos (id INTEGER PRIMARY KEY);
+                 CREATE TABLE vaulttube_playlists (id INTEGER PRIMARY KEY);
+                 CREATE TABLE vaulttube_user_playlists (id INTEGER PRIMARY KEY);
+                 CREATE TABLE vaulttube_user_playlist_items (id INTEGER PRIMARY KEY);",
+            )
+            .unwrap();
+            for m in MIGRATIONS {
+                conn.execute_batch(m.sql).unwrap_or_else(|e| panic!("migration {} : {e}", m.version));
+            }
+            add_title(&conn, 1, "movie");
+            add_file(&conn, 1, Some(1), None);
+        }
+        (pool, path)
+    }
+
+    fn saved_position(pool: &crate::db::DbPool) -> Option<f64> {
+        let conn = pool.get().unwrap();
+        crate::db::repositories::playback_repository::get(&conn, P, 1).unwrap().map(|r| r.position_seconds)
+    }
+
+    fn status_in(pool: &crate::db::DbPool) -> String {
+        status_of(&pool.get().unwrap(), 1)
+    }
+
+    #[test]
+    fn un_film_est_vu_15_minutes_avant_la_fin_sans_perdre_sa_reprise() {
+        let (pool, path) = pool_with_movie("reprise");
+        let at = |secs: f64| crate::domain::playback::save_progress(&pool, P, 1, secs, FILM).unwrap();
+
+        // 1 h 40 (il reste 20 min) : en cours, reprise mémorisée.
+        at(6000.0);
+        assert_eq!(status_in(&pool), "in_progress");
+        assert_eq!(saved_position(&pool), Some(6000.0));
+        // 1 h 45 (il reste 15 min) : « Vu » automatiquement… et la reprise est toujours là.
+        at(6300.0);
+        assert_eq!(status_in(&pool), "done");
+        assert_eq!(title_states(&pool.get().unwrap(), P, &[1]).unwrap()[0].status, "done");
+        assert_eq!(saved_position(&pool), Some(6300.0), "arrêter à 15 min de la fin ne doit pas empêcher de reprendre");
+        // 1 h 53 (il reste 7 min) : toujours « Vu », toujours repris à l'endroit.
+        at(6780.0);
+        assert_eq!(status_in(&pool), "done");
+        assert_eq!(saved_position(&pool), Some(6780.0));
+        // Fin réelle (6900 s ≥ 6840 s) : « Vu » et la reprise est effacée (repart du début).
+        at(6900.0);
+        assert_eq!(status_in(&pool), "done");
+        assert_eq!(saved_position(&pool), None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_plus_de_15_minutes_de_la_fin_rien_n_est_vu() {
+        let (pool, path) = pool_with_movie("avant-seuil");
+        for secs in [3600.0, 5760.0, 6000.0, 6299.0] {
+            crate::domain::playback::save_progress(&pool, P, 1, secs, FILM).unwrap();
+            assert_eq!(status_in(&pool), "in_progress", "à {secs} s");
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn un_episode_court_n_est_pas_vu_a_10_minutes() {
+        let (pool, path) = pool_with_movie("episode-court");
+        {
+            let conn = pool.get().unwrap();
+            add_series(&conn);
+        }
+        let save = |secs: f64| crate::domain::playback::save_progress(&pool, P, 101, secs, EPISODE).unwrap();
+        let status = || status_of(&pool.get().unwrap(), 101);
+        save(600.0); // 15 min avant la fin d'un épisode de 25 min
+        assert_eq!(status(), "in_progress");
+        save(1199.0);
+        assert_eq!(status(), "in_progress");
+        save(1200.0); // plancher de 80 %
+        assert_eq!(status(), "done");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn un_vu_automatique_ne_recule_pas_quand_on_revoit_le_debut() {
+        let (pool, path) = pool_with_movie("revision");
+        crate::domain::playback::save_progress(&pool, P, 1, 6400.0, FILM).unwrap();
+        assert_eq!(status_in(&pool), "done");
+        crate::domain::playback::save_progress(&pool, P, 1, 1800.0, FILM).unwrap();
+        assert_eq!(status_in(&pool), "done");
+        assert_eq!(saved_position(&pool), Some(1800.0), "la position de revisionnage est mémorisée");
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -21,7 +21,7 @@ export function AetherFyNotifications({ onClose }: { onClose: () => void }) {
 
   const load = async () => {
     try {
-      const subs = await vaultTubeApi.listSubscriptions();
+      const subs = await vaultTubeApi.listSubscriptions("video");
       const chunks = await Promise.all(
         subs.slice(0, 15).map(async (s) => {
           try {

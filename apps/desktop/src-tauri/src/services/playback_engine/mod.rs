@@ -12,6 +12,7 @@ use std::os::windows::process::CommandExt;
 
 use mpv_ffi::MpvFormat;
 pub use mpv_ffi::MpvFunctions;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
@@ -364,7 +365,13 @@ pub struct PlaybackEngineHandle {
     mpv: MpvHandlePtr,
     surface: Mutex<Option<SurfaceState>>,
     /// 0.5.0 : dernière source chargée (vidéo, audio séparé éventuel).
-    last_source: Mutex<Option<(String, Option<String>)>>,
+    /// `Arc` : le rechargement correctif de `attach_surface` la relit APRÈS son délai.
+    last_source: Arc<Mutex<Option<(String, Option<String>)>>>,
+    /// Incrémenté à CHAQUE chargement de média (fichier local, flux, audio seul) : permet à
+    /// `attach_surface` de savoir qu'un chargement plus récent a eu lieu pendant son délai.
+    load_epoch: Arc<AtomicU64>,
+    /// Flux résolus à l'avance pour le média SUIVANT (voir `prefetch`).
+    stream_cache: Arc<StreamCache>,
     /// 0.6.0 (visualiseur) : URL d'origine demandée par le frontend
     /// (page YouTube, fichier local…) — permet au visualiseur de faire
     /// correspondre la source réellement chargée (flux extrait) au média
@@ -555,7 +562,9 @@ impl PlaybackEngineHandle {
             functions: functions.clone(),
             mpv,
             surface: Mutex::new(None),
-            last_source: Mutex::new(None),
+            last_source: Arc::new(Mutex::new(None)),
+            load_epoch: Arc::new(AtomicU64::new(0)),
+            stream_cache: Arc::new(StreamCache::new(PREFETCH_TTL, PREFETCH_MAX_ENTRIES)),
             audio_origin: Mutex::new(None),
             audio_session: AtomicBool::new(false),
             preferred_quality: Mutex::new(None),
@@ -609,6 +618,7 @@ impl PlaybackEngineHandle {
     fn load_direct(&self, path: &str) -> Result<(), String> {
         // Spatialisation : chaîne audio dans l'état voulu AVANT le loadfile.
         self.apply_audio_filter();
+        self.load_epoch.fetch_add(1, Ordering::SeqCst);
         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
             Some((path.to_string(), None));
         // 0.6.0 (visualiseur) : pour un fichier local, l'origine = le chemin lui-même.
@@ -635,6 +645,54 @@ impl PlaybackEngineHandle {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         self.load_url_quality(url, pref)
+    }
+
+    /// Préchargement du média SUIVANT, pendant la lecture du média courant : l'extraction du flux
+    /// (yt-dlp, plusieurs secondes) est faite à l'avance et mise en cache ; `load_url_quality`
+    /// la retrouve et démarre sans attendre. `audio` = piste de Musique (audio seul), sinon
+    /// vidéo AetherFy. Un fichier local est seulement « réchauffé » (lu en partie pour le cache
+    /// du système). Bloquant : à appeler depuis un fil de travail, jamais le fil principal.
+    pub fn prefetch(&self, target: &str, audio: bool) {
+        let lower = target.to_lowercase();
+        if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+            if !audio {
+                warm_local_file(target);
+            }
+            return;
+        }
+        // Flux direct (HLS/HTTP) : mpv le lit tel quel, il n'y a rien à résoudre.
+        if is_direct_stream(target) {
+            return;
+        }
+        let kind = if audio { PrefetchKind::Audio } else { PrefetchKind::Video };
+        if kind == PrefetchKind::Video
+            && self.preferred_quality.lock().unwrap_or_else(|p| p.into_inner()).is_some()
+        {
+            // Qualité imposée : le chargement utilise la sélection exacte, pas le flux « auto ».
+            return;
+        }
+        let Some(ytdlp) = locate_ytdlp() else { return };
+        if !self.stream_cache.begin(kind, target) {
+            return; // déjà préchargé, ou en cours
+        }
+        let t0 = Instant::now();
+        let pot = self.pot_extractor_args();
+        let result = match kind {
+            PrefetchKind::Audio => extract_audio_url(&ytdlp, target, &pot)
+                .map(|a| ResolvedStream { video: a, audio: None }),
+            PrefetchKind::Video => match cobalt_extract(target, None) {
+                Some(c) => Ok(ResolvedStream { video: c, audio: None }),
+                None => resolve_video_auto(&ytdlp, target, &pot, prefer_avc()),
+            },
+        };
+        match &result {
+            Ok(_) => log::info!(
+                "[playback] préchargement ({kind:?}) prêt en {} ms : {target}",
+                t0.elapsed().as_millis()
+            ),
+            Err(why) => log::warn!("[playback] préchargement ({kind:?}) échoué : {why}"),
+        }
+        self.stream_cache.finish(kind, target, result.ok());
     }
 
     /// 0.5.2 : cascade d'extraction avec PO Token.
@@ -671,6 +729,26 @@ impl PlaybackEngineHandle {
         // l'URL demandée par le frontend.
         *self.audio_origin.lock().unwrap_or_else(|p| p.into_inner()) =
             Some(url.to_string());
+        // Musique (session audio) : flux audio seul, jamais la cascade vidéo (qualités 1080p/720p).
+        if self.audio_session.load(Ordering::Relaxed) {
+            // Préchargé pendant la piste précédente : démarrage sans extraction.
+            if let Some(ready) = self.stream_cache.get(PrefetchKind::Audio, url) {
+                log::info!("[playback] piste préchargée utilisée : extraction évitée");
+                return self.load_split(&ready.video, None);
+            }
+            let ytdlp = locate_ytdlp().ok_or_else(|| "yt-dlp introuvable".to_string())?;
+            log::info!("[playback] extraction AUDIO seul : {url}");
+            let audio = extract_audio_url(&ytdlp, url, &self.pot_extractor_args())?;
+            return self.load_split(&audio, None);
+        }
+        // Vidéo en qualité automatique : flux préchargé pendant la vidéo précédente (Cobalt ou
+        // yt-dlp, selon ce qui a répondu à ce moment-là).
+        if height.is_none() {
+            if let Some(ready) = self.stream_cache.get(PrefetchKind::Video, url) {
+                log::info!("[playback] vidéo préchargée utilisée : extraction évitée");
+                return self.load_split(&ready.video, ready.audio.as_deref());
+            }
+        }
         // 1. Cobalt d'abord (si dispo, le plus rapide).
         if let Some(cobalt_url) = cobalt_extract(url, height) {
             log::info!("[playback] lecture via Cobalt (qualité {:?})", height);
@@ -724,58 +802,9 @@ impl PlaybackEngineHandle {
             }
             log::warn!("[playback] {h}p indisponible partout — fallback auto");
         }
-        // 3. Auto : web+POT d'abord (4K possible), puis cascade.
-        const BASE_FORMAT_SEL: &str =
-            "bv*[height=1080]+ba/bv*[height=720]+ba/bv*[height<=1080]+ba/b[height<=1080][acodec!=none]";
-        let format_owned = if prefer_avc() {
-            format!(
-                "bv*[height=1080][vcodec^=avc1]+ba/bv*[height=720][vcodec^=avc1]+ba/{BASE_FORMAT_SEL}"
-            )
-        } else {
-            BASE_FORMAT_SEL.to_string()
-        };
-        let format_sel = format_owned.as_str();
-        // 3a. web + POT
-        let pot_args = self.pot_extractor_args();
-        if !pot_args.is_empty() {
-            if let Some((video, audio)) = ytdlp_urls_owned(&ytdlp, url, format_sel, &pot_args) {
-                log::info!("[playback] auto : flux via web+POT (haute résolution débloquée)");
-                return self.load_split(&video, audio.as_deref());
-            }
-        }
-        // 3b. Cascade classique
-        let auto_configs: &[&[&str]] = &[
-            &["--extractor-args", "youtube:player_client=android"],
-            &["--extractor-args", "youtube:player_client=tv"],
-            &[],
-            &["--extractor-args", "youtube:player_client=ios"],
-        ];
-        let mut last_err = String::from("aucun flux extrait");
-        let mut fallback: Option<(String, Option<String>)> = None;
-        for extra in auto_configs {
-            match ytdlp_json(&ytdlp, url, format_sel, extra) {
-                Some(json) => {
-                    let h = json.get("height").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let urls = urls_from_json(&json);
-                    if urls.0.is_empty() {
-                        continue;
-                    }
-                    if h >= 720 {
-                        log::info!("[playback] auto : {}p via client {:?}", h, extra);
-                        return self.load_split(&urls.0, urls.1.as_deref());
-                    }
-                    if fallback.is_none() {
-                        fallback = Some(urls);
-                    }
-                }
-                None => last_err = format!("client {:?} : extraction échouée", extra),
-            }
-        }
-        if let Some((video, audio)) = fallback {
-            log::info!("[playback] auto : repli basse résolution");
-            return self.load_split(&video, audio.as_deref());
-        }
-        Err(format!("yt-dlp en échec : {last_err}"))
+        // 3. Auto : web+POT d'abord (4K possible), puis cascade (voir `resolve_video_auto`).
+        let stream = resolve_video_auto(&ytdlp, url, &self.pot_extractor_args(), prefer_avc())?;
+        self.load_split(&stream.video, stream.audio.as_deref())
     }
 
     /// Charge un flux vidéo (+ piste audio séparée éventuelle).
@@ -785,6 +814,7 @@ impl PlaybackEngineHandle {
         // Spatialisation : chaîne audio dans l'état voulu AVANT le loadfile
         // (couvre AetherFy, TV/HLS, changement de qualité…).
         self.apply_audio_filter();
+        self.load_epoch.fetch_add(1, Ordering::SeqCst);
         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
             Some((video.to_string(), audio.map(|s| s.to_string())));
         // 0.6.0 (visualiseur) : on NE touche PLUS à `audio_origin` ici.
@@ -850,6 +880,7 @@ impl PlaybackEngineHandle {
             .ok_or_else(|| "aucun flux audio extrait".to_string())?;
         // 0.6.0 (visualiseur) : mémorise le flux audio extrait ET l'URL
         // d'origine — le visualiseur Symphonia ré-ouvrira ce flux précis.
+        self.load_epoch.fetch_add(1, Ordering::SeqCst);
         *self.last_source.lock().unwrap_or_else(|p| p.into_inner()) =
             Some((audio_url.clone(), None));
         *self.audio_origin.lock().unwrap_or_else(|p| p.into_inner()) =
@@ -1329,11 +1360,9 @@ impl PlaybackEngineHandle {
         // contexte présent. Configuration d'origine PROUVÉE (image OK sur
         // HLS TV) : ni skip « flux direct » (0.9.12 → plus aucun son),
         // ni wake seek (0.9.10 → image toujours noire).
-        let source = self
-            .last_source
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
+        let last_source = self.last_source.clone();
+        let load_epoch = self.load_epoch.clone();
+        let load_epoch_at_attach = load_epoch.load(Ordering::SeqCst);
         let functions_for_reload = self.functions.clone();
         let mpv_addr = self.mpv.0 as usize;
         let gate = self.gate.clone();
@@ -1341,9 +1370,6 @@ impl PlaybackEngineHandle {
         let epoch_at_attach = stop_epoch.load(Ordering::SeqCst);
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(300));
-            let Some((video, audio)) = source else {
-                return;
-            };
             // Un stop() est intervenu pendant les 300 ms d'attente : ne
             // surtout pas relancer le flux (audio fantôme sans image).
             if stop_epoch.load(Ordering::SeqCst) != epoch_at_attach {
@@ -1352,6 +1378,22 @@ impl PlaybackEngineHandle {
                 );
                 return;
             }
+            // La source est relue ICI, après l'attente — jamais à l'attache : changer d'épisode
+            // rattache la surface AVANT que le nouvel épisode soit chargé, et l'ancienne source
+            // revenait écraser le nouvel épisode (l'interface annonçait l'épisode 2, l'épisode 1
+            // était relu). Si un chargement a eu lieu depuis l'attache, rien à corriger.
+            let source_now = last_source.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let (video, audio) = match corrective_reload_decision(
+                load_epoch_at_attach,
+                load_epoch.load(Ordering::SeqCst),
+                source_now,
+            ) {
+                CorrectiveReload::Skip(why) => {
+                    log::info!("[playback] rechargement correctif annulé : {why}");
+                    return;
+                }
+                CorrectiveReload::Reload { video, audio } => (video, audio),
+            };
             let mpv_ptr = mpv_addr as *mut c_void;
             // Reprend la position courante pour que le rechargement
             // correctif ne remette PAS la lecture à zéro.
@@ -1829,24 +1871,334 @@ fn cobalt_extract(url: &str, height: Option<i64>) -> Option<String> {
 }
 
 /// Exécute yt-dlp `-J -f <sel>` et renvoie le JSON décrit.
-fn ytdlp_json(
+// ---- Rechargement correctif après attache de la surface (début) ----
+
+/// Décision du « rechargement correctif » lancé 300 ms après `attach_surface`.
+#[derive(Debug, PartialEq)]
+enum CorrectiveReload {
+    /// Rien à recharger (raison journalisée).
+    Skip(&'static str),
+    /// Recharger cette source (vidéo, audio séparé éventuel).
+    Reload { video: String, audio: Option<String> },
+}
+
+/// Le rechargement sert au cas où mpv a démarré son VO AVANT l'existence du contexte de rendu
+/// (écran noir). Il ne doit viser que la source COURANTE, et seulement si aucun chargement n'a
+/// eu lieu depuis l'attache : un chargement postérieur démarre déjà avec le bon contexte, et
+/// recharger une source plus ancienne l'écraserait (bug « suivant → relit l'épisode précédent »).
+fn corrective_reload_decision(
+    load_epoch_at_attach: u64,
+    load_epoch_now: u64,
+    source_now: Option<(String, Option<String>)>,
+) -> CorrectiveReload {
+    if load_epoch_now != load_epoch_at_attach {
+        return CorrectiveReload::Skip("un nouveau média a été chargé depuis l'attache de la surface");
+    }
+    match source_now {
+        None => CorrectiveReload::Skip("aucune source à recharger"),
+        Some((video, audio)) => CorrectiveReload::Reload { video, audio },
+    }
+}
+
+// ---- Rechargement correctif après attache de la surface (fin) ----
+
+// ---- Préchargement du média suivant (début) ----
+
+/// Durée de vie d'un flux résolu : les URL de lecture YouTube restent valables des heures,
+/// 20 minutes laissent une large marge (un « suivant » après une longue pause réextrait).
+const PREFETCH_TTL: Duration = Duration::from_secs(20 * 60);
+/// Nombre maximal de flux gardés (le suivant, le précédent, quelques retours en arrière).
+const PREFETCH_MAX_ENTRIES: usize = 6;
+
+/// Flux prêt à être donné à mpv : vidéo (ou audio seul en session Musique) + audio séparé.
+#[derive(Clone, Debug, PartialEq)]
+struct ResolvedStream {
+    video: String,
+    audio: Option<String>,
+}
+
+/// Vidéo (AetherFy Vidéo : flux vidéo + audio) et Musique (audio seul) sont préchargées
+/// séparément : deux extractions différentes, jamais mélangées dans le cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum PrefetchKind {
+    Video,
+    Audio,
+}
+
+struct CacheInner {
+    entries: HashMap<(PrefetchKind, String), (ResolvedStream, Instant)>,
+    in_flight: HashSet<(PrefetchKind, String)>,
+}
+
+/// Cache des flux résolus à l'avance. Sans lui, démarrer le média suivant paie l'extraction
+/// yt-dlp (plusieurs secondes) au moment du clic ou de la fin du média courant.
+struct StreamCache {
+    ttl: Duration,
+    max_entries: usize,
+    inner: Mutex<CacheInner>,
+}
+
+impl StreamCache {
+    fn new(ttl: Duration, max_entries: usize) -> Self {
+        Self {
+            ttl,
+            max_entries,
+            inner: Mutex::new(CacheInner { entries: HashMap::new(), in_flight: HashSet::new() }),
+        }
+    }
+
+    /// Flux préchargé encore valable, sinon `None`.
+    fn get(&self, kind: PrefetchKind, url: &str) -> Option<ResolvedStream> {
+        let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let key = (kind, url.to_string());
+        match inner.entries.get(&key) {
+            Some((stream, at)) if at.elapsed() < self.ttl => Some(stream.clone()),
+            Some(_) => {
+                inner.entries.remove(&key);
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// Réserve la résolution de `url` : `false` si elle est déjà en cache ou en cours (rien à faire).
+    fn begin(&self, kind: PrefetchKind, url: &str) -> bool {
+        let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let key = (kind, url.to_string());
+        if inner.in_flight.contains(&key) {
+            return false;
+        }
+        if let Some((_, at)) = inner.entries.get(&key) {
+            if at.elapsed() < self.ttl {
+                return false;
+            }
+        }
+        inner.in_flight.insert(key);
+        true
+    }
+
+    /// Fin de la résolution (`None` = échec : rien n'est gardé, une nouvelle tentative reste possible).
+    fn finish(&self, kind: PrefetchKind, url: &str, stream: Option<ResolvedStream>) {
+        let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let key = (kind, url.to_string());
+        inner.in_flight.remove(&key);
+        let Some(stream) = stream else { return };
+        inner.entries.insert(key, (stream, Instant::now()));
+        let ttl = self.ttl;
+        inner.entries.retain(|_, (_, at)| at.elapsed() < ttl);
+        while inner.entries.len() > self.max_entries {
+            let oldest = inner.entries.iter().min_by_key(|(_, (_, at))| *at).map(|(k, _)| k.clone());
+            match oldest {
+                Some(k) => {
+                    inner.entries.remove(&k);
+                }
+                None => break,
+            }
+        }
+    }
+}
+
+/// Résolution « auto » d'une vidéo en ligne : web + PO token d'abord (haute résolution), puis la
+/// cascade de clients (≥ 720p préféré, repli basse résolution). Partagée par le chargement
+/// normal et par le préchargement : les deux obtiennent exactement le même flux.
+fn resolve_video_auto(
+    ytdlp: &Path,
+    url: &str,
+    pot_args: &[String],
+    avc: bool,
+) -> Result<ResolvedStream, String> {
+    const BASE_FORMAT_SEL: &str =
+        "bv*[height=1080]+ba/bv*[height=720]+ba/bv*[height<=1080]+ba/b[height<=1080][acodec!=none]";
+    let format_owned = if avc {
+        format!("bv*[height=1080][vcodec^=avc1]+ba/bv*[height=720][vcodec^=avc1]+ba/{BASE_FORMAT_SEL}")
+    } else {
+        BASE_FORMAT_SEL.to_string()
+    };
+    let format_sel = format_owned.as_str();
+    // 3a. web + POT
+    if !pot_args.is_empty() {
+        if let Some((video, audio)) = ytdlp_urls_owned(ytdlp, url, format_sel, pot_args) {
+            log::info!("[playback] auto : flux via web+POT (haute résolution débloquée)");
+            return Ok(ResolvedStream { video, audio });
+        }
+    }
+    // 3b. Cascade classique
+    let auto_configs: &[&[&str]] = &[
+        &["--extractor-args", "youtube:player_client=android"],
+        &["--extractor-args", "youtube:player_client=tv"],
+        &[],
+        &["--extractor-args", "youtube:player_client=ios"],
+    ];
+    let mut last_err = String::from("aucun flux extrait");
+    let mut fallback: Option<(String, Option<String>)> = None;
+    for extra in auto_configs {
+        match ytdlp_json_reason(ytdlp, url, format_sel, extra) {
+            Ok(json) => {
+                let h = json.get("height").and_then(|v| v.as_i64()).unwrap_or(0);
+                let urls = urls_from_json(&json);
+                if urls.0.is_empty() {
+                    continue;
+                }
+                if h >= 720 {
+                    log::info!("[playback] auto : {}p via client {:?}", h, extra);
+                    return Ok(ResolvedStream { video: urls.0, audio: urls.1 });
+                }
+                if fallback.is_none() {
+                    fallback = Some(urls);
+                }
+            }
+            Err(why) => {
+                log::warn!("[playback] {} en échec : {why}", client_label(extra));
+                last_err = format!("{} : {why}", client_label(extra));
+            }
+        }
+    }
+    if let Some((video, audio)) = fallback {
+        log::info!("[playback] auto : repli basse résolution");
+        return Ok(ResolvedStream { video, audio });
+    }
+    Err(format!("yt-dlp en échec : {last_err}"))
+}
+
+/// Fichier local : lit le début (en-têtes, premières secondes) et la fin (index mkv/mp4) pour que
+/// le système les garde en cache — utile sur disque dur et réseau. Borné à ~10 Mo, silencieux.
+fn warm_local_file(path: &str) {
+    use std::io::{Read, Seek, SeekFrom};
+    const HEAD: u64 = 8 << 20;
+    const TAIL: u64 = 2 << 20;
+    let Ok(mut file) = std::fs::File::open(path) else { return };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut buf = vec![0u8; 1 << 20];
+    let mut left = HEAD;
+    while left > 0 {
+        match file.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => left = left.saturating_sub(n as u64),
+        }
+    }
+    if len > HEAD + TAIL && file.seek(SeekFrom::Start(len - TAIL)).is_ok() {
+        let mut left = TAIL;
+        while left > 0 {
+            match file.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => left = left.saturating_sub(n as u64),
+            }
+        }
+    }
+}
+
+// ---- Préchargement du média suivant (fin) ----
+
+// ---- yt-dlp : raisons d'échec et extraction audio seul (début) ----
+
+/// Raison lisible de l'échec d'un yt-dlp : sa ligne `ERROR:` (sinon la dernière ligne de
+/// stderr), tronquée. C'est elle qui dit POURQUOI (« Sign in to confirm you're not a bot »,
+/// « Requested format is not available », « Video unavailable »…) — jetée, on ne voit qu'un
+/// « extraction échouée » qui ne permet aucun diagnostic.
+fn ytdlp_failure_reason(stderr: &[u8], code: Option<i32>) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let line = lines
+        .iter()
+        .rev()
+        .find(|l| l.starts_with("ERROR:"))
+        .or_else(|| lines.last());
+    match line {
+        Some(l) => l.chars().take(300).collect(),
+        None => match code {
+            Some(c) => format!("yt-dlp a quitté avec le code {c} sans message"),
+            None => "yt-dlp interrompu".to_string(),
+        },
+    }
+}
+
+/// Exécute yt-dlp `-J -f <sel>` : le JSON décrit, ou la raison de l'échec.
+fn ytdlp_json_reason(
     ytdlp: &Path,
     url: &str,
     format_sel: &str,
     extra: &[&str],
-) -> Option<serde_json::Value> {
+) -> Result<serde_json::Value, String> {
     let mut cmd = std::process::Command::new(ytdlp);
     cmd.args(["-J", "-f", format_sel, "--no-warnings"]);
     cmd.args(extra);
     cmd.arg(url);
     #[cfg(windows)]
     cmd.creation_flags(0x08000000);
-    let output = cmd.output().ok()?;
+    let output = cmd
+        .output()
+        .map_err(|e| format!("yt-dlp n'a pas pu démarrer : {e}"))?;
     if !output.status.success() {
-        return None;
+        return Err(ytdlp_failure_reason(&output.stderr, output.status.code()));
     }
-    serde_json::from_slice(&output.stdout).ok()
+    serde_json::from_slice(&output.stdout).map_err(|_| "réponse de yt-dlp illisible".to_string())
 }
+
+/// Exécute yt-dlp `-J -f <sel>` et renvoie le JSON décrit.
+fn ytdlp_json(
+    ytdlp: &Path,
+    url: &str,
+    format_sel: &str,
+    extra: &[&str],
+) -> Option<serde_json::Value> {
+    ytdlp_json_reason(ytdlp, url, format_sel, extra).ok()
+}
+
+/// Libellé du client YouTube d'une configuration de la cascade (pour les messages d'erreur).
+fn client_label(extra: &[&str]) -> String {
+    extra
+        .get(1)
+        .and_then(|a| a.strip_prefix("youtube:player_client="))
+        .map(|c| format!("client {c}"))
+        .unwrap_or_else(|| "client web".to_string())
+}
+
+/// Lecture AUDIO SEUL (AetherFy Musique) : meilleure piste audio, opus de préférence. Aucun
+/// besoin de flux vidéo ni de hauteur d'image — le sélecteur vidéo (1080p/720p) échouait pour
+/// une piste musicale sans format vidéo correspondant.
+const AUDIO_ONLY_FORMAT: &str = "ba[acodec^=opus]/ba/bestaudio/b";
+
+/// URL du flux audio d'une piste. Essaie web + PO token (si disponible), web, puis les clients
+/// tv, android et ios ; en cas d'échec général, l'erreur reprend la VRAIE raison de yt-dlp.
+fn extract_audio_url(ytdlp: &Path, url: &str, pot_args: &[String]) -> Result<String, String> {
+    let pot: Vec<&str> = pot_args.iter().map(String::as_str).collect();
+    let mut attempts: Vec<(&str, Vec<&str>)> = Vec::new();
+    if !pot.is_empty() {
+        attempts.push(("web + PO token", pot));
+    }
+    attempts.push(("web", vec![]));
+    attempts.push(("tv", vec!["--extractor-args", "youtube:player_client=tv"]));
+    attempts.push(("android", vec!["--extractor-args", "youtube:player_client=android"]));
+    attempts.push(("ios", vec!["--extractor-args", "youtube:player_client=ios"]));
+
+    let mut reasons: Vec<String> = Vec::new();
+    for (name, extra) in &attempts {
+        match ytdlp_json_reason(ytdlp, url, AUDIO_ONLY_FORMAT, extra) {
+            Ok(json) => {
+                let (audio, _) = urls_from_json(&json);
+                if !audio.is_empty() {
+                    log::info!("[playback] audio seul : flux obtenu via {name}");
+                    return Ok(audio);
+                }
+                log::warn!("[playback] audio seul : {name} n'a renvoyé aucune URL");
+                reasons.push("aucune URL audio dans la réponse".to_string());
+            }
+            Err(why) => {
+                log::warn!("[playback] audio seul : {name} en échec : {why}");
+                reasons.push(why);
+            }
+        }
+    }
+    let mut unique: Vec<String> = Vec::new();
+    for r in reasons {
+        if !unique.contains(&r) {
+            unique.push(r);
+        }
+    }
+    Err(format!("yt-dlp en échec : {}", unique.join(" | ")))
+}
+
+// ---- yt-dlp : raisons d'échec et extraction audio seul (fin) ----
 
 /// 0.5.2 : variant owned pour les args POT (qui sont des String).
 fn ytdlp_json_owned(
@@ -2243,6 +2595,20 @@ pub fn player_load_url_quality(
     state.playback_engine.handle()?.load_url_quality(&url, height)
 }
 
+/// Préchargement du média suivant (voir `PlaybackEngineHandle::prefetch`). Retourne tout de
+/// suite : le travail se fait sur un fil de travail, sans geler la fenêtre ni la lecture en cours.
+#[tauri::command]
+pub async fn player_prefetch(
+    state: tauri::State<'_, crate::state::AppState>,
+    path: String,
+    audio: bool,
+) -> Result<(), String> {
+    let engine = state.playback_engine.handle()?.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.prefetch(&path, audio))
+        .await
+        .map_err(|e| format!("Préchargement interrompu : {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{build_audio_filter, CinemaLevel, SpatialLevel};
@@ -2305,5 +2671,365 @@ mod tests {
         // Un seul limiteur, une seule enveloppe lavfi.
         assert_eq!(both.matches("alimiter=").count(), 1);
         assert_eq!(both.matches("lavfi=[").count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod ytdlp_tests {
+    use super::*;
+
+    #[test]
+    fn la_raison_est_la_ligne_error_de_yt_dlp() {
+        let stderr = b"WARNING: [youtube] Zp-6RiFtW_0: no JS runtime\nERROR: [youtube] Zp-6RiFtW_0: Sign in to confirm you're not a bot\nHint: use cookies\n";
+        assert_eq!(
+            ytdlp_failure_reason(stderr, Some(1)),
+            "ERROR: [youtube] Zp-6RiFtW_0: Sign in to confirm you're not a bot"
+        );
+    }
+
+    #[test]
+    fn sans_ligne_error_la_derniere_ligne_est_retenue() {
+        assert_eq!(ytdlp_failure_reason(b"first\n\n  derniere ligne  \n", Some(2)), "derniere ligne");
+    }
+
+    #[test]
+    fn sans_aucun_message_le_code_de_sortie_est_indique() {
+        assert_eq!(ytdlp_failure_reason(b"", Some(1)), "yt-dlp a quitté avec le code 1 sans message");
+        assert_eq!(ytdlp_failure_reason(b"  \n", None), "yt-dlp interrompu");
+    }
+
+    #[test]
+    fn une_raison_trop_longue_est_tronquee() {
+        let stderr = format!("ERROR: {}", "x".repeat(1000));
+        assert_eq!(ytdlp_failure_reason(stderr.as_bytes(), Some(1)).chars().count(), 300);
+    }
+
+    #[test]
+    fn le_libelle_du_client_vient_de_la_configuration() {
+        assert_eq!(client_label(&["--extractor-args", "youtube:player_client=ios"]), "client ios");
+        assert_eq!(client_label(&[]), "client web");
+    }
+
+    #[test]
+    fn l_audio_seul_est_extrait_d_un_json_sans_flux_fusionnes() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"url":"https://rr1.example/audio.webm","vcodec":"none"}"#).unwrap();
+        assert_eq!(urls_from_json(&json), ("https://rr1.example/audio.webm".to_string(), None));
+    }
+
+    /// Faux yt-dlp (script shell) : permet de tester la cascade sans réseau.
+    #[cfg(unix)]
+    mod faux_yt_dlp {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        struct Faux {
+            script: std::path::PathBuf,
+            journal: std::path::PathBuf,
+        }
+
+        impl Faux {
+            /// `succes_si` : motif d'arguments pour lequel le script réussit (vide = jamais).
+            fn new(nom: &str, succes_si: &str, sortie_json: &str) -> Faux {
+                let dir = std::env::temp_dir().join(format!("avm-faux-ytdlp-{}-{nom}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                let script = dir.join("yt-dlp");
+                let journal = dir.join("appels.log");
+                let motif = if succes_si.is_empty() { "__jamais__".to_string() } else { succes_si.to_string() };
+                let contenu = format!(
+                    "#!/bin/sh\necho \"$*\" >> '{journal}'\ncase \"$*\" in\n  *{motif}*) echo '{sortie_json}'; exit 0;;\n  *) echo 'WARNING: bruit' >&2; echo \"ERROR: [youtube] abc: Sign in to confirm you're not a bot\" >&2; exit 1;;\nesac\n",
+                    journal = journal.display()
+                );
+                std::fs::write(&script, contenu).unwrap();
+                std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+                Faux { script, journal }
+            }
+            fn appels(&self) -> Vec<String> {
+                std::fs::read_to_string(&self.journal).unwrap_or_default().lines().map(String::from).collect()
+            }
+        }
+
+        const AUDIO: &str = r#"{"url":"https://rr1.example/audio.webm","vcodec":"none","acodec":"opus"}"#;
+
+        #[test]
+        fn la_cascade_passe_au_client_suivant_et_demande_de_l_audio_seul() {
+            let faux = Faux::new("cascade", "player_client=tv", AUDIO);
+            let url = extract_audio_url(&faux.script, "https://www.youtube.com/watch?v=abc", &[]).unwrap();
+            assert_eq!(url, "https://rr1.example/audio.webm");
+            let appels = faux.appels();
+            assert_eq!(appels.len(), 2, "web puis tv : {appels:?}");
+            assert!(appels[0].contains("-f ba[acodec^=opus]/ba/bestaudio/b"), "{}", appels[0]);
+            assert!(!appels[0].contains("player_client"), "web d'abord : {}", appels[0]);
+            assert!(appels[1].contains("youtube:player_client=tv"), "{}", appels[1]);
+            assert!(!appels.iter().any(|a| a.contains("height")), "aucun sélecteur vidéo");
+        }
+
+        #[test]
+        fn le_premier_client_qui_reussit_arrete_la_cascade() {
+            let faux = Faux::new("premier", "-J", AUDIO);
+            extract_audio_url(&faux.script, "https://www.youtube.com/watch?v=abc", &[]).unwrap();
+            assert_eq!(faux.appels().len(), 1);
+        }
+
+        #[test]
+        fn le_po_token_est_essaye_en_premier_quand_il_est_disponible() {
+            let faux = Faux::new("pot", "-J", AUDIO);
+            let pot = vec!["--extractor-args".to_string(), "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416".to_string()];
+            extract_audio_url(&faux.script, "https://www.youtube.com/watch?v=abc", &pot).unwrap();
+            assert!(faux.appels()[0].contains("youtubepot-bgutilhttp"), "{:?}", faux.appels());
+        }
+
+        #[test]
+        fn si_tout_echoue_l_erreur_donne_la_vraie_raison_une_seule_fois() {
+            let faux = Faux::new("echec", "", AUDIO);
+            let err = extract_audio_url(&faux.script, "https://www.youtube.com/watch?v=abc", &[]).unwrap_err();
+            assert_eq!(
+                err,
+                "yt-dlp en échec : ERROR: [youtube] abc: Sign in to confirm you're not a bot"
+            );
+            assert_eq!(faux.appels().len(), 4, "web, tv, android, ios");
+        }
+
+        #[test]
+        fn une_reponse_sans_url_est_signalee() {
+            let faux = Faux::new("sans-url", "-J", r#"{"title":"x"}"#);
+            let err = extract_audio_url(&faux.script, "https://www.youtube.com/watch?v=abc", &[]).unwrap_err();
+            assert_eq!(err, "yt-dlp en échec : aucune URL audio dans la réponse");
+        }
+
+        #[test]
+        fn un_yt_dlp_introuvable_donne_un_message_clair() {
+            let err = extract_audio_url(std::path::Path::new("/nulle/part/yt-dlp"), "https://www.youtube.com/watch?v=abc", &[]).unwrap_err();
+            assert!(err.starts_with("yt-dlp en échec : yt-dlp n'a pas pu démarrer"), "{err}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    fn src(v: &str) -> Option<(String, Option<String>)> {
+        Some((v.to_string(), None))
+    }
+
+    #[test]
+    fn ecran_noir_d_origine_le_chargement_precede_l_attache_on_recharge_la_source_courante() {
+        // Le média est chargé AVANT l'attache (epoch inchangé) : le VO a pu démarrer sans contexte.
+        assert_eq!(
+            corrective_reload_decision(4, 4, src("ep1.mkv")),
+            CorrectiveReload::Reload { video: "ep1.mkv".into(), audio: None }
+        );
+    }
+
+    #[test]
+    fn episode_suivant_le_chargement_suit_l_attache_aucun_rechargement_de_l_ancienne_source() {
+        // Scénario du bug : « suivant » → la surface se rattache (source encore = ép. 1) puis
+        // l'ép. 2 est chargé (epoch + 1) pendant les 300 ms. L'ép. 1 ne doit PAS revenir.
+        assert!(matches!(
+            corrective_reload_decision(4, 5, src("ep2.mkv")),
+            CorrectiveReload::Skip(_)
+        ));
+        // Même après plusieurs chargements successifs (suivant, suivant, précédent…).
+        assert!(matches!(corrective_reload_decision(4, 7, src("ep2.mkv")), CorrectiveReload::Skip(_)));
+    }
+
+    #[test]
+    fn la_source_rechargee_est_toujours_celle_d_apres_le_delai() {
+        // Aucun nouveau chargement mais la source a changé (ex. flux extrait) : on prend la courante.
+        let d = corrective_reload_decision(2, 2, Some(("video.m3u8".into(), Some("audio.m4a".into()))));
+        assert_eq!(
+            d,
+            CorrectiveReload::Reload { video: "video.m3u8".into(), audio: Some("audio.m4a".into()) }
+        );
+    }
+
+    #[test]
+    fn sans_source_rien_n_est_recharge() {
+        assert!(matches!(corrective_reload_decision(0, 0, None), CorrectiveReload::Skip(_)));
+    }
+}
+
+#[cfg(test)]
+mod prefetch_tests {
+    use super::*;
+
+    fn stream(v: &str) -> ResolvedStream {
+        ResolvedStream { video: v.to_string(), audio: None }
+    }
+
+    #[test]
+    fn un_flux_prefetche_est_retrouve_et_ne_est_pas_demande_deux_fois() {
+        let cache = StreamCache::new(Duration::from_secs(60), 4);
+        assert_eq!(cache.get(PrefetchKind::Video, "u"), None);
+        assert!(cache.begin(PrefetchKind::Video, "u"), "première réservation");
+        assert!(!cache.begin(PrefetchKind::Video, "u"), "déjà en cours : pas de seconde extraction");
+        cache.finish(PrefetchKind::Video, "u", Some(stream("flux")));
+        assert_eq!(cache.get(PrefetchKind::Video, "u"), Some(stream("flux")));
+        assert!(!cache.begin(PrefetchKind::Video, "u"), "déjà en cache : rien à refaire");
+        // Un flux n'est pas consommé : « précédent » puis « suivant » ne réextraient pas.
+        assert_eq!(cache.get(PrefetchKind::Video, "u"), Some(stream("flux")));
+    }
+
+    #[test]
+    fn un_echec_n_est_pas_garde_et_une_nouvelle_tentative_reste_possible() {
+        let cache = StreamCache::new(Duration::from_secs(60), 4);
+        assert!(cache.begin(PrefetchKind::Audio, "u"));
+        cache.finish(PrefetchKind::Audio, "u", None);
+        assert_eq!(cache.get(PrefetchKind::Audio, "u"), None);
+        assert!(cache.begin(PrefetchKind::Audio, "u"), "l'échec ne bloque pas le prochain essai");
+    }
+
+    #[test]
+    fn video_et_musique_sont_prechargees_separement() {
+        let cache = StreamCache::new(Duration::from_secs(60), 4);
+        cache.begin(PrefetchKind::Video, "u");
+        cache.finish(PrefetchKind::Video, "u", Some(ResolvedStream { video: "v.mp4".into(), audio: Some("a.m4a".into()) }));
+        // La même adresse n'est PAS prête côté Musique : autre extraction (audio seul).
+        assert_eq!(cache.get(PrefetchKind::Audio, "u"), None);
+        assert!(cache.begin(PrefetchKind::Audio, "u"));
+        cache.finish(PrefetchKind::Audio, "u", Some(stream("audio-seul")));
+        assert_eq!(cache.get(PrefetchKind::Audio, "u"), Some(stream("audio-seul")));
+        assert_eq!(cache.get(PrefetchKind::Video, "u").unwrap().audio.as_deref(), Some("a.m4a"));
+    }
+
+    #[test]
+    fn un_flux_trop_ancien_expire() {
+        let cache = StreamCache::new(Duration::from_millis(40), 4);
+        cache.begin(PrefetchKind::Video, "u");
+        cache.finish(PrefetchKind::Video, "u", Some(stream("flux")));
+        assert!(cache.get(PrefetchKind::Video, "u").is_some());
+        std::thread::sleep(Duration::from_millis(80));
+        assert_eq!(cache.get(PrefetchKind::Video, "u"), None, "URL périmée : jamais servie");
+        assert!(cache.begin(PrefetchKind::Video, "u"), "et une nouvelle résolution est permise");
+    }
+
+    #[test]
+    fn le_cache_est_borne_le_plus_ancien_est_retire() {
+        let cache = StreamCache::new(Duration::from_secs(60), 2);
+        for u in ["a", "b", "c"] {
+            cache.begin(PrefetchKind::Video, u);
+            cache.finish(PrefetchKind::Video, u, Some(stream(u)));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(cache.get(PrefetchKind::Video, "a"), None, "le plus ancien est évincé");
+        assert!(cache.get(PrefetchKind::Video, "b").is_some());
+        assert!(cache.get(PrefetchKind::Video, "c").is_some());
+    }
+
+    #[test]
+    fn rechauffer_un_fichier_absent_ou_court_ne_plante_pas() {
+        warm_local_file("/chemin/inexistant/video.mkv");
+        let dir = std::env::temp_dir().join(format!("avm-warm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let small = dir.join("petit.mkv");
+        std::fs::write(&small, vec![7u8; 1000]).unwrap();
+        warm_local_file(small.to_str().unwrap());
+        let big = dir.join("gros.mkv");
+        std::fs::write(&big, vec![1u8; 13 << 20]).unwrap();
+        warm_local_file(big.to_str().unwrap());
+        warm_local_file(dir.to_str().unwrap()); // un dossier : ignoré
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Faux yt-dlp (script shell) : réponses selon les arguments, journal des appels.
+    #[cfg(unix)]
+    mod faux_yt_dlp {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        enum Arm<'a> {
+            Ok(&'a str, &'a str),   // motif d'arguments, sortie standard
+            Fail(&'a str, &'a str), // motif d'arguments, message d'erreur
+        }
+
+        struct Faux {
+            script: std::path::PathBuf,
+            journal: std::path::PathBuf,
+        }
+
+        impl Faux {
+            fn new(nom: &str, arms: &[Arm]) -> Faux {
+                let dir = std::env::temp_dir().join(format!("avm-faux-resolve-{}-{nom}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                let script = dir.join("yt-dlp");
+                let journal = dir.join("appels.log");
+                let mut cas = String::new();
+                for arm in arms {
+                    match arm {
+                        Arm::Ok(motif, sortie) => cas.push_str(&format!("  *{motif}*) printf '%s\\n' '{sortie}'; exit 0;;\n")),
+                        Arm::Fail(motif, msg) => cas.push_str(&format!("  *{motif}*) echo 'ERROR: {msg}' >&2; exit 1;;\n")),
+                    }
+                }
+                let contenu = format!(
+                    "#!/bin/sh\necho \"$*\" >> '{j}'\ncase \"$*\" in\n{cas}  *) echo 'ERROR: rien de prévu' >&2; exit 1;;\nesac\n",
+                    j = journal.display()
+                );
+                std::fs::write(&script, contenu).unwrap();
+                std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+                Faux { script, journal }
+            }
+            fn appels(&self) -> Vec<String> {
+                std::fs::read_to_string(&self.journal).unwrap_or_default().lines().map(String::from).collect()
+            }
+        }
+
+        const POT: &str = "youtube:player-client=web,default;po_token=web.gvs+TOK";
+
+        fn pot() -> Vec<String> {
+            vec!["--extractor-args".to_string(), POT.to_string()]
+        }
+
+        const BAS: &str = r#"{"height":480,"url":"https://low/480.mp4"}"#;
+        const HAUT: &str = r#"{"height":1080,"requested_formats":[{"url":"https://hi/v.mp4","vcodec":"avc1"},{"url":"https://hi/a.m4a","vcodec":"none"}]}"#;
+
+        #[test]
+        fn la_voie_po_token_est_prioritaire_et_evite_la_cascade() {
+            let faux = Faux::new("pot", &[Arm::Ok("po_token", "https://pot/v.mp4\nhttps://pot/a.m4a")]);
+            let r = resolve_video_auto(&faux.script, "https://youtu.be/x", &pot(), false).unwrap();
+            assert_eq!(r, ResolvedStream { video: "https://pot/v.mp4".into(), audio: Some("https://pot/a.m4a".into()) });
+            assert_eq!(faux.appels().len(), 1, "un seul appel : {:?}", faux.appels());
+        }
+
+        #[test]
+        fn la_cascade_prefere_720p_ou_plus_et_s_arrete_au_premier_client_qui_le_donne() {
+            let faux = Faux::new(
+                "cascade",
+                &[Arm::Ok("player_client=android", BAS), Arm::Ok("player_client=tv", HAUT)],
+            );
+            let r = resolve_video_auto(&faux.script, "https://youtu.be/x", &[], false).unwrap();
+            assert_eq!(r.video, "https://hi/v.mp4");
+            assert_eq!(r.audio.as_deref(), Some("https://hi/a.m4a"));
+            let appels = faux.appels();
+            assert_eq!(appels.len(), 2, "android (480p) puis tv (1080p) : {appels:?}");
+            assert!(appels[0].contains("player_client=android") && appels[1].contains("player_client=tv"));
+        }
+
+        #[test]
+        fn repli_basse_resolution_quand_aucun_client_ne_depasse_480p() {
+            let faux = Faux::new("repli", &[Arm::Ok("-J", BAS)]);
+            let r = resolve_video_auto(&faux.script, "https://youtu.be/x", &[], false).unwrap();
+            assert_eq!(r, ResolvedStream { video: "https://low/480.mp4".into(), audio: None });
+            assert_eq!(faux.appels().len(), 4, "les 4 clients sont essayés avant le repli");
+        }
+
+        #[test]
+        fn un_echec_general_donne_la_vraie_raison() {
+            let faux = Faux::new("echec", &[Arm::Fail("-J", "[youtube] x: Sign in to confirm you are not a bot")]);
+            let err = resolve_video_auto(&faux.script, "https://youtu.be/x", &[], false).unwrap_err();
+            assert_eq!(err, "yt-dlp en échec : client ios : ERROR: [youtube] x: Sign in to confirm you are not a bot");
+        }
+
+        #[test]
+        fn le_filtre_avc_est_demande_quand_il_est_active() {
+            let faux = Faux::new("avc", &[Arm::Ok("-J", HAUT)]);
+            resolve_video_auto(&faux.script, "https://youtu.be/x", &[], true).unwrap();
+            assert!(faux.appels()[0].contains("vcodec^=avc1"), "{:?}", faux.appels());
+            let faux2 = Faux::new("sans-avc", &[Arm::Ok("-J", HAUT)]);
+            resolve_video_auto(&faux2.script, "https://youtu.be/x", &[], false).unwrap();
+            assert!(!faux2.appels()[0].contains("avc1]+ba/bv*[height=720][vcodec"), "{:?}", faux2.appels());
+        }
     }
 }

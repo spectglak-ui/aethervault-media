@@ -37,6 +37,8 @@ pub fn save_progress(
     // générique de fin (voir `domain::watch_state`), qui pose aussi le statut
     // « En cours » / « Vu » du média. Un média terminé n'a plus de position de
     // reprise : le prochain clic repart du début.
+    // « Vu » est posé 15 minutes avant la fin (`Verdict::Seen`) : le statut change mais la
+    // position est conservée — seule la vraie fin (`Verdict::Completed`) l'efface.
     let verdict = watch_state::record_progress(
         &conn,
         profile_id,

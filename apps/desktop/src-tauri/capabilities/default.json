@@ -27,6 +27,11 @@
     "core:event:allow-unlisten",
     "core:app:default",
     "core:webview:default",
-    "dialog:default"
+    "dialog:default",
+    "opener:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://**" }, { "url": "http://**" }]
+    }
   ]
 }

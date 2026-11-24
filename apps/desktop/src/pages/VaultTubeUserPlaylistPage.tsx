@@ -12,6 +12,8 @@ import { usePlayer } from "../player/PlayerContext";
 import { formatDuration } from "./VaultTubeVideoGrid";
 import { VaultTubeTrackList } from "./VaultTubeTrackList";
 import "./pages.css";
+import { useGoBack } from "../hooks/useGoBack";
+import { artistFromChannel } from "../features/vaulttube/artist";
 
 const rowBtn: CSSProperties = {
   background: "transparent",
@@ -48,6 +50,10 @@ export function VaultTubeUserPlaylistPage() {
     refresh();
   }, [refresh]);
 
+  // Retour : page précédente, sinon l'accueil de l'espace (Musique ou Vidéo) de la playlist.
+  const home = playlist?.mode === "audio" ? "/vaulttube/music" : "/vaulttube/video";
+  const goBack = useGoBack(home);
+
   const handlePlayFrom = (index: number) => {
     const queue = items.map((it, i) => ({
       id: it.id || i + 1,
@@ -77,17 +83,10 @@ export function VaultTubeUserPlaylistPage() {
     refresh();
   };
 
-  const handleToggleMode = async () => {
-    if (!playlist) return;
-    const next = playlist.mode === "audio" ? "video" : "audio";
-    await vaultTubeApi.setUserPlaylistMode(playlist.id, next);
-    refresh();
-  };
-
   const handleDeletePlaylist = async () => {
     if (!window.confirm(`Supprimer la playlist « ${playlist?.name ?? ""} » ?`)) return;
     await vaultTubeApi.deleteUserPlaylist(Number(id));
-    navigate("/vaulttube");
+    navigate(home);
   };
 
   const isAudio = playlist?.mode === "audio";
@@ -95,9 +94,9 @@ export function VaultTubeUserPlaylistPage() {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
-        <Button variant="secondary" onClick={() => navigate("/vaulttube")}>
+        <Button variant="secondary" onClick={goBack}>
           <ArrowLeft size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
-          AetherFy
+          Retour
         </Button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 20, fontWeight: 700 }}>{playlist?.name ?? "…"}</div>
@@ -105,25 +104,6 @@ export function VaultTubeUserPlaylistPage() {
             {items.length} vidéo(s) — playlist locale
           </div>
         </div>
-        <button
-          onClick={() => void handleToggleMode()}
-          title={isAudio ? "Basculer en mode vidéo" : "Basculer en mode musique"}
-          style={{
-            padding: "7px 12px",
-            borderRadius: 999,
-            border: "1px solid #2a2a32",
-            background: isAudio ? "rgba(29,185,84,.15)" : "transparent",
-            color: isAudio ? "#1db954" : "var(--color-text-muted, #9a9aa3)",
-            fontSize: 12,
-            cursor: "pointer",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-          }}
-        >
-          {isAudio ? <Music size={13} /> : <Video size={13} />}
-          {isAudio ? "Musique" : "Vidéo"}
-        </button>
         <Button onClick={() => handlePlayFrom(0)} disabled={items.length === 0}>
           <Play size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
           Tout lire
@@ -149,7 +129,7 @@ export function VaultTubeUserPlaylistPage() {
           items={items.map((it) => ({
             key: it.id,
             title: it.title,
-            subtitle: it.channel,
+            subtitle: artistFromChannel(it.channel),
             thumbnailUrl: it.thumbnail_url ?? `https://i.ytimg.com/vi/${it.youtube_id}/hqdefault.jpg`,
             durationSeconds: it.duration_seconds,
           }))}
@@ -228,8 +208,8 @@ export function VaultTubeUserPlaylistPage() {
                 {it.title}
               </div>
               <div style={{ fontSize: 11, color: "var(--color-text-muted, #9a9aa3)", marginTop: 2 }}>
-                {it.channel ?? ""}
-                {it.channel && it.duration_seconds !== null ? " · " : ""}
+                {artistFromChannel(it.channel) ?? ""}
+                {artistFromChannel(it.channel) && it.duration_seconds !== null ? " · " : ""}
                 {formatDuration(it.duration_seconds)}
               </div>
             </div>

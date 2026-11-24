@@ -4,6 +4,20 @@ use crate::services::metadata::tmdb::{self, MetadataSettings};
 use crate::services::playback_engine::{CinemaLevel, SpatialLevel};
 use crate::state::AppState;
 
+/// Scan automatique des bibliothèques (Films, Séries, Anime, Documentaires) quand de nouveaux
+/// fichiers apparaissent dans leurs dossiers — activé par défaut (voir `services::auto_scan`).
+#[tauri::command]
+pub fn get_auto_scan_enabled(state: tauri::State<AppState>) -> Result<bool, String> {
+    let conn = state.get_conn()?;
+    Ok(crate::services::auto_scan::is_enabled(&conn))
+}
+
+#[tauri::command]
+pub fn set_auto_scan_enabled(state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
+    let conn = state.get_conn()?;
+    crate::services::auto_scan::set_enabled(&conn, enabled).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_metadata_settings(state: tauri::State<AppState>) -> Result<MetadataSettings, String> {
     let conn = state.get_conn()?;

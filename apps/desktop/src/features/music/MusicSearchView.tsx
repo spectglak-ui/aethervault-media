@@ -85,6 +85,8 @@ interface MusicSearchViewProps {
   query: string;
   /** Suit une playlist (dans les abonnements de la page Musique) ; `true` si ajoutée. */
   onFollow: (url: string) => Promise<boolean>;
+  /** Playlists déjà suivies dans Musique (identifiants YouTube) : affichées « Suivie ». */
+  followedPlaylistIds?: ReadonlySet<string>;
 }
 
 /**
@@ -93,7 +95,7 @@ interface MusicSearchViewProps {
  * Titres, albums et artistes viennent du catalogue (MusicBrainz) ; playlists,
  * livres audio et vidéos de YouTube.
  */
-export function MusicSearchView({ query, onFollow }: MusicSearchViewProps) {
+export function MusicSearchView({ query, onFollow, followedPlaylistIds }: MusicSearchViewProps) {
   const navigate = useNavigate();
   const { playQueue } = usePlayer();
   const { play: playTrack, busyId, error: playError } = usePlayTrack();
@@ -256,14 +258,14 @@ export function MusicSearchView({ query, onFollow }: MusicSearchViewProps) {
         {get("playlists")
           .slice(0, limit)
           .map((r) => {
-            const isFollowed = followed.has(r.url);
+            const isFollowed = followed.has(r.url) || (followedPlaylistIds?.has(r.id) ?? false);
             return (
               <div
                 key={r.id}
                 className="avm-ms-web"
                 role="button"
                 tabIndex={0}
-                onClick={() => navigate(`/vaulttube/playlist/${r.id}`)}
+                onClick={() => navigate(`/vaulttube/playlist/${r.id}?mode=audio`)}
               >
                 <span className="avm-ms-web__thumb">
                   {r.thumbnail_url ? (
