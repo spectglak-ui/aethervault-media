@@ -4,344 +4,128 @@
 
 ![AetherVault Media](https://github.com/user-attachments/assets/7e06c1df-64e5-432f-8955-c7d7f95c328f)
 
-**Centre multimédia personnel, local-first, entièrement contrôlé par vous**
+**Votre médiathèque personnelle, locale et sous votre contrôle**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.txt)
-[![Rust](https://img.shields.io/badge/Backend-Rust%201.77%2B-CE422B?logo=rust)](https://www.rust-lang.org/)
-[![TypeScript](https://img.shields.io/badge/Frontend-TypeScript%205-3178C6?logo=typescript)](https://www.typescriptlang.org/)
+[![Licence MIT](https://img.shields.io/badge/Licence-MIT-yellow.svg)](LICENSE.txt)
+[![Rust](https://img.shields.io/badge/Backend-Rust-CE422B?logo=rust)](https://www.rust-lang.org/)
+[![TypeScript](https://img.shields.io/badge/Frontend-TypeScript-3178C6?logo=typescript)](https://www.typescriptlang.org/)
 [![Tauri](https://img.shields.io/badge/Framework-Tauri%202-FFC131?logo=tauri)](https://tauri.app/)
 
-[Caractéristiques](#-caractéristiques) • [Installation](#-installation) • [Architecture](#-architecture) • [Contribution](#-contribution)
+[Découvrir les fonctionnalités](#fonctionnalités) · [Installer](#installation) · [Architecture](#architecture) · [Contribuer](#contribuer)
 
 </div>
 
 ---
 
-## À propos
+## Présentation
 
-**AetherVault Media** est une application de bureau moderne combinant la puissance d'un lecteur vidéo professionnel avec l'expérience d'une médiathèque contemporaine. Gérez votre bibliothèque locale de films, séries, anime, manga et bien plus — totalement hors ligne, chiffrée et sous votre contrôle.
+**AetherVault Media** est une application multimédia de bureau conçue pour organiser et consulter une bibliothèque personnelle depuis votre appareil. Elle associe une interface React à un backend Rust/Tauri et stocke les données de l’application localement.
 
-- **Local-First** : Aucun compte, aucun cloud, aucune dépendance réseau
-- **Chiffrement intégral** : Section privée protégée en AES-256-GCM
-- **Haute performance** : Lecteur basé sur libmpv avec rendu OpenGL optimisé
-- **Multiplateforme** : Windows, Linux, macOS (Tauri)
-- **Bibliothèque universelle** : films, séries, anime, documentaires, livre, TV
-- **Open Source** : MIT License
+- Bibliothèque pour films, séries, anime, documentaires et contenus de lecture
+- Profils et suivi de progression
+- Lecteurs vidéo, audio et de lecture numérique
+- Coffre privé avec données chiffrées
+- Métadonnées enrichies par des services externes configurables
+- Application multiplateforme : Windows, macOS et Linux
 
-**Version actuelle** : 0.7.9 « Orbite »
+**Version de l’application : 0.8.1**
 
-### 🌐 Site web
-Découvrez le projet en détail : **[aethervault-website](https://spectglak-ui.github.io/aethervault-website/#/)**
+[Site du projet](https://spectglak-ui.github.io/aethervault-website/#/) · [Documentation technique](docs/AetherVault-Media-Documentation-Technique.md) · [Changelog](CHANGELOG.md)
 
----
+## Fonctionnalités
 
-## ✨ Caractéristiques
+### Bibliothèque et découverte
 
-### 📚 Gestion de bibliothèque avancée
-- Catalogue public multi-catégories : films, séries, anime, documentaires, manga, webtoons, BD et romans
-- **Détection automatique** des saisons, épisodes et tomes
-- **Coffre privé chiffré** : vidéos, galeries d'images et bibliothèques de lecture en AES-256-GCM
-- Métadonnées enrichies via TMDB, OpenLibrary et sources locales : affiches, synopsis, genres, auteurs, éditeurs, dates de publication
-- **Profils multi-utilisateurs** avec authentification et intro animée
-- **Watcher automatique** : détecte les nouveaux fichiers en temps réel
+- Catégories et collections pour les médias et les contenus de lecture
+- Détection et organisation des saisons, épisodes, tomes et chapitres
+- Recherche avec filtres et collections intelligentes
+- Importation et surveillance des dossiers pour repérer les nouveaux fichiers
+- Métadonnées et illustrations issues de sources en ligne ou locales
 
-### 📖 Lecture numérique et bandes dessinées
-- Support des catégories de lecture : **Manga**, **Webtoon**, **BD**, **Roman**, **Comics** et **Livres numériques**
-- Gestion des **séries, tomes, chapitres, volumes et épisodes** avec indexation automatique
-- **Progression de lecture** par page, chapitre ou volume, mémorisée localement
-- Suivi visuel des titres lus, en cours et à terminer
-- Navigation facilitée par **auteur, éditeur, genre, série, année, statut de lecture**
-- Interface optimisée pour les formats à lecture verticale, horizontale et paginée
-- Présentation élégante des couvertures, résumés et métadonnées de collection
+### Lecture
 
-### 🎬 Lecteur multimédia haute performance
-- Moteur **libmpv** intégré avec support FFmpeg complet
-- Rendu **OpenGL headless** avec accélération matérielle multiplateforme
-- 4 presets de post-traitement : Standard, Netteté, Couleurs vives, Anime4K-lite
-- Modes de lecture : plein écran, fenêtre flottante, interface intégrée
-- Informations techniques en direct : résolution, codecs, langues audio/sous-titres
+- Lecture vidéo avec le moteur libmpv et accélération matérielle lorsqu’elle est disponible
+- Lecture audio et formats de lecture numérique
+- Reprise de lecture et suivi de progression par profil
+- Fenêtre de lecteur séparée et mode image dans l’image selon le lecteur
 
-### 🔍 Recherche intelligente et collections automatiques
-- **Recherche avancée** dans la barre globale : texte libre (titre, acteur, réalisateur, saga) et filtres — type de média, genre, année, acteur, réalisateur, saga, résolution, codec, langue — avec compteurs et résultats en direct
-- **Filtres sur chaque page de catégorie** (Films, Séries, Animés, Documentaires) avec compteurs en temps réel
-- **Collections intelligentes** automatiques : sagas (TMDB), genres, réalisateurs, acteurs, studios, décennies, qualité d'image, mieux notés
-- Fonds d'écran dynamiques : bannières TMDB automatiquement appliquées
+> La disponibilité de certaines fonctions vidéo dépend de libmpv et des capacités de la plateforme. Consultez la section [Prérequis](#prérequis).
 
-### 🎨 Interface utilisateur moderne
-- Accueil v2 avec héro à la une et rangées Netflix-style
-- Fenêtre frameless avec draggable sans barre de titre native
-- Thème sombre cohérent avec scrollbars personnalisées
-- Animations fluides via Framer Motion
-- **Sons d'interface** doux et discrets (clics, interrupteurs, navigation, confirmations), réglables : volume, survol, signature de connexion — synthétisés par script, aucun échantillon externe
-- **Thème Transparent personnalisable** : couleur d'accentuation, teinte et opacité du fond, des panneaux et de la barre latérale, ambiances prêtes à l'emploi
-- **Bande-annonce dans le héro de l'accueil** (option, désactivée par défaut) à la place de la bannière
-- Maximisée au démarrage pour expérience immersive
+### Confidentialité et sécurité
 
-### 🔐 Partage sécurisé
-- Partage via code : invitez d'autres utilisateurs
-- Chiffrement bout-à-bout : SHA-256 + AES-256-GCM
-- Support UPnP optionnel pour LAN (configurable)
-- Isolation réseau : zéro exposition non contrôlée
+- Application de bureau locale, sans compte de service obligatoire
+- Coffre privé chiffré avec Argon2id et AES-256-GCM
+- Métadonnées EXIF GPS exclues lors du traitement des images
+- Les services de métadonnées en ligne nécessitent une connexion lorsqu’ils sont utilisés
 
-### 🖼️ Galeries d'images privées
-- Stockage chiffré en AES-256-GCM (jamais en clair sur disque)
-- Formats supportés : JPEG, PNG, WebP, GIF, BMP, TIFF
-- Métadonnées EXIF préservées (GPS volontairement exclu)
-- Scan parallélisé ultra-rapide avec Rayon (multi-cœurs)
+## Prérequis
 
-### ⚡ Performance et sécurité
-- Vignettes d'aperçu automatiques (~1s par épisode)
-- SQLite bundled : zéro configuration
-- **100 % Rust** : rustls, aucune dépendance C non contrôlée
-- Chiffrement du coffre : Argon2id (KDF) + AES-256-GCM
-- Panic safety : isolation des panics sur fichiers pathologiques
+- **Rust** 1.77 ou plus récent
+- **Node.js** 20 LTS ou plus récent
+- **pnpm** 9 (`corepack enable` peut être utilisé pour l’activer)
+- Les outils de compilation natifs requis par Tauri pour votre système : [Windows](https://v2.tauri.app/start/prerequisites/#windows), [macOS](https://v2.tauri.app/start/prerequisites/#macos) ou [Linux](https://v2.tauri.app/start/prerequisites/#linux)
 
----
+Pour la lecture vidéo complète, installez une version compatible de **libmpv**. En développement, le binaire peut être placé dans `apps/desktop/src-tauri/libs/` : `libmpv-2.dll` sous Windows, `libmpv.dylib` sous macOS ou `libmpv.so` sous Linux.
 
-## 📋 Prérequis
+## Installation
 
-### Windows
-- **Rust** 1.77+ ([rustup](https://rustup.rs))
-- **Node.js LTS** 20+
-- **pnpm** 9.0.0+ (via `corepack enable`)
-- **Microsoft C++ Build Tools** (Desktop development with C++)
-- **WebView2 Runtime** (préinstallé Windows 11 ; [installer](https://developer.microsoft.com/microsoft-edge/webview2/) sur Windows 10)
-
-### macOS
-- **Rust** 1.77+
-- **Node.js LTS** 20+
-- **pnpm** 9.0.0+
-- **Xcode Command Line Tools** (`xcode-select --install`)
-
-### Linux (Debian/Ubuntu)
-- **Rust** 1.77+
-- **Node.js LTS** 20+
-- **pnpm** 9.0.0+
-- **Dépendances système** :
-  ```bash
-  sudo apt-get install libssl-dev libgtk-3-dev libayatana-appindicator3-dev libxdotool-dev
-  ```
-
-### libmpv (crucial pour la lecture vidéo)
-
-L'application fonctionne complètement sans lecteur, mais les commandes de lecture retourneront `PlaybackEngineState::Unavailable`.
-
-#### Mode développement
-```bash
-# Téléchargez la build LGPL depuis :
-# https://sourceforge.net/projects/mpv-player-windows/files/ (Windows)
-# https://mpv.io/installation/ (macOS/Linux)
-# 
-# Déposez le binaire :
-# Windows:  apps/desktop/src-tauri/libs/libmpv-2.dll
-# macOS:    apps/desktop/src-tauri/libs/libmpv.dylib
-# Linux:    apps/desktop/src-tauri/libs/libmpv.so
-```
-
-#### Mode production (Installateur)
-```bash
-# Avant de lancer la build :
-cp libmpv-2.dll apps/desktop/src-tauri/libs/
-
-# L'installateur embarquera automatiquement le binaire
-```
-
----
-
-## 🚀 Installation et utilisation
-
-### Mode développement (hot-reload)
+À la racine du dépôt :
 
 ```bash
-# Installation initiale
 pnpm install
-
-# Démarrage avec hot-reload Vite
 pnpm dev
 ```
 
-Vite recompile le frontend instantanément à chaque modification. Tauri recharge la fenêtre automatiquement.
+La commande `pnpm dev` lance l’application Tauri en mode développement avec rechargement du frontend.
 
-### Mode production — Installateurs multiplateformes
+Pour compiler l’application et produire les installateurs configurés pour votre plateforme :
 
 ```bash
-# Générer les installateurs
 pnpm build
 ```
 
-Produit selon la plateforme :
+Les formats de distribution configurés sont NSIS pour Windows, DMG pour macOS, et DEB/AppImage pour Linux. Les artefacts sont générés sous `apps/desktop/src-tauri/target/release/bundle/`.
 
-**Windows** :
-```
-apps/desktop/src-tauri/target/release/bundle/nsis/AetherVault Media_0.7.8_x64-setup.exe
-```
-- ✅ Sélection de langue (FR/EN)
-- ✅ Installation par utilisateur (sans UAC)
-- ✅ Raccourci Menu Démarrer
-- ✅ Intégration "Applications installées"
-- ✅ Désinstallation propre
+## Architecture
 
-**macOS** :
-```
-apps/desktop/src-tauri/target/release/bundle/dmg/AetherVault Media_0.7.8_x64.dmg
-```
-- ✅ Drag & drop vers /Applications
-- ✅ Intégration Dock
+Le dépôt est un monorepo pnpm :
 
-**Linux** :
-```
-# Debian/Ubuntu
-apps/desktop/src-tauri/target/release/bundle/deb/aethervault-media_0.7.8_amd64.deb
-
-# AppImage
-apps/desktop/src-tauri/target/release/bundle/appimage/AetherVault Media_0.7.8_amd64.AppImage
-```
-- ✅ Installation via `dpkg -i` (DEB)
-- ✅ Exécution directe (AppImage)
-- ✅ Intégration menu applications
-
-**Données utilisateur** : stockées dans `%APPDATA%` (Windows), `~/Library/Application Support/` (macOS), ou `~/.config/` (Linux) — jamais modifiées par l'installateur.
-
----
-
-## 🏗️ Architecture
-
-### Stack technique
-
-| Composant | Détails |
-|-----------|---------|
-| **Backend** | Rust 2021 (1.77+) avec Tauri 2 — 51.2% du code |
-| **Frontend** | React 18 + React Router 6 + TypeScript 5 — 43.6% du code |
-| **Styles** | CSS 3 avec système de variables de thème — 5.2% du code |
-| **Build** | Vite 5, pnpm 9.0.0 workspaces |
-| **BD** | SQLite bundled (rusqlite) + connection pooling (r2d2) |
-| **Lecteur** | libmpv (chargement dynamique, rendu OpenGL) |
-| **Audio** | Symphonia 0.5 (décodage multi-format) |
-| **Chiffrement** | AES-256-GCM (Rust pur) + Argon2id KDF |
-
-### Structure du monorepo
-
-```
+```text
 aethervault-media/
 ├── apps/
-│   └── desktop/                    # Application Tauri
-│       ├── src-tauri/              # Backend Rust
-│       │   ├── src/
-│       │   │   ├── commands/       # Handlers IPC (scan, playback, vault)
-│       │   │   ├── services/       # Métier (lecteur, scanner, chiffrement)
-│       │   │   ├── domain/         # Logique de domaine (profils, lib)
-│       │   │   ├── models/         # Persistance (SQLite)
-│       │   │   ├── security/       # Chiffrement AES-256-GCM
-│       │   │   └── db/             # Migrations, schéma
-│       │   ├── Cargo.toml
-│       │   └── libs/               # libmpv binaries (à ajouter)
-│       ├── src/                    # Frontend React
-│       │   ├── pages/              # Pages routées
-│       │   ├── components/         # Composants réutilisables
-│       │   ├── layout/             # Shell et structure
-│       │   ├── player/             # Moteur du lecteur
-│       │   ├── hooks/              # Hooks personnalisés
-│       │   ├── services/           # API Tauri commands
-│       │   └── theme/              # Variables CSS et thème
-│       ├── package.json
-│       └── tauri.conf.json
+│   └── desktop/
+│       ├── src/                 # Interface React et TypeScript
+│       └── src-tauri/           # Application et backend Rust/Tauri
 ├── packages/
-│   ├── shared-types/               # Types TypeScript partagés
-│   └── ui-kit/                     # Composants UI réutilisables
+│   ├── shared-types/            # Types partagés
+│   └── ui-kit/                  # Composants d’interface réutilisables
+├── docs/                        # Documentation technique
 └── pnpm-workspace.yaml
 ```
 
-### Flux de données
+| Partie | Technologies |
+|---|---|
+| Interface | React 18, TypeScript 5, Vite 5 |
+| Application de bureau | Tauri 2, Rust 2021 |
+| Données | SQLite embarqué |
+| Gestion des dépendances | pnpm 9 workspaces |
 
-```
-UI React
-    ↓
-Tauri Commands (IPC)
-    ↓
-Backend Handlers (Rust)
-    ↓
-Services (Scanner, Metadata, Encryption)
-    ↓
-Data Layer (SQLite, File System)
-    ↓
-Events (IPC events)
-    ↓
-State React Update
-```
+## Documentation
 
-### Dépendances Rust principales
+La [documentation technique](docs/AetherVault-Media-Documentation-Technique.md) détaille l’architecture, les choix techniques et la feuille de route. Les changements de version sont consignés dans le [changelog](CHANGELOG.md).
 
-| Domaine | Crates | Notes |
-|---------|--------|-------|
-| **BD** | `rusqlite 0.31`, `r2d2 0.8` | SQLite bundled, pooling |
-| **Chiffrement** | `aes-gcm 0.10`, `argon2 0.5` | AES-256-GCM + KDF |
-| **Multimédia** | `image 0.25.8`, `kamadak-exif 0.6` | Décodage images, EXIF |
-| **Audio** | `symphonia 0.5`, `rustfft 6` | Décodage multi-format |
-| **Réseau** | `ureq 2`, `igd 0.12` | Client HTTP pur + UPnP |
-| **Fichiers** | `walkdir 2`, `notify 6` | Récursion + watcher |
-| **Lecteur** | `libloading 0.8` | Chargement dynamique libmpv |
-| **Parallélisation** | `rayon 1` | Scan multi-cœurs |
-| **Tauri** | `tauri 2`, plugins | IPC et plugins officiels |
+## Contribuer
 
----
+Les contributions, rapports de bugs et suggestions sont bienvenus. Avant de proposer un changement, consultez la documentation technique et ouvrez une [issue](https://github.com/spectglak-ui/aethervault-media/issues) pour discuter des changements importants.
 
-## 🔐 Principes de sécurité
+## Licence
 
-- ✅ **Aucune dépendance C système** : rustls, Rust pur, zéro liaison statique
-- ✅ **Chiffrement du coffre applicatif** : Argon2id + AES-256-GCM au niveau SQLite
-- ✅ **libmpv chargée dynamiquement** : pas d'héritage GPL, licence propre
-- ✅ **Données sensibles jamais en clair** : secrets chiffrés en mémoire
-- ✅ **Partage chiffré** : dérivation SHA-256 + AES-256-GCM
-- ✅ **Métadonnées EXIF sélectives** : GPS volontairement exclu
-- ✅ **Panic safety** : isolation des panics sur fichiers pathologiques
-
----
-
-## 📖 Documentation
-
-Pour l'architecture détaillée, la roadmap complète et les choix techniques en profondeur :
-
-👉 **[docs/AetherVault-Media-Documentation-Technique.md](docs/AetherVault-Media-Documentation-Technique.md)**
-
----
-
-## 🤝 Contribution
-
-Ce projet est en développement actif sous Tauri 2. Les contributions sont bienvenues !
-
-**Avant de démarrer** : consultez la [documentation technique](docs/AetherVault-Media-Documentation-Technique.md) pour comprendre l'architecture.
-
-**Points chauds pour contributeurs** :
-- Optimisations du pipeline vidéo OpenGL (latence, ressources)
-- Tests sur configurations hétérogènes (résolutions, codecs, formats)
-- Support Linux/macOS (buildchain, testage)
-- Plugins et architecture extensible (roadmap)
-
----
-
-## 📝 Licence
-
-AetherVault Media est publié sous la **[Licence MIT](LICENSE.txt)**.
-
-**Note spéciale sur libmpv** : libmpv (inclus dans l'installateur) est distribué sous licence LGPL. Voir la [documentation technique](docs/AetherVault-Media-Documentation-Technique.md) pour les détails.
-
----
-
-## 💬 Support et retours
-
-Pour les questions, bugs ou suggestions d'amélioration :
-- **Issues** : [Ouvrir une issue GitHub](https://github.com/spectglak-ui/aethervault-media/issues)
-- **Discussions** : [Rejoindre les discussions](https://github.com/spectglak-ui/aethervault-media/discussions)
-
----
+AetherVault Media est distribué sous licence [MIT](LICENSE.txt). Certaines dépendances, notamment libmpv, peuvent être soumises à leurs propres licences ; consultez la documentation technique pour les détails.
 
 <div align="center">
 
-**Fabriqué avec ❤️ en Rust et TypeScript**
+**Fabriqué avec Rust, TypeScript et ❤️**
 
-![Rust](https://img.shields.io/badge/51.2%25-Rust-CE422B?style=flat-square&logo=rust) ![TypeScript](https://img.shields.io/badge/43.6%25-TypeScript-3178C6?style=flat-square&logo=typescript) ![CSS](https://img.shields.io/badge/5.2%25-CSS-1572B6?style=flat-square&logo=css3)
-
-**Dernière mise à jour** : Octobre 2026  
-**Mainteneur** : [@spectglak-ui](https://github.com/spectglak-ui)
+Maintenu par [@spectglak-ui](https://github.com/spectglak-ui)
 
 </div>
