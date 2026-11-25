@@ -458,6 +458,8 @@ pub fn run() {
             services::playback_engine::player_extract_media,
             services::playback_engine::player_unload,
             // 0.8.x — télécommande mobile (serveur local + appairage QR).
+            remote::remote_network_check,
+            remote::remote_fix_network,
             remote::remote_start,
             remote::remote_stop,
             remote::remote_status,

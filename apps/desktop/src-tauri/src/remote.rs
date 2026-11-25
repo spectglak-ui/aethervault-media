@@ -7,7 +7,13 @@
 //! `/auth` permet à la page de distinguer « token invalide » d'une simple
 //! coupure réseau ; le ping/pong mesure la latence ; un receiver WS en
 //! retard (Lagged) ne casse plus la connexion.
+//! Patch 53 : sous Windows, un Wi-Fi classé « Public » fait bloquer par le
+//! pare-feu les connexions entrantes du téléphone (la page ne charge pas).
+//! `remote_network_check` détecte ce cas, `remote_fix_network` passe le réseau
+//! en « Privé » (et crée la règle pare-feu de l'exe) après une élévation UAC.
 use std::collections::HashMap;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -154,6 +160,230 @@ async fn handle_socket(mut socket: WebSocket, shared: Arc<Shared>) {
                 }
             }
         }
+    }
+}
+
+/// Diagnostic réseau de la télécommande (patch 53).
+#[derive(Serialize, Clone)]
+pub struct NetworkCheck {
+    /// "windows" ou "other" (Linux / macOS : pas de diagnostic pour l'instant).
+    pub platform: String,
+    /// "Public", "Private" ou "DomainAuthenticated" ; `None` si inconnu.
+    pub category: Option<String>,
+    pub network_name: Option<String>,
+    /// Vrai si le pare-feu Windows bloquera très probablement le téléphone.
+    pub needs_fix: bool,
+}
+
+/// Résultat de la sonde PowerShell : `Catégorie|IndexInterface|NomDuRéseau`.
+#[cfg_attr(not(windows), allow(dead_code))]
+struct NetworkProbe {
+    category: String,
+    index: u32,
+    name: String,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_probe(out: &str) -> Option<NetworkProbe> {
+    let line = out.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let mut parts = line.splitn(3, '|');
+    let category = parts.next()?.trim().to_string();
+    let index = parts.next()?.trim().parse::<u32>().ok()?;
+    let name = parts.next().unwrap_or("").trim().to_string();
+    if category.is_empty() {
+        return None;
+    }
+    Some(NetworkProbe { category, index, name })
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn check_from_probe(probe: Option<NetworkProbe>) -> NetworkCheck {
+    match probe {
+        Some(p) => NetworkCheck {
+            platform: "windows".into(),
+            needs_fix: p.category == "Public",
+            network_name: if p.name.is_empty() { None } else { Some(p.name) },
+            category: Some(p.category),
+        },
+        None => NetworkCheck {
+            platform: "windows".into(),
+            category: None,
+            network_name: None,
+            needs_fix: false,
+        },
+    }
+}
+
+#[cfg(windows)]
+fn encode_powershell(script: &str) -> String {
+    use base64::Engine;
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    base64::engine::general_purpose::STANDARD.encode(utf16)
+}
+
+/// Exécute un script PowerShell sans fenêtre ; renvoie (code de sortie, stdout).
+#[cfg(windows)]
+fn run_powershell(script: &str) -> Result<(i32, String), String> {
+    let encoded = encode_powershell(script);
+    let output = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+            encoded.as_str(),
+        ])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .output()
+        .map_err(|e| format!("PowerShell indisponible : {e}"))?;
+    Ok((
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
+}
+
+/// Catégorie du réseau portant l'IP que le QR code annonce au téléphone.
+#[cfg(windows)]
+fn probe_network() -> Option<NetworkProbe> {
+    let ip: std::net::Ipv4Addr = local_ip()?.parse().ok()?;
+    if ip.is_loopback() {
+        return None;
+    }
+    let script = format!(
+        r#"[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$ErrorActionPreference = 'Stop'
+try {{
+  $idx = (Get-NetIPAddress -AddressFamily IPv4 -IPAddress '{ip}' | Select-Object -First 1).InterfaceIndex
+  $p = Get-NetConnectionProfile -InterfaceIndex $idx | Select-Object -First 1
+  Write-Output ('{{0}}|{{1}}|{{2}}' -f $p.NetworkCategory, $idx, $p.Name)
+}} catch {{ exit 3 }}"#
+    );
+    match run_powershell(&script) {
+        Ok((0, out)) => parse_probe(&out),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn network_check_blocking() -> NetworkCheck {
+    check_from_probe(probe_network())
+}
+
+#[cfg(not(windows))]
+fn network_check_blocking() -> NetworkCheck {
+    NetworkCheck {
+        platform: "other".into(),
+        category: None,
+        network_name: None,
+        needs_fix: false,
+    }
+}
+
+/// Passe le réseau en « Privé » et (re)crée la règle pare-feu entrante de cet
+/// exécutable, dans une session PowerShell élevée (invite UAC).
+#[cfg(windows)]
+fn fix_network_blocking() -> Result<NetworkCheck, String> {
+    let probe = probe_network().ok_or_else(|| "Réseau local introuvable.".to_string())?;
+    let exe = std::env::current_exe().map_err(|e| format!("Chemin de l'application inconnu : {e}"))?;
+    let exe_ps = exe.to_string_lossy().replace('\'', "''");
+
+    // Script exécuté en administrateur.
+    let elevated = format!(
+        r#"$ErrorActionPreference = 'Stop'
+try {{
+  Set-NetConnectionProfile -InterfaceIndex {index} -NetworkCategory Private
+  Get-NetFirewallRule -DisplayName 'AetherVault Media - Telecommande' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+  New-NetFirewallRule -DisplayName 'AetherVault Media - Telecommande' -Direction Inbound -Action Allow -Protocol TCP -LocalPort '8765-8775' -RemoteAddress LocalSubnet -Program '{exe_ps}' -Profile Private | Out-Null
+  exit 0
+}} catch {{ exit 1 }}"#,
+        index = probe.index,
+    );
+    // Lanceur non élevé : demande l'UAC ; code 5 = autorisation refusée.
+    let launcher = format!(
+        r#"$ErrorActionPreference = 'Stop'
+try {{
+  $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand','{encoded}'
+  exit $p.ExitCode
+}} catch {{ exit 5 }}"#,
+        encoded = encode_powershell(&elevated),
+    );
+
+    log::info!("[remote] passage du réseau « {} » en Privé (UAC)", probe.name);
+    let (code, _) = run_powershell(&launcher)?;
+    match code {
+        0 => {}
+        5 => return Err("Autorisation administrateur refusée : le réseau n'a pas été modifié.".into()),
+        other => return Err(format!("Windows a refusé la modification (code {other}).")),
+    }
+
+    let after_probe = probe_network().ok_or_else(|| {
+    "La modification a été exécutée, mais le profil réseau n'a pas pu être vérifié. La correction n'est pas confirmée.".to_string()
+})?;
+
+if after_probe.category != "Private" {
+    return Err(format!(
+        "Le réseau est toujours classé « {} » : le passage en privé n'a pas été confirmé.",
+        after_probe.category
+    ));
+}
+
+Ok(check_from_probe(Some(after_probe)))
+}
+
+#[cfg(not(windows))]
+fn fix_network_blocking() -> Result<NetworkCheck, String> {
+    Err("Cette correction n'est disponible que sous Windows.".into())
+}
+
+#[tauri::command]
+pub async fn remote_network_check() -> Result<NetworkCheck, String> {
+    tauri::async_runtime::spawn_blocking(network_check_blocking)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn remote_fix_network() -> Result<NetworkCheck, String> {
+    tauri::async_runtime::spawn_blocking(fix_network_blocking)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_probe_reads_category_index_and_name() {
+        let p = parse_probe("Public|10|Bbox-ABCD 5G\r\n").unwrap();
+        assert_eq!(p.category, "Public");
+        assert_eq!(p.index, 10);
+        assert_eq!(p.name, "Bbox-ABCD 5G");
+    }
+
+    #[test]
+    fn parse_probe_keeps_pipes_inside_the_network_name() {
+        let p = parse_probe("Private|3|Wi|Fi").unwrap();
+        assert_eq!(p.name, "Wi|Fi");
+    }
+
+    #[test]
+    fn parse_probe_rejects_garbage() {
+        assert!(parse_probe("").is_none());
+        assert!(parse_probe("Public|abc|x").is_none());
+        assert!(parse_probe("|3|x").is_none());
+    }
+
+    #[test]
+    fn only_public_networks_need_a_fix() {
+        let public = check_from_probe(parse_probe("Public|10|Box"));
+        let private = check_from_probe(parse_probe("Private|10|Box"));
+        let domain = check_from_probe(parse_probe("DomainAuthenticated|10|Corp"));
+        assert!(public.needs_fix);
+        assert!(!private.needs_fix);
+        assert!(!domain.needs_fix);
+        assert!(!check_from_probe(None).needs_fix);
     }
 }
 
