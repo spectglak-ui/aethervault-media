@@ -46,7 +46,7 @@
 
 - Lecture vidéo avec le moteur libmpv et accélération matérielle lorsqu’elle est disponible
 - Lecture audio et formats de lecture numérique
-  (Amélioration audio recommandée : Pour une expérience sonore optimale avec AetherVault Media, nous vous conseillons d'utiliser FxSound, un égaliseur et amplificateur audio open-source pour Windows.) https://github.com/fxsound2/fxsound-app
+(Amélioration audio recommandée : Pour une expérience sonore optimale avec AetherVault Media, nous vous conseillons d'utiliser FxSound, un égaliseur et amplificateur audio open-source pour Windows.) https://github.com/fxsound2/fxsound-app
 - Reprise de lecture et suivi de progression par profil
 - Fenêtre de lecteur séparée et mode image dans l’image selon le lecteur
 
